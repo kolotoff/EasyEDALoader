@@ -63,6 +63,8 @@ namespace EasyEDA_Loader
         {
             EasyEDALoaderModule.Trace("DialogWindow loaded.");
             ApplyAltiumTheme();
+            SetSearchProgress(false);
+            SetPreviewProgress(false);
             searchTextBox.Focus();
         }
 
@@ -97,6 +99,29 @@ namespace EasyEDA_Loader
             }
         }
 
+        private void SetSearchProgress(bool isVisible, string message = null)
+        {
+            searchProgressPanel.Visibility = isVisible ? Visibility.Visible : Visibility.Collapsed;
+            searchProgressBar.IsIndeterminate = isVisible;
+            searchProgressText.Text = isVisible ? (message ?? "Searching...") : string.Empty;
+        }
+
+        private void SetPreviewProgress(bool isVisible, string message = null, double progress = 0)
+        {
+            previewProgressPanel.Visibility = isVisible ? Visibility.Visible : Visibility.Collapsed;
+            previewProgressBar.IsIndeterminate = false;
+            previewProgressBar.Value = isVisible ? progress : 0;
+            previewProgressText.Text = isVisible ? (message ?? "Generating preview...") : string.Empty;
+        }
+
+        private void UpdatePreviewProgress(string message, double progress)
+        {
+            previewProgressPanel.Visibility = Visibility.Visible;
+            previewProgressBar.IsIndeterminate = false;
+            previewProgressBar.Value = progress;
+            previewProgressText.Text = message;
+        }
+
         private async void ResultsGrid_SelectionChanged(object sender, SelectionChangedEventArgs e)
         {
             UpdateAddButtonState();
@@ -126,6 +151,7 @@ namespace EasyEDA_Loader
                 _currentModel = null;
                 _currentRoot = null;
                 saveModelButton.IsEnabled = false;
+                SetPreviewProgress(true, "Loading component data...", 5);
 
                 var root = await Task.Run(() => Api.GetComponentJsonAsync(partViewModel.PartInfo.Part, cancellationToken));
 
@@ -137,17 +163,19 @@ namespace EasyEDA_Loader
                     _currentComponent = root.Component;
                     _currentRoot = root;
 
-                if (_currentComponent.Symbol?.Shapes != null)
-                {
-                    SymbolDrawing.DrawComponent(symbolCanvas, _currentComponent.Symbol.Shapes);
-                    _ = symbolCanvas.Dispatcher.InvokeAsync(() =>
+                    if (_currentComponent.Symbol?.Shapes != null)
                     {
-                        _symbolHelper.FitToBoundingBox();
-                    }, DispatcherPriority.Loaded);
-                }
+                        UpdatePreviewProgress("Drawing symbol...", 30);
+                        SymbolDrawing.DrawComponent(symbolCanvas, _currentComponent.Symbol.Shapes);
+                        _ = symbolCanvas.Dispatcher.InvokeAsync(() =>
+                        {
+                            _symbolHelper.FitToBoundingBox();
+                        }, DispatcherPriority.Loaded);
+                    }
 
                     if (_currentComponent.PackageDetail?.Footprint != null)
                     {
+                        UpdatePreviewProgress("Drawing footprint...", 60);
                         var eeFootprint = _currentComponent.PackageDetail.Footprint;
                         _currentModel = eeFootprint.GetModel();
 
@@ -176,6 +204,7 @@ namespace EasyEDA_Loader
                     {
                         try
                         {
+                            UpdatePreviewProgress("Loading thumbnail...", 85);
                             var thumbnail = await Task.Run(() => Api.LoadPngAsync(_currentComponent.Thumb, cancellationToken));
                             
                             if (cancellationToken.IsCancellationRequested)
@@ -200,8 +229,14 @@ namespace EasyEDA_Loader
             catch (OperationCanceledException)
             {
             }
-            catch
+            catch (Exception ex)
             {
+                EasyEDALoaderModule.Trace($"Preview failed: {ex}");
+            }
+            finally
+            {
+                if (!cancellationToken.IsCancellationRequested)
+                    SetPreviewProgress(false);
             }
         }
 
@@ -214,6 +249,7 @@ namespace EasyEDA_Loader
             _currentModel = null;
             _currentRoot = null;
             saveModelButton.IsEnabled = false;
+            SetPreviewProgress(false);
         }
 
         public void UpdateAddButtonState()
@@ -232,6 +268,7 @@ namespace EasyEDA_Loader
             searchButton.IsEnabled = false;
             addToLibraryButton.IsEnabled = false;
             searchResults.Clear();
+            SetSearchProgress(true, "Searching EasyEDA...");
 
             try
             {
@@ -244,6 +281,8 @@ namespace EasyEDA_Loader
                 // Add results on the UI thread
                 if (results != null && results.Count > 0)
                 {
+                    SetSearchProgress(true, "Preparing results...");
+
                     foreach (var part in results)
                     {
                         searchResults.Add(new PartInfoViewModel(part, this));
@@ -251,6 +290,7 @@ namespace EasyEDA_Loader
                 }
                 else
                 {
+                    SetSearchProgress(false);
                     MessageBox.Show("No results found.", "Search", MessageBoxButton.OK, MessageBoxImage.Information);
                 }
             }
@@ -260,6 +300,7 @@ namespace EasyEDA_Loader
             }
             finally
             {
+                SetSearchProgress(false);
                 Mouse.OverrideCursor = null;
                 searchButton.IsEnabled = true;
             }
