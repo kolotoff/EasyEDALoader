@@ -1,6 +1,9 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
+using System.Windows;
 using System.Windows.Forms;
+using System.Windows.Interop;
 
 namespace EasyEDA_Loader
 {
@@ -18,6 +21,20 @@ namespace EasyEDA_Loader
         public Dialog()
         {
             wpfDialog = new DialogWindow();
+            wpfDialog.ShowActivated = true;
+            wpfDialog.WindowStartupLocation = WindowStartupLocation.CenterOwner;
+
+            IntPtr ownerHandle = Process.GetCurrentProcess().MainWindowHandle;
+            if (ownerHandle != IntPtr.Zero)
+                new WindowInteropHelper(wpfDialog).Owner = ownerHandle;
+
+            wpfDialog.Loaded += (sender, args) =>
+            {
+                wpfDialog.Activate();
+                wpfDialog.Topmost = true;
+                wpfDialog.Topmost = false;
+                wpfDialog.Focus();
+            };
         }
 
         public DialogResult ShowDialog()

@@ -7,13 +7,11 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
+using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Threading;
-using DevExpress.Xpf.Grid;
-using DevExpress.LookAndFeel;
-using DevExpress.Skins;
 using Microsoft.Win32;
 
 namespace EasyEDA_Loader
@@ -45,8 +43,6 @@ namespace EasyEDA_Loader
             SelectedComponents = new List<ComponentSelection>();
             
             resultsGrid.ItemsSource = searchResults;
-            
-            resultsGrid.SelectionChanged += ResultsGrid_SelectionChanged;
 
             _footprintHelper = new CanvasZoomPanHelper(footprintCanvas);
             footprintCanvasView.ScrollChanged += (s, e) =>
@@ -65,47 +61,19 @@ namespace EasyEDA_Loader
 
         private void Window_Loaded(object sender, RoutedEventArgs e)
         {
-            // Apply Altium theme colors after window is loaded
+            EasyEDALoaderModule.Trace("DialogWindow loaded.");
             ApplyAltiumTheme();
+            searchTextBox.Focus();
         }
 
         private void ApplyAltiumTheme()
         {
-            try
-            {
-                // Get Altium's skin colors
-                var lookAndFeel = new UserLookAndFeel(this);
-                var skin = CommonSkins.GetSkin(lookAndFeel);
-                
-                if (skin != null)
-                {
-                    // Apply background color to main grid
-                    var windowColor = skin.Colors.GetColor("Window");
-                    var mainGrid = (System.Windows.Controls.Grid)this.Content;
-                    mainGrid.Background = new SolidColorBrush(Color.FromArgb(
-                        windowColor.A, windowColor.R, windowColor.G, windowColor.B));
-                    
-                    // Apply text color to all TextBlocks
-                    var textColor = skin.Colors.GetColor("WindowText");
-                    var textBrush = new SolidColorBrush(Color.FromArgb(
-                        textColor.A, textColor.R, textColor.G, textColor.B));
-                    
-                    // Set foreground for the window (will cascade to children)
-                    this.Resources[SystemColors.WindowTextBrushKey] = textBrush;
-                    
-                    // Apply to TextBlocks directly
-                    ApplyColorToTextBlocks(mainGrid, textBrush);
-                }
-            }
-            catch
-            {
-                // If theme detection fails, use dark colors as fallback
-                var mainGrid = (System.Windows.Controls.Grid)this.Content;
-                mainGrid.Background = new SolidColorBrush(Color.FromRgb(45, 45, 48));
-                
-                var textBrush = new SolidColorBrush(Color.FromRgb(241, 241, 241));
-                ApplyColorToTextBlocks(mainGrid, textBrush);
-            }
+            var mainGrid = (System.Windows.Controls.Grid)this.Content;
+            mainGrid.Background = Brushes.White;
+
+            var textBrush = Brushes.Black;
+            this.Resources[SystemColors.WindowTextBrushKey] = textBrush;
+            ApplyColorToTextBlocks(mainGrid, textBrush);
         }
 
         private void ApplyColorToTextBlocks(System.Windows.DependencyObject parent, SolidColorBrush brush)
@@ -129,18 +97,15 @@ namespace EasyEDA_Loader
             }
         }
 
-        private void ResultsGrid_SelectionChanged(object sender, GridSelectionChangedEventArgs e)
+        private async void ResultsGrid_SelectionChanged(object sender, SelectionChangedEventArgs e)
         {
             UpdateAddButtonState();
-        }
 
-        private async void ResultsGrid_CurrentItemChanged(object sender, CurrentItemChangedEventArgs e)
-        {
             previewCts?.Cancel();
             previewCts?.Dispose();
             previewCts = new CancellationTokenSource();
 
-            if (e.NewItem is PartInfoViewModel partViewModel)
+            if (resultsGrid.SelectedItem is PartInfoViewModel partViewModel)
             {
                 await LoadPreviewAsync(partViewModel, previewCts.Token);
             }

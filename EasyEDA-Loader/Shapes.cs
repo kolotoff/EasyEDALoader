@@ -1,4 +1,4 @@
-﻿using Newtonsoft.Json;
+using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using System;
 using System.Collections.Generic;
@@ -40,7 +40,7 @@ namespace EasyEDA_Loader
         public static int ParseInt(string raw)
         {
             if (string.IsNullOrWhiteSpace(raw)) return 0;
-            if (int.TryParse(raw, out int num))
+            if (int.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out int num))
             {
                 return num;
             }
@@ -49,11 +49,19 @@ namespace EasyEDA_Loader
         public static double ParseFloat(string raw)
         {
             if (string.IsNullOrWhiteSpace(raw)) return 0.0;
-            if (double.TryParse(raw, out double num))
+            if (double.TryParse(raw, NumberStyles.Float, CultureInfo.InvariantCulture, out double num))
             {
                 return num;
             }
             return 0.0;
+        }
+
+        public static double ParseDouble(string raw)
+        {
+            if (double.TryParse(raw, NumberStyles.Float, CultureInfo.InvariantCulture, out double result))
+                return result;
+
+            throw new FormatException($"Invalid double value: '{raw}'");
         }
         public static bool ParseDisplay(string raw)
         {
@@ -77,7 +85,7 @@ namespace EasyEDA_Loader
         {
             if (string.IsNullOrEmpty(raw)) return false;
             if (raw.ToLower()[0] == 'y') return true;
-            if (int.TryParse(raw, out int num))
+            if (int.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out int num))
             {
                 if (num == 1) return true;
                 if (num == 0) return false;
@@ -91,7 +99,7 @@ namespace EasyEDA_Loader
             if (string.IsNullOrWhiteSpace(raw))
                 return null;
 
-            if (double.TryParse(raw, out double result))
+            if (double.TryParse(raw, NumberStyles.Float, CultureInfo.InvariantCulture, out double result))
                 return result;
 
             throw new FormatException($"Invalid double value: '{raw}'");
@@ -117,8 +125,8 @@ namespace EasyEDA_Loader
             {
                 points.Add(new EePoint
                 {
-                    X = EeShape.ConvertToMM(double.Parse(pts[i * 2])),
-                    Y = EeShape.ConvertToMM(double.Parse(pts[i * 2 + 1])),
+                    X = EeShape.ConvertToMM(EeShape.ParseDouble(pts[i * 2])),
+                    Y = EeShape.ConvertToMM(EeShape.ParseDouble(pts[i * 2 + 1])),
                 });
             }
             return points;
@@ -202,7 +210,7 @@ namespace EasyEDA_Loader
         {
             if (reader.TokenType == JsonToken.Float || reader.TokenType == JsonToken.Integer)
             {
-                return EeShape.ConvertToMM(Convert.ToDouble(reader.Value));
+                return EeShape.ConvertToMM(Convert.ToDouble(reader.Value, CultureInfo.InvariantCulture));
             }
             return 0;
         }

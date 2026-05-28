@@ -73,7 +73,18 @@ Or extract contents to for example:
 
 `C:\ProgramData\Altium\Altium Designer {08BC8A67-180A-4240-B39B-AF5998437998}\Extensions\EasyEDA-Loader`
 
-And register it to your ExtensionsRegistry.xml with contents near the bottom:
+And register it in your `ExtensionsRegistry.xml` with contents near the bottom.
+
+For Altium Designer Agile 26, make sure the `PlatformVersions` values match the
+installed platform build. A known working Agile 26 profile uses:
+
+```
+<DXP BuildNumber="1.0.16.61"/>
+<EDP BuildNumber="10.0.16.61"/>
+```
+
+If these are left at the wrong build, Altium can show `EasyEDA-Loader` as
+incompatible or fail to load it from the extension manager.
 
 ```
  <Item HRID="EasyEDA-Loader" Guid="8035C261-E5FE-403B-A9B5-9ABFFB6E0EF5">
@@ -97,8 +108,8 @@ And register it to your ExtensionsRegistry.xml with contents near the bottom:
     <ReleaseNotes></ReleaseNotes>
     <DateInstalled>45838.7675816088</DateInstalled>
     <PlatformVersions>
-      <DXP BuildNumber="1.0.16.41"/>
-      <EDP BuildNumber="10.0.16.41"/>
+      <DXP BuildNumber="1.0.16.61"/>
+      <EDP BuildNumber="10.0.16.61"/>
       <MaxDXP BuildNumber="0.0.0.0"/>
       <MaxEDP BuildNumber="0.0.0.0"/>
     </PlatformVersions>

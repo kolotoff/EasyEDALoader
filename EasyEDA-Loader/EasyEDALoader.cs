@@ -2,6 +2,7 @@
 using PCB;
 using SCH;
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Threading;
@@ -14,35 +15,80 @@ namespace EasyEDA_Loader
     public class EasyEDALoaderModule : ServerModule
     {
         private bool noGUIMode;
+        private static readonly List<CommandProc> registeredCommandProcs = new List<CommandProc>();
 
         public EasyEDALoaderModule(IClient argClient)
           : base(argClient, "EasyEDA-Loader")
         {
             noGUIMode = argClient.ProductInfo().SupportsUIFeature("NoGUI", false);
+            Trace("Module constructed.");
         }
 
         protected override IServerDocument NewDocumentInstance(string argKind, string argFileName) => (IServerDocument)null;
 
-        protected override void InitializeCommands() => RegisterCommand("EasyEDARun", new CommandProc(Run));
-
-        private void RegisterCommand(string argCommandId, CommandProc commandProc) => ((DXP.CommandLauncher)CommandLauncher).RegisterCommand(argCommandId, (CommandProc)((IServerDocumentView view, ref string parameters) =>
+        protected override void InitializeCommands()
         {
-            try
+            Trace("InitializeCommands.");
+            RegisterCommand("EasyEDARun", new CommandProc(Run));
+            RegisterCommand("EasyEDA-Loader:EasyEDARun", new CommandProc(Run));
+        }
+
+        private void RegisterCommand(string argCommandId, CommandProc commandProc)
+        {
+            CommandProc wrappedProc = (IServerDocumentView view, ref string parameters) =>
             {
-                commandProc(view, ref parameters);
-            }
-            catch (Exception ex)
+                try
+                {
+                    Trace($"Command invoked: {argCommandId}");
+                    commandProc(view, ref parameters);
+                }
+                catch (Exception ex)
+                {
+                    Trace($"Command failed: {ex}");
+                    if (noGUIMode)
+                    {
+                        throw;
+                    }
+                    else
+                    {
+                        int num = (int)MessageBox.Show(ex.Message, "EasyEDA Loader Error", MessageBoxButtons.OK, MessageBoxIcon.Hand);
+                    }
+                }
+            };
+
+            registeredCommandProcs.Add(wrappedProc);
+            ((DXP.CommandLauncher)CommandLauncher).RegisterCommand(argCommandId, wrappedProc, null);
+            Trace($"Registered command: {argCommandId}");
+        }
+
+        internal static void Trace(string message)
+        {
+            string line = $"{DateTime.Now:O} {message}{Environment.NewLine}";
+            foreach (string logPath in GetTracePaths())
             {
-                if (noGUIMode)
+                try
                 {
-                    throw;
+                    File.AppendAllText(logPath, line);
+                    return;
                 }
-                else
+                catch
                 {
-                    int num = (int)MessageBox.Show(ex.Message, "EasyEDA Loader Error", MessageBoxButtons.OK, MessageBoxIcon.Hand);
                 }
             }
-        }));
+        }
+
+        private static IEnumerable<string> GetTracePaths()
+        {
+            string assemblyLocation = typeof(EasyEDALoaderModule).Assembly.Location;
+            if (!string.IsNullOrEmpty(assemblyLocation))
+                yield return Path.Combine(Path.GetDirectoryName(assemblyLocation), "EasyEDA-Loader.log");
+
+            string localApplicationData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+            if (!string.IsNullOrEmpty(localApplicationData))
+                yield return Path.Combine(localApplicationData, "Altium", "EasyEDA-Loader.log");
+
+            yield return Path.Combine(Path.GetTempPath(), "EasyEDA-Loader.log");
+        }
 
         private static void PlaceComponent(string schLibraryPath, string partName)
         {
@@ -61,6 +107,7 @@ namespace EasyEDA_Loader
           IServerDocumentView argContext,
           ref string argParameters)
         {
+            Trace("Run entered.");
             Dialog dialog = new Dialog();
             DialogResult result = dialog.ShowDialog();
             if (result != DialogResult.OK || dialog.SelectedComponents.Count == 0)

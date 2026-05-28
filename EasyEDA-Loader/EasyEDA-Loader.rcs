@@ -1,0 +1,5 @@
+PL PLEasyEDALoader:EasyEDARun Command='EasyEDA-Loader:EasyEDARun' Caption='EasyEDA &Loader...' Description='Load EasyEDA components into Altium libraries' End
+
+Insertion MNSchematic_EasyEDALoader TargetID='MNSchematic_Tools10' InsertType='After' RefID0='MNSchematic_Tools30'
+    Link MNSchematic_EasyEDALoader10 PLID='PLEasyEDALoader:EasyEDARun' End
+End

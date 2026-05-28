@@ -3,12 +3,9 @@
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
     xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
-    xmlns:dxg="http://schemas.devexpress.com/winfx/2008/xaml/grid"
-    xmlns:dx="http://schemas.devexpress.com/winfx/2008/xaml/core"
-    xmlns:dxe="http://schemas.devexpress.com/winfx/2008/xaml/editors"
     mc:Ignorable="d"
-    Title="EasyEDA Component Loader" 
-    Height="600" 
+    Title="EasyEDA Component Loader"
+    Height="600"
     Width="1100"
     MinHeight="500"
     MinWidth="900"
@@ -16,23 +13,149 @@
     ShowInTaskbar="False"
     ResizeMode="CanResize"
     Loaded="Window_Loaded">
-<Window.Resources>
-    <Style TargetType="TextBlock">
-        <Setter Property="Foreground" Value="{DynamicResource {x:Static SystemColors.WindowTextBrushKey}}"/>
-    </Style>
-</Window.Resources>
-<Grid x:Name="mainGrid">
-<Grid.ColumnDefinitions>
-    <ColumnDefinition Width="*"/>
-    <ColumnDefinition Width="350"/>
-</Grid.ColumnDefinitions>
-<Grid.RowDefinitions>
-    <RowDefinition Height="Auto"/>
-    <RowDefinition Height="*"/>
-    <RowDefinition Height="Auto"/>
-</Grid.RowDefinitions>
+    <Window.Resources>
+        <SolidColorBrush x:Key="DialogBackgroundBrush" Color="#FFFFFF"/>
+        <SolidColorBrush x:Key="DialogTextBrush" Color="#111111"/>
+        <SolidColorBrush x:Key="DialogBorderBrush" Color="#9A9A9A"/>
+        <SolidColorBrush x:Key="DialogControlBrush" Color="#F4F4F4"/>
+        <SolidColorBrush x:Key="DialogControlHoverBrush" Color="#E8E8E8"/>
+        <SolidColorBrush x:Key="DialogControlPressedBrush" Color="#DCDCDC"/>
+        <SolidColorBrush x:Key="DialogDisabledBrush" Color="#DADADA"/>
+        <SolidColorBrush x:Key="DialogDisabledTextBrush" Color="#777777"/>
 
-        <!-- Search Panel -->
+        <Style TargetType="TextBlock">
+            <Setter Property="Foreground" Value="{StaticResource DialogTextBrush}"/>
+        </Style>
+
+        <Style TargetType="TextBox">
+            <Setter Property="Background" Value="#FFFFFF"/>
+            <Setter Property="Foreground" Value="{StaticResource DialogTextBrush}"/>
+            <Setter Property="CaretBrush" Value="{StaticResource DialogTextBrush}"/>
+            <Setter Property="BorderBrush" Value="{StaticResource DialogBorderBrush}"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Padding" Value="4,1"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="TextBox">
+                        <Border x:Name="Border"
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}">
+                            <ScrollViewer x:Name="PART_ContentHost"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsKeyboardFocusWithin" Value="True">
+                                <Setter TargetName="Border" Property="BorderBrush" Value="#4A90E2"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style TargetType="Button">
+            <Setter Property="MinHeight" Value="24"/>
+            <Setter Property="Padding" Value="10,2"/>
+            <Setter Property="Background" Value="{StaticResource DialogControlBrush}"/>
+            <Setter Property="Foreground" Value="{StaticResource DialogTextBrush}"/>
+            <Setter Property="BorderBrush" Value="{StaticResource DialogBorderBrush}"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="Border"
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}">
+                            <ContentPresenter HorizontalAlignment="Center"
+                                              VerticalAlignment="Center"
+                                              RecognizesAccessKey="True"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Border" Property="Background" Value="{StaticResource DialogControlHoverBrush}"/>
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="Border" Property="Background" Value="{StaticResource DialogControlPressedBrush}"/>
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter TargetName="Border" Property="Background" Value="{StaticResource DialogDisabledBrush}"/>
+                                <Setter Property="Foreground" Value="{StaticResource DialogDisabledTextBrush}"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style TargetType="CheckBox">
+            <Setter Property="Foreground" Value="{StaticResource DialogTextBrush}"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="CheckBox">
+                        <StackPanel Orientation="Horizontal">
+                            <Border x:Name="Box"
+                                    Width="13"
+                                    Height="13"
+                                    Margin="0,0,5,0"
+                                    VerticalAlignment="Center"
+                                    Background="#FFFFFF"
+                                    BorderBrush="{StaticResource DialogBorderBrush}"
+                                    BorderThickness="1">
+                                <Path x:Name="CheckMark"
+                                      Data="M 2 6 L 5 9 L 11 2"
+                                      Stroke="{StaticResource DialogTextBrush}"
+                                      StrokeThickness="2"
+                                      StrokeEndLineCap="Square"
+                                      StrokeStartLineCap="Square"
+                                      Visibility="Collapsed"/>
+                            </Border>
+                            <ContentPresenter VerticalAlignment="Center"
+                                              RecognizesAccessKey="True"/>
+                        </StackPanel>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter TargetName="CheckMark" Property="Visibility" Value="Visible"/>
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter Property="Opacity" Value="0.55"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style TargetType="DataGrid">
+            <Setter Property="Background" Value="#FFFFFF"/>
+            <Setter Property="Foreground" Value="{StaticResource DialogTextBrush}"/>
+            <Setter Property="RowBackground" Value="#FFFFFF"/>
+            <Setter Property="AlternatingRowBackground" Value="#FAFAFA"/>
+            <Setter Property="GridLinesVisibility" Value="Horizontal"/>
+            <Setter Property="HorizontalGridLinesBrush" Value="#E4E4E4"/>
+            <Setter Property="BorderBrush" Value="#AFC3DA"/>
+        </Style>
+
+        <Style TargetType="DataGridColumnHeader">
+            <Setter Property="Background" Value="#F3F6FA"/>
+            <Setter Property="Foreground" Value="{StaticResource DialogTextBrush}"/>
+            <Setter Property="BorderBrush" Value="#D8DDE5"/>
+            <Setter Property="BorderThickness" Value="0,0,1,1"/>
+            <Setter Property="Padding" Value="5,2"/>
+        </Style>
+    </Window.Resources>
+
+    <Grid x:Name="mainGrid" Background="{StaticResource DialogBackgroundBrush}">
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="*"/>
+            <ColumnDefinition Width="350"/>
+        </Grid.ColumnDefinitions>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
         <Border Grid.Row="0" Grid.Column="0" Padding="12,15,12,10">
             <Grid>
                 <Grid.RowDefinitions>
@@ -44,20 +167,20 @@
                     <ColumnDefinition Width="Auto"/>
                 </Grid.ColumnDefinitions>
 
-                <TextBlock Grid.Row="0" Grid.ColumnSpan="2" 
+                <TextBlock Grid.Row="0" Grid.ColumnSpan="2"
                            Text="Enter part number to search (e.g. C2040):"
                            Margin="0,0,0,8"/>
 
-                <dxe:TextEdit x:Name="searchTextBox" 
-                         Grid.Row="1" 
+                <TextBox x:Name="searchTextBox"
+                         Grid.Row="1"
                          Grid.Column="0"
                          Margin="0,0,8,0"
                          VerticalContentAlignment="Center"
                          Height="24"
                          KeyDown="SearchTextBox_KeyDown"/>
 
-                <dx:SimpleButton x:Name="searchButton" 
-                        Grid.Row="1" 
+                <Button x:Name="searchButton"
+                        Grid.Row="1"
                         Grid.Column="1"
                         Content="Search"
                         Width="75"
@@ -66,89 +189,66 @@
             </Grid>
         </Border>
 
-        <!-- Results Grid -->
-        <dxg:GridControl x:Name="resultsGrid" 
-                         Grid.Row="1"
-                         Grid.Column="0"
-                         Margin="12,0,12,10"
-                         AutoGenerateColumns="None"
-                         SelectionMode="Row"
-                         CurrentItemChanged="ResultsGrid_CurrentItemChanged">
-            <dxg:GridControl.View>
-                <dxg:TableView ShowGroupPanel="False"
-                               AllowEditing="False"
-                               ShowIndicator="False"
-                               NavigationStyle="Row"
-                               AutoWidth="False"
-                               AllowColumnMoving="False"
-                               ShowColumnHeaders="True"
-                               ShowAutoFilterRow="False"/>
-            </dxg:GridControl.View>
-            
-            <dxg:GridControl.Columns>
-                <dxg:GridColumn Header="" 
-                                FieldName="AddToLibrary" 
-                                Width="40"
-                                MinWidth="40"
-                                MaxWidth="40"
-                                AllowResizing="False"
-                                FixedWidth="True">
-                    <dxg:GridColumn.CellTemplate>
+        <DataGrid x:Name="resultsGrid"
+                  Grid.Row="1"
+                  Grid.Column="0"
+                  Margin="12,0,12,10"
+                  AutoGenerateColumns="False"
+                  CanUserAddRows="False"
+                  CanUserDeleteRows="False"
+                  CanUserReorderColumns="False"
+                  HeadersVisibility="Column"
+                  IsReadOnly="False"
+                  SelectionMode="Single"
+                  SelectionUnit="FullRow"
+                  SelectionChanged="ResultsGrid_SelectionChanged">
+            <DataGrid.Columns>
+                <DataGridTemplateColumn Header="" Width="40" MinWidth="40">
+                    <DataGridTemplateColumn.CellTemplate>
                         <DataTemplate>
-                            <dxe:CheckEdit IsChecked="{Binding Path=RowData.Row.AddToLibrary, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                            <CheckBox IsChecked="{Binding AddToLibrary, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
                                       HorizontalAlignment="Center"
                                       VerticalAlignment="Center"/>
                         </DataTemplate>
-                    </dxg:GridColumn.CellTemplate>
-                </dxg:GridColumn>
+                    </DataGridTemplateColumn.CellTemplate>
+                </DataGridTemplateColumn>
 
-                <dxg:GridColumn Header="FP" 
-                                FieldName="HasFootprint" 
-                                Width="40"
-                                MinWidth="40"
-                                MaxWidth="40"
-                                AllowResizing="False"
-                                FixedWidth="True">
-                    <dxg:GridColumn.CellTemplate>
+                <DataGridTemplateColumn Header="FP" Width="40" MinWidth="40">
+                    <DataGridTemplateColumn.CellTemplate>
                         <DataTemplate>
-                            <dxe:CheckEdit IsChecked="{Binding Path=RowData.Row.HasFootprint, Mode=OneWay}"
+                            <CheckBox IsChecked="{Binding HasFootprint, Mode=OneWay}"
                                       HorizontalAlignment="Center"
                                       VerticalAlignment="Center"
                                       IsEnabled="False"/>
                         </DataTemplate>
-                    </dxg:GridColumn.CellTemplate>
-                </dxg:GridColumn>
+                    </DataGridTemplateColumn.CellTemplate>
+                </DataGridTemplateColumn>
 
-                <dxg:GridColumn Header="3D" 
-                                FieldName="Has3d" 
-                                Width="40"
-                                MinWidth="40"
-                                MaxWidth="40"
-                                AllowResizing="False"
-                                FixedWidth="True">
-                    <dxg:GridColumn.CellTemplate>
+                <DataGridTemplateColumn Header="3D" Width="40" MinWidth="40">
+                    <DataGridTemplateColumn.CellTemplate>
                         <DataTemplate>
-                            <dxe:CheckEdit IsChecked="{Binding Path=RowData.Row.Has3d, Mode=OneWay}"
+                            <CheckBox IsChecked="{Binding Has3d, Mode=OneWay}"
                                       HorizontalAlignment="Center"
                                       VerticalAlignment="Center"
                                       IsEnabled="False"/>
                         </DataTemplate>
-                    </dxg:GridColumn.CellTemplate>
-                </dxg:GridColumn>
+                    </DataGridTemplateColumn.CellTemplate>
+                </DataGridTemplateColumn>
 
-                <dxg:GridColumn Header="Name" 
-                                FieldName="Name" 
-                                Width="150"
-                                MinWidth="100"/>
+                <DataGridTextColumn Header="Name"
+                                    Binding="{Binding Name}"
+                                    Width="150"
+                                    MinWidth="100"
+                                    IsReadOnly="True"/>
 
-                <dxg:GridColumn Header="Description" 
-                                FieldName="Description" 
-                                Width="*"
-                                MinWidth="200"/>
-            </dxg:GridControl.Columns>
-        </dxg:GridControl>
+                <DataGridTextColumn Header="Description"
+                                    Binding="{Binding Description}"
+                                    Width="*"
+                                    MinWidth="200"
+                                    IsReadOnly="True"/>
+            </DataGrid.Columns>
+        </DataGrid>
 
-        <!-- Bottom Panel with Options and Buttons -->
         <Grid Grid.Row="2" Grid.Column="0" Margin="12,0,12,12">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="*"/>
@@ -156,32 +256,32 @@
             </Grid.ColumnDefinitions>
 
             <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
-                <dxe:CheckEdit x:Name="closeDocumentsCheckBox" 
+                <CheckBox x:Name="closeDocumentsCheckBox"
                           Content="Close library documents after adding"
                           VerticalAlignment="Center"
                           Margin="0,0,20,0"/>
-                <dxe:CheckEdit x:Name="placeInSchematicCheckBox" 
+                <CheckBox x:Name="placeInSchematicCheckBox"
                           Content="Place in schematic"
                           IsChecked="True"
                           VerticalAlignment="Center"/>
             </StackPanel>
 
             <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right">
-                <dx:SimpleButton x:Name="saveModelButton" 
+                <Button x:Name="saveModelButton"
                         Content="Save Model..."
                         Width="100"
                         Height="24"
                         Margin="0,0,8,0"
                         IsEnabled="False"
                         Click="SaveModelButton_Click"/>
-                <dx:SimpleButton x:Name="addToLibraryButton" 
+                <Button x:Name="addToLibraryButton"
                         Content="Add to Library"
                         Width="120"
                         Height="24"
                         Margin="0,0,8,0"
                         IsEnabled="False"
                         Click="AddToLibraryButton_Click"/>
-                <dx:SimpleButton x:Name="cancelButton" 
+                <Button x:Name="cancelButton"
                         Content="Cancel"
                         Width="75"
                         Height="24"
@@ -190,9 +290,8 @@
             </StackPanel>
         </Grid>
 
-        <!-- Side Panel with Preview -->
-        <Border Grid.Row="0" Grid.RowSpan="3" Grid.Column="1" 
-                BorderBrush="{DynamicResource {x:Static SystemColors.ControlDarkBrushKey}}" 
+        <Border Grid.Row="0" Grid.RowSpan="3" Grid.Column="1"
+                BorderBrush="{DynamicResource {x:Static SystemColors.ControlDarkBrushKey}}"
                 BorderThickness="1,0,0,0"
                 Padding="10">
             <Grid>
@@ -203,43 +302,40 @@
                     <RowDefinition Height="*"/>
                 </Grid.RowDefinitions>
 
-                <TextBlock Grid.Row="0" 
-                           Text="Preview" 
-                           FontSize="14" 
+                <TextBlock Grid.Row="0"
+                           Text="Preview"
+                           FontSize="14"
                            FontWeight="SemiBold"
                            Margin="0,0,0,10"/>
 
-                <!-- Thumbnail -->
-                <Viewbox x:Name="thumbnailViewbox" Grid.Row="1" 
-                         MinHeight="50" 
-                         HorizontalAlignment="Center" 
-                         Stretch="Uniform" 
+                <Viewbox x:Name="thumbnailViewbox" Grid.Row="1"
+                         MinHeight="50"
+                         HorizontalAlignment="Center"
+                         Stretch="Uniform"
                          Margin="0,0,0,10">
                     <Image x:Name="thumbnailImage" Height="50" Width="50"/>
                 </Viewbox>
 
-                <!-- Symbol Canvas -->
-                <ScrollViewer x:Name="symbolCanvasView" 
+                <ScrollViewer x:Name="symbolCanvasView"
                               Grid.Row="2"
-                              VerticalAlignment="Stretch" 
-                              HorizontalAlignment="Stretch" 
-                              Margin="0,0,0,10" 
-                              HorizontalScrollBarVisibility="Hidden" 
-                              VerticalScrollBarVisibility="Hidden" 
+                              VerticalAlignment="Stretch"
+                              HorizontalAlignment="Stretch"
+                              Margin="0,0,0,10"
+                              HorizontalScrollBarVisibility="Hidden"
+                              VerticalScrollBarVisibility="Hidden"
                               Background="Black">
-                    <Canvas x:Name="symbolCanvas" Height="100" Width="100" 
+                    <Canvas x:Name="symbolCanvas" Height="100" Width="100"
                             HorizontalAlignment="Left" VerticalAlignment="Top"/>
                 </ScrollViewer>
 
-                <!-- Footprint Canvas -->
-                <ScrollViewer x:Name="footprintCanvasView" 
+                <ScrollViewer x:Name="footprintCanvasView"
                               Grid.Row="3"
-                              VerticalAlignment="Stretch" 
-                              HorizontalAlignment="Stretch" 
-                              HorizontalScrollBarVisibility="Hidden" 
-                              VerticalScrollBarVisibility="Hidden" 
+                              VerticalAlignment="Stretch"
+                              HorizontalAlignment="Stretch"
+                              HorizontalScrollBarVisibility="Hidden"
+                              VerticalScrollBarVisibility="Hidden"
                               Background="Black">
-                    <Canvas x:Name="footprintCanvas" Height="100" Width="100" 
+                    <Canvas x:Name="footprintCanvas" Height="100" Width="100"
                             HorizontalAlignment="Left" VerticalAlignment="Top"/>
                 </ScrollViewer>
             </Grid>

@@ -1,6 +1,7 @@
 ﻿using Altium.Controls;
 using DXP;
 using EasyEDA_Loader;
+using System;
 using System.Runtime.InteropServices;
 
 namespace CSharpPlugin
@@ -11,16 +12,35 @@ namespace CSharpPlugin
     {
         public object InvokePluginFactory(IClient client)
         {
-            if (!client.ProductInfo().SupportsUIFeature("NoGUI", false))
+            EasyEDALoaderModule.Trace("InvokePluginFactory entered.");
+            try
             {
-                IUITheme uiTheme = (client as IUIThemeManager).CurrentUITheme();
-                if (uiTheme != null)
-                    Style.Init(uiTheme.GetHRID(), uiTheme.GetAttributeDictionary());
-                else
-                    Style.Init();
-
+                if (!client.ProductInfo().SupportsUIFeature("NoGUI", false))
+                {
+                    IUITheme uiTheme = (client as IUIThemeManager)?.CurrentUITheme();
+                    if (uiTheme != null)
+                        Style.Init(uiTheme.GetHRID(), uiTheme.GetAttributeDictionary());
+                    else
+                        Style.Init();
+                }
             }
-            return (object)new EasyEDALoaderModule(client);
+            catch (Exception ex)
+            {
+                EasyEDALoaderModule.Trace($"Theme initialization failed: {ex}");
+            }
+
+            try
+            {
+                EasyEDALoaderModule.Trace("Creating EasyEDALoaderModule.");
+                EasyEDALoaderModule module = new EasyEDALoaderModule(client);
+                EasyEDALoaderModule.Trace("Returning EasyEDALoaderModule.");
+                return module;
+            }
+            catch (Exception ex)
+            {
+                EasyEDALoaderModule.Trace($"Module construction failed: {ex}");
+                throw;
+            }
         }
     }
 }

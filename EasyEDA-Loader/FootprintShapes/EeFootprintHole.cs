@@ -1,4 +1,4 @@
-﻿using PCB;
+using PCB;
 using System;
 using System.Collections.Generic;
 using System.Windows;
@@ -15,9 +15,9 @@ namespace EasyEDA_Loader
             var parts = data.Split(new[] { "~" }, StringSplitOptions.None);
             return new EeFootprintHole
             {
-                CenterX = ConvertToMM(double.Parse(parts[1])),
-                CenterY = ConvertToMM(double.Parse(parts[2])),
-                Radius = ConvertToMM(double.Parse(parts[3])),
+                CenterX = ConvertToMM(EeShape.ParseDouble(parts[1])),
+                CenterY = ConvertToMM(EeShape.ParseDouble(parts[2])),
+                Radius = ConvertToMM(EeShape.ParseDouble(parts[3])),
                 Id = parts[4],
                 IsLocked = ParseBoolean(parts[5]),
             };
