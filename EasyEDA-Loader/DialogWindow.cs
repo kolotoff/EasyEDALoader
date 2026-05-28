@@ -27,6 +27,7 @@ namespace EasyEDA_Loader
         private ComponentInfo _currentComponent;
         private EeFootprint3dModel _currentModel;
         private Root _currentRoot;
+        private static readonly char[] PartNumberSeparators = { '\r', '\n', '\t', ' ', ',', ';', '|' };
 
         public List<ComponentSelection> SelectedComponents { get; private set; }
         public bool CloseDocuments => closeDocumentsCheckBox?.IsChecked == true;
@@ -99,10 +100,11 @@ namespace EasyEDA_Loader
             }
         }
 
-        private void SetSearchProgress(bool isVisible, string message = null)
+        private void SetSearchProgress(bool isVisible, string message = null, double? progress = null)
         {
             searchProgressPanel.Visibility = isVisible ? Visibility.Visible : Visibility.Collapsed;
-            searchProgressBar.IsIndeterminate = isVisible;
+            searchProgressBar.IsIndeterminate = isVisible && !progress.HasValue;
+            searchProgressBar.Value = isVisible && progress.HasValue ? progress.Value : 0;
             searchProgressText.Text = isVisible ? (message ?? "Searching...") : string.Empty;
         }
 
@@ -257,36 +259,97 @@ namespace EasyEDA_Loader
             addToLibraryButton.IsEnabled = searchResults.Any(p => p.AddToLibrary);
         }
 
-        private async void SearchButton_Click(object sender, RoutedEventArgs e)
+        private static List<string> ParsePartNumbers(string searchText)
         {
-            if (string.IsNullOrWhiteSpace(searchTextBox.Text))
+            return (searchText ?? string.Empty)
+                .Split(PartNumberSeparators, StringSplitOptions.RemoveEmptyEntries)
+                .Select(partNumber => partNumber.Trim())
+                .Where(partNumber => partNumber.Length > 0)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+        }
+
+        private static bool HasImportReadyModels(EasyedaApi.PartInfo partInfo)
+        {
+            return partInfo?.HasFootprint == true && partInfo.Has3d;
+        }
+
+        private List<string> GetPartNumbersOrShowMessage()
+        {
+            var partNumbers = ParsePartNumbers(searchTextBox.Text);
+            if (partNumbers.Count == 0)
+                MessageBox.Show("Please enter at least one part number to search.", "Search Required", MessageBoxButton.OK, MessageBoxImage.Information);
+
+            return partNumbers;
+        }
+
+        private async Task<List<PartInfoViewModel>> SearchPartNumbersAsync(IReadOnlyList<string> partNumbers, bool addToLibrary)
+        {
+            var viewModels = new List<PartInfoViewModel>();
+            var seenParts = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            for (var i = 0; i < partNumbers.Count; i++)
             {
-                MessageBox.Show("Please enter a part number to search.", "Search Required", MessageBoxButton.OK, MessageBoxImage.Information);
-                return;
+                var partNumber = partNumbers[i];
+                var startProgress = partNumbers.Count > 0 ? (i * 100.0) / partNumbers.Count : 0;
+                SetSearchProgress(true, $"Searching {i + 1}/{partNumbers.Count}: {partNumber}", startProgress);
+
+                var results = await Task.Run(() => Api.SearchProductInfoAsync(partNumber));
+                if (results == null || results.Count == 0)
+                    continue;
+
+                foreach (var part in results)
+                {
+                    var key = part.Part ?? part.Name ?? $"{partNumber}:{viewModels.Count}";
+                    if (!seenParts.Add(key))
+                        continue;
+
+                    viewModels.Add(new PartInfoViewModel(part, this)
+                    {
+                        AddToLibrary = addToLibrary && HasImportReadyModels(part)
+                    });
+                }
+
+                var endProgress = ((i + 1) * 100.0) / partNumbers.Count;
+                SetSearchProgress(true, $"Searched {i + 1}/{partNumbers.Count}", endProgress);
             }
 
+            return viewModels;
+        }
+
+        private void AddSearchResults(IEnumerable<PartInfoViewModel> viewModels)
+        {
+            foreach (var viewModel in viewModels)
+                searchResults.Add(viewModel);
+
+            if (searchResults.Count > 0)
+                resultsGrid.SelectedItem = searchResults[0];
+
+            UpdateAddButtonState();
+        }
+
+        private async void SearchButton_Click(object sender, RoutedEventArgs e)
+        {
+            var partNumbers = GetPartNumbersOrShowMessage();
+            if (partNumbers.Count == 0)
+                return;
+
             searchButton.IsEnabled = false;
+            importButton.IsEnabled = false;
             addToLibraryButton.IsEnabled = false;
             searchResults.Clear();
-            SetSearchProgress(true, "Searching EasyEDA...");
+            SetSearchProgress(true, "Searching EasyEDA...", 0);
 
             try
             {
                 Mouse.OverrideCursor = Cursors.Wait;
 
-                // Run the API call on a background thread
-                var searchText = searchTextBox.Text;
-                var results = await Task.Run(() => Api.SearchProductInfoAsync(searchText));
+                var results = await SearchPartNumbersAsync(partNumbers, true);
 
-                // Add results on the UI thread
-                if (results != null && results.Count > 0)
+                if (results.Count > 0)
                 {
-                    SetSearchProgress(true, "Preparing results...");
-
-                    foreach (var part in results)
-                    {
-                        searchResults.Add(new PartInfoViewModel(part, this));
-                    }
+                    SetSearchProgress(true, "Preparing results...", 100);
+                    AddSearchResults(results);
                 }
                 else
                 {
@@ -303,75 +366,152 @@ namespace EasyEDA_Loader
                 SetSearchProgress(false);
                 Mouse.OverrideCursor = null;
                 searchButton.IsEnabled = true;
+                importButton.IsEnabled = true;
             }
         }
 
         private void SearchTextBox_KeyDown(object sender, KeyEventArgs e)
         {
-            if (e.Key == Key.Enter)
+            if (e.Key == Key.Enter && (Keyboard.Modifiers & ModifierKeys.Control) == ModifierKeys.Control)
             {
                 e.Handled = true;
                 SearchButton_Click(sender, e);
             }
         }
 
-        private async void AddToLibraryButton_Click(object sender, RoutedEventArgs e)
+        private async Task LoadComponentsForImportAsync(IReadOnlyList<PartInfoViewModel> selectedParts)
         {
-            var selectedParts = searchResults.Where(p => p.AddToLibrary).ToList();
-            
-            if (selectedParts.Count == 0)
+            SelectedComponents.Clear();
+
+            for (var i = 0; i < selectedParts.Count; i++)
             {
-                MessageBox.Show("Please select at least one component to add.", "No Selection", MessageBoxButton.OK, MessageBoxImage.Information);
-                return;
+                var partViewModel = selectedParts[i];
+                var partInfo = partViewModel.PartInfo;
+                var progress = selectedParts.Count > 0 ? (i * 100.0) / selectedParts.Count : 0;
+                SetSearchProgress(true, $"Loading component {i + 1}/{selectedParts.Count}: {partInfo.Part}", progress);
+
+                var root = await Task.Run(() => Api.GetComponentJsonAsync(partInfo.Part, cts.Token));
+
+                if (root?.Component != null)
+                {
+                    var component = root.Component;
+                    var has3dModel = component.PackageDetail?.Footprint?.GetModel() != null;
+                    var hasFootprint = component.PackageDetail?.Footprint != null;
+
+                    partViewModel.HasFootprint = hasFootprint;
+                    partViewModel.Has3d = has3dModel;
+
+                    SelectedComponents.Add(new ComponentSelection
+                    {
+                        PartInfo = partInfo,
+                        Root = root,
+                        Include3dModel = has3dModel,
+                        IncludeFootprint = hasFootprint
+                    });
+                }
             }
 
-            addToLibraryButton.IsEnabled = false;
-            cancelButton.IsEnabled = false;
+            if (SelectedComponents.Count == 0)
+                throw new InvalidOperationException("No component data was loaded.");
+
+            SetSearchProgress(true, "Import ready.", 100);
+        }
+
+        private void SetImportControlsEnabled(bool isEnabled)
+        {
+            searchButton.IsEnabled = isEnabled;
+            importButton.IsEnabled = isEnabled;
+            addToLibraryButton.IsEnabled = isEnabled && searchResults.Any(p => p.AddToLibrary);
+            cancelButton.IsEnabled = isEnabled;
+        }
+
+        private async void ImportButton_Click(object sender, RoutedEventArgs e)
+        {
+            var partNumbers = GetPartNumbersOrShowMessage();
+            if (partNumbers.Count == 0)
+                return;
+
+            var closeDialog = false;
+            SetImportControlsEnabled(false);
+            searchResults.Clear();
 
             try
             {
                 Mouse.OverrideCursor = Cursors.Wait;
-                SelectedComponents.Clear();
+                SetSearchProgress(true, "Searching EasyEDA...", 0);
 
-                foreach (var partViewModel in selectedParts)
+                var results = await SearchPartNumbersAsync(partNumbers, true);
+                if (results.Count == 0)
                 {
-                    var partInfo = partViewModel.PartInfo;
-
-                    // Fetch component data
-                    var root = await Task.Run(() => Api.GetComponentJsonAsync(partInfo.Part, cts.Token));
-
-                    if (root?.Component != null)
-                    {
-                        var component = root.Component;
-                        var has3dModel = component.PackageDetail?.Footprint?.GetModel() != null;
-                        var hasFootprint = component.PackageDetail?.Footprint != null;
-
-                        // Update the view model with actual data
-                        partViewModel.HasFootprint = hasFootprint;
-                        partViewModel.Has3d = has3dModel;
-
-                        SelectedComponents.Add(new ComponentSelection
-                        {
-                            PartInfo = partInfo,
-                            Root = root,
-                            Include3dModel = has3dModel,
-                            IncludeFootprint = hasFootprint
-                        });
-                    }
+                    MessageBox.Show("No results found.", "Import", MessageBoxButton.OK, MessageBoxImage.Information);
+                    return;
                 }
 
+                SetSearchProgress(true, "Preparing import...", 100);
+                AddSearchResults(results);
+
+                var selectedResults = results.Where(result => result.AddToLibrary).ToList();
+                if (selectedResults.Count == 0)
+                {
+                    MessageBox.Show("No results with both footprint and 3D body were found.", "Import", MessageBoxButton.OK, MessageBoxImage.Information);
+                    return;
+                }
+
+                await LoadComponentsForImportAsync(selectedResults);
+
+                closeDialog = true;
                 DialogResult = true;
                 Close();
             }
             catch (Exception ex)
             {
                 MessageBox.Show($"Failed to load component data: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
-                addToLibraryButton.IsEnabled = true;
-                cancelButton.IsEnabled = true;
             }
             finally
             {
                 Mouse.OverrideCursor = null;
+                if (!closeDialog)
+                {
+                    SetSearchProgress(false);
+                    SetImportControlsEnabled(true);
+                }
+            }
+        }
+
+        private async void AddToLibraryButton_Click(object sender, RoutedEventArgs e)
+        {
+            var selectedParts = searchResults.Where(p => p.AddToLibrary).ToList();
+
+            if (selectedParts.Count == 0)
+            {
+                MessageBox.Show("Please select at least one component to add.", "No Selection", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+
+            var closeDialog = false;
+            SetImportControlsEnabled(false);
+
+            try
+            {
+                Mouse.OverrideCursor = Cursors.Wait;
+                await LoadComponentsForImportAsync(selectedParts);
+
+                closeDialog = true;
+                DialogResult = true;
+                Close();
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Failed to load component data: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+            finally
+            {
+                Mouse.OverrideCursor = null;
+                if (!closeDialog)
+                {
+                    SetSearchProgress(false);
+                    SetImportControlsEnabled(true);
+                }
             }
         }
 

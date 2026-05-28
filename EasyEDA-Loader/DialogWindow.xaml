@@ -173,18 +173,22 @@
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*"/>
                     <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
                 </Grid.ColumnDefinitions>
 
-                <TextBlock Grid.Row="0" Grid.ColumnSpan="2"
-                           Text="Enter part number to search (e.g. C2040):"
+                <TextBlock Grid.Row="0" Grid.ColumnSpan="3"
+                           Text="Enter part number(s) to search or import (e.g. C2040, C25804):"
                            Margin="0,0,0,8"/>
 
                 <TextBox x:Name="searchTextBox"
                          Grid.Row="1"
                          Grid.Column="0"
                          Margin="0,0,8,0"
-                         VerticalContentAlignment="Center"
-                         Height="24"
+                         AcceptsReturn="True"
+                         TextWrapping="Wrap"
+                         VerticalScrollBarVisibility="Auto"
+                         VerticalContentAlignment="Top"
+                         Height="52"
                          KeyDown="SearchTextBox_KeyDown"/>
 
                 <Button x:Name="searchButton"
@@ -192,12 +196,21 @@
                         Grid.Column="1"
                         Content="Search"
                         Width="75"
-                        Height="24"
+                        Height="52"
+                        Margin="0,0,8,0"
                         Click="SearchButton_Click"/>
+
+                <Button x:Name="importButton"
+                        Grid.Row="1"
+                        Grid.Column="2"
+                        Content="Import"
+                        Width="75"
+                        Height="52"
+                        Click="ImportButton_Click"/>
 
                 <StackPanel x:Name="searchProgressPanel"
                             Grid.Row="2"
-                            Grid.ColumnSpan="2"
+                            Grid.ColumnSpan="3"
                             Margin="0,8,0,0"
                             Visibility="Collapsed">
                     <ProgressBar x:Name="searchProgressBar"
