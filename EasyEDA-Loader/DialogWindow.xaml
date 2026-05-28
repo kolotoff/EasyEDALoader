@@ -262,7 +262,7 @@
                           Margin="0,0,20,0"/>
                 <CheckBox x:Name="placeInSchematicCheckBox"
                           Content="Place in schematic"
-                          IsChecked="True"
+                          IsChecked="False"
                           VerticalAlignment="Center"/>
             </StackPanel>
 
