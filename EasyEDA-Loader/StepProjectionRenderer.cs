@@ -1,11 +1,12 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Globalization;
 using System.IO;
-using System.IO.Compression;
 using System.Linq;
 using System.Text;
 using System.Text.RegularExpressions;
+using SkiaSharp;
 
 namespace EasyEDA_Loader
 {
@@ -29,6 +30,8 @@ namespace EasyEDA_Loader
         private const double MarkedDetectionRegionPaddingRatio = 0.15;
         private const int MarkedDetectionRegionMinPaddingPixels = 3;
         private const int MarkedDetectionRegionMaxPaddingPixels = 9;
+        private const int RenderSupersampling = 2;
+        private const string F3DBackgroundColor = "#fafafa";
 
         private static readonly ViewSpec[] Views =
         {
@@ -84,7 +87,7 @@ namespace EasyEDA_Loader
             {
                 ProjectionTransform transform = ProjectionTransform.Create(drawingModel.Bounds, view, options);
                 string outputPath = Path.Combine(outputDirectory, modelName + "__" + view.Name + ".png");
-                RenderProjection(drawingModel, view, transform, outputPath, options);
+                RenderProjection(inputPath, drawingModel, view, transform, outputPath, options);
                 outputFiles.Add(outputPath);
 
                 if (options.WriteMetadata)
@@ -146,7 +149,7 @@ namespace EasyEDA_Loader
 
                 ProjectionTransform transform = ProjectionTransform.Create(drawingModel.Bounds, view, options);
                 string outputPath = Path.Combine(outputDirectory, modelName + "__" + view.Name + ".png");
-                RenderProjection(drawingModel, view, transform, outputPath, options, viewHighlights);
+                RenderProjection(inputPath, drawingModel, view, transform, outputPath, options, viewHighlights);
                 outputFiles.Add(outputPath);
 
                 if (options.WriteMetadata)
@@ -178,6 +181,7 @@ namespace EasyEDA_Loader
         public static IReadOnlyList<string> ViewNames => Views.Select(v => v.Name).ToList();
 
         private static void RenderProjection(
+            string inputPath,
             ProjectionModel model,
             ViewSpec view,
             ProjectionTransform transform,
@@ -185,8 +189,35 @@ namespace EasyEDA_Loader
             StepProjectionOptions options,
             IReadOnlyList<ProjectionHighlight> highlights = null)
         {
-            var image = new RgbaImage(options.ImageSizePixels, options.ImageSizePixels);
+            if (TryRenderWithF3D(inputPath, outputPath, view, options))
+            {
+                if (highlights != null && highlights.Count > 0)
+                {
+                    var renderedImage = RgbaImage.LoadPng(outputPath);
+                    DrawDetectionHighlights(renderedImage, view, transform, highlights);
+                    renderedImage.SavePng(outputPath);
+                }
+
+                return;
+            }
+
+            int scale = Math.Max(1, RenderSupersampling);
+            StepProjectionOptions renderOptions = scale == 1
+                ? options
+                : new StepProjectionOptions
+                {
+                    ImageSizePixels = options.ImageSizePixels * scale,
+                    PaddingPixels = options.PaddingPixels * scale,
+                    WriteMetadata = options.WriteMetadata
+                };
+            ProjectionTransform renderTransform = scale == 1
+                ? transform
+                : ProjectionTransform.Create(model.Bounds, view, renderOptions);
+
+            var image = new RgbaImage(renderOptions.ImageSizePixels, renderOptions.ImageSizePixels);
             image.Clear(new Rgba(250, 250, 250, 255));
+            double[] zBuffer = CreateDepthBuffer(image.Width, image.Height);
+            double lineDepthTolerance = Math.Max(0.000001, model.Bounds.Size.Get(view.DepthAxis) * 0.00001);
 
             var sortedFaces = model.Faces
                 .Where(f => f.Points.Count >= 2)
@@ -197,20 +228,139 @@ namespace EasyEDA_Loader
             foreach (ProjectionFace face in sortedFaces)
             {
                 Rgba fill = Shade(face.Color, face.Normal, view);
-                var polygons = BuildFillPolygons(face, transform);
+                var polygons = BuildFillPolygons(face, renderTransform);
+                DepthPlane depthPlane = DepthPlane.Create(face, view);
 
                 if (polygons.Count > 0)
-                    image.FillPolygonsEvenOdd(polygons, fill);
+                    image.FillPolygonsEvenOdd(
+                        polygons,
+                        fill,
+                        zBuffer,
+                        (x, y) => depthPlane.DepthAtPixel(x + 0.5, y + 0.5, renderTransform, view));
 
                 Rgba line = ContrastLine(fill);
                 foreach (ProjectionLoop loop in face.Loops)
                 {
-                    DrawLoop(image, loop.Points, transform, line);
+                    DrawLoop(image, loop.Points, renderTransform, view, depthPlane, zBuffer, line, lineDepthTolerance);
                 }
             }
 
+            if (scale > 1)
+                image = image.Downsample(options.ImageSizePixels, options.ImageSizePixels);
+
             DrawDetectionHighlights(image, view, transform, highlights);
             image.SavePng(outputPath);
+        }
+
+        private static bool TryRenderWithF3D(
+            string inputPath,
+            string outputPath,
+            ViewSpec view,
+            StepProjectionOptions options)
+        {
+            string executable = FindF3DConsoleExecutable();
+            if (string.IsNullOrEmpty(executable))
+                return false;
+
+            if (!File.Exists(inputPath))
+                return false;
+
+            string extension = Path.GetExtension(inputPath);
+            if (!string.Equals(extension, ".step", StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(extension, ".stp", StringComparison.OrdinalIgnoreCase))
+                return false;
+
+            var startInfo = new ProcessStartInfo
+            {
+                FileName = executable,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardError = true,
+                RedirectStandardOutput = true
+            };
+
+            startInfo.ArgumentList.Add("--no-config");
+            startInfo.ArgumentList.Add("--verbose=error");
+            startInfo.ArgumentList.Add("--output");
+            startInfo.ArgumentList.Add(outputPath);
+            startInfo.ArgumentList.Add("--resolution");
+            startInfo.ArgumentList.Add(options.ImageSizePixels.ToString(CultureInfo.InvariantCulture) + "," + options.ImageSizePixels.ToString(CultureInfo.InvariantCulture));
+            startInfo.ArgumentList.Add("--background-color");
+            startInfo.ArgumentList.Add(F3DBackgroundColor);
+            startInfo.ArgumentList.Add("--camera-orthographic");
+            startInfo.ArgumentList.Add("--anti-aliasing=fxaa");
+            startInfo.ArgumentList.Add("--ambient-occlusion");
+            startInfo.ArgumentList.Add("--scalar-coloring");
+            startInfo.ArgumentList.Add("--coloring-by-cells");
+            startInfo.ArgumentList.Add("--coloring-array=Colors");
+            startInfo.ArgumentList.Add("--coloring-component=-2");
+            AddF3DViewArguments(startInfo.ArgumentList, view);
+            startInfo.ArgumentList.Add(inputPath);
+
+            using (var process = Process.Start(startInfo))
+            {
+                if (process == null)
+                    return false;
+
+                process.WaitForExit();
+                if (process.ExitCode != 0)
+                    return false;
+            }
+
+            return File.Exists(outputPath) && new FileInfo(outputPath).Length > 0;
+        }
+
+        private static void AddF3DViewArguments(System.Collections.ObjectModel.Collection<string> arguments, ViewSpec view)
+        {
+            switch (view.Name)
+            {
+                case "x_plus":
+                    arguments.Add("--camera-direction=-1,0,0");
+                    arguments.Add("--up=+Z");
+                    break;
+                case "x_minus":
+                    arguments.Add("--camera-direction=1,0,0");
+                    arguments.Add("--up=+Z");
+                    break;
+                case "y_plus":
+                    arguments.Add("--camera-direction=0,-1,0");
+                    arguments.Add("--up=+Z");
+                    break;
+                case "y_minus":
+                    arguments.Add("--camera-direction=0,1,0");
+                    arguments.Add("--up=+Z");
+                    break;
+                case "z_plus":
+                    arguments.Add("--camera-direction=0,0,-1");
+                    arguments.Add("--up=+Y");
+                    break;
+                case "z_minus":
+                    arguments.Add("--camera-direction=0,0,1");
+                    arguments.Add("--up=+Y");
+                    break;
+            }
+        }
+
+        private static string FindF3DConsoleExecutable()
+        {
+            string configuredPath = Environment.GetEnvironmentVariable("STEPCLEANER_F3D_CONSOLE");
+            if (!string.IsNullOrWhiteSpace(configuredPath) && File.Exists(configuredPath))
+                return configuredPath;
+
+            string programFiles = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
+            var candidates = new[]
+            {
+                Path.Combine(programFiles, "F3D", "bin", "f3d-console.exe"),
+                "f3d-console.exe"
+            };
+
+            foreach (string candidate in candidates)
+            {
+                if (File.Exists(candidate))
+                    return candidate;
+            }
+
+            return null;
         }
 
         private static List<ProjectionHighlight> BuildDetectionHighlights(
@@ -553,6 +703,103 @@ namespace EasyEDA_Loader
                 image.DrawLine(previous.X, previous.Y, first.X, first.Y, color);
         }
 
+        private static void DrawLoop(
+            RgbaImage image,
+            List<Vec3d> points,
+            ProjectionTransform transform,
+            ViewSpec view,
+            DepthPlane depthPlane,
+            double[] zBuffer,
+            Rgba color,
+            double depthTolerance)
+        {
+            if (points.Count < 2)
+                return;
+
+            Point2i previous = transform.Project(points[0]);
+            for (int i = 1; i < points.Count; i++)
+            {
+                Point2i current = transform.Project(points[i]);
+                DrawLineDepthTested(image, previous.X, previous.Y, current.X, current.Y, transform, view, depthPlane, zBuffer, color, depthTolerance);
+                previous = current;
+            }
+
+            Point2i first = transform.Project(points[0]);
+            if (first.X != previous.X || first.Y != previous.Y)
+                DrawLineDepthTested(image, previous.X, previous.Y, first.X, first.Y, transform, view, depthPlane, zBuffer, color, depthTolerance);
+        }
+
+        private static void DrawLineDepthTested(
+            RgbaImage image,
+            int x0,
+            int y0,
+            int x1,
+            int y1,
+            ProjectionTransform transform,
+            ViewSpec view,
+            DepthPlane depthPlane,
+            double[] zBuffer,
+            Rgba color,
+            double depthTolerance)
+        {
+            int dx = Math.Abs(x1 - x0);
+            int sx = x0 < x1 ? 1 : -1;
+            int dy = -Math.Abs(y1 - y0);
+            int sy = y0 < y1 ? 1 : -1;
+            int err = dx + dy;
+
+            while (true)
+            {
+                DrawDepthTestedPixel(image, x0, y0, transform, view, depthPlane, zBuffer, color, depthTolerance);
+                if (x0 == x1 && y0 == y1)
+                    break;
+
+                int e2 = 2 * err;
+                if (e2 >= dy)
+                {
+                    err += dy;
+                    x0 += sx;
+                }
+
+                if (e2 <= dx)
+                {
+                    err += dx;
+                    y0 += sy;
+                }
+            }
+        }
+
+        private static void DrawDepthTestedPixel(
+            RgbaImage image,
+            int x,
+            int y,
+            ProjectionTransform transform,
+            ViewSpec view,
+            DepthPlane depthPlane,
+            double[] zBuffer,
+            Rgba color,
+            double depthTolerance)
+        {
+            if (x < 0 || x >= image.Width || y < 0 || y >= image.Height)
+                return;
+
+            int offset = y * image.Width + x;
+            double depth = depthPlane.DepthAtPixel(x + 0.5, y + 0.5, transform, view);
+            if (depth + depthTolerance < zBuffer[offset])
+                return;
+
+            image.BlendPixel(x, y, color);
+        }
+
+        private static double[] CreateDepthBuffer(int width, int height)
+        {
+            var zBuffer = new double[width * height];
+            for (int i = 0; i < zBuffer.Length; i++)
+                zBuffer[i] = double.NegativeInfinity;
+
+            return zBuffer;
+        }
+
         private static double ProjectedArea(List<Vec3d> points, ProjectionTransform transform)
         {
             if (points.Count < 3)
@@ -570,9 +817,9 @@ namespace EasyEDA_Loader
             return area / 2.0;
         }
 
-        private static List<List<Point2i>> BuildFillPolygons(ProjectionFace face, ProjectionTransform transform)
+        private static List<List<Point2d>> BuildFillPolygons(ProjectionFace face, ProjectionTransform transform)
         {
-            var polygons = new List<List<Point2i>>();
+            var polygons = new List<List<Point2d>>();
             foreach (ProjectionLoop loop in face.Loops)
             {
                 var polygon = BuildLoopPolygon(loop, transform);
@@ -594,29 +841,29 @@ namespace EasyEDA_Loader
             if (hull.Count < 3 || Math.Abs(Area(hull)) < 0.5)
                 return polygons;
 
-            polygons.Add(hull.Select(p => new Point2i(
-                (int)Math.Round(p.X, MidpointRounding.AwayFromZero),
-                (int)Math.Round(p.Y, MidpointRounding.AwayFromZero))).ToList());
+            polygons.Add(hull);
             return polygons;
         }
 
-        private static List<Point2i> BuildLoopPolygon(ProjectionLoop loop, ProjectionTransform transform)
+        private static List<Point2d> BuildLoopPolygon(ProjectionLoop loop, ProjectionTransform transform)
         {
-            var polygon = new List<Point2i>();
+            var polygon = new List<Point2d>();
             foreach (Vec3d point in loop.Points)
             {
-                Point2i projected = transform.Project(point);
-                if (polygon.Count == 0 || polygon[polygon.Count - 1].X != projected.X || polygon[polygon.Count - 1].Y != projected.Y)
+                Point2d projected = transform.ProjectDouble(point);
+                if (polygon.Count == 0 ||
+                    Math.Abs(polygon[polygon.Count - 1].X - projected.X) >= 0.001 ||
+                    Math.Abs(polygon[polygon.Count - 1].Y - projected.Y) >= 0.001)
                     polygon.Add(projected);
             }
 
             while (polygon.Count > 1 &&
-                polygon[0].X == polygon[polygon.Count - 1].X &&
-                polygon[0].Y == polygon[polygon.Count - 1].Y)
+                Math.Abs(polygon[0].X - polygon[polygon.Count - 1].X) < 0.001 &&
+                Math.Abs(polygon[0].Y - polygon[polygon.Count - 1].Y) < 0.001)
                 polygon.RemoveAt(polygon.Count - 1);
 
             if (polygon.Count < 3 || Math.Abs(Area(polygon)) < 0.5)
-                return new List<Point2i>();
+                return new List<Point2d>();
 
             return polygon;
         }
@@ -701,7 +948,7 @@ namespace EasyEDA_Loader
                 ? 0.25
                 : Math.Abs(normal.Get(view.DepthAxis));
 
-            double factor = 0.72 + 0.28 * Math.Min(1.0, viewAlignment);
+            double factor = 0.58 + 0.30 * Math.Min(1.0, viewAlignment);
             return new Rgba(
                 ClampToByte(color.R * 255.0 * factor),
                 ClampToByte(color.G * 255.0 * factor),
@@ -712,9 +959,12 @@ namespace EasyEDA_Loader
         private static Rgba ContrastLine(Rgba fill)
         {
             double luminance = (0.2126 * fill.R + 0.7152 * fill.G + 0.0722 * fill.B) / 255.0;
+            if (luminance <= 0.18)
+                return new Rgba(10, 10, 10, 60);
+
             return luminance >= 0.55
-                ? new Rgba(30, 30, 30, 145)
-                : new Rgba(230, 230, 230, 155);
+                ? new Rgba(25, 25, 25, 120)
+                : new Rgba(20, 20, 20, 85);
         }
 
         private static byte ClampToByte(double value)
@@ -988,9 +1238,9 @@ namespace EasyEDA_Loader
                 }
                 else
                 {
-                    int curveId = edgeCurve.References.FirstOrDefault(id => id != 0 && step.GetTypeName(id).Contains("B_SPLINE_CURVE"));
-                    if (curveId != 0)
-                        AppendPolyline(edgePoints, step.GetReferencedPoints(curveId, includeSurface: true));
+                    int curveId = edgeCurve.References.FirstOrDefault(id => step.IsSplineCurve(id));
+                    if (curveId != 0 && step.TryGetSplineCurveSamples(curveId, hasStartPoint, startPoint, hasEndPoint, endPoint, out List<Vec3d> splinePoints))
+                        AppendPolyline(edgePoints, splinePoints);
                 }
 
                 if (hasEndPoint)
@@ -1130,6 +1380,15 @@ namespace EasyEDA_Loader
             private static readonly Regex CircleRegex = new Regex(
                 @"CIRCLE\s*\(\s*(?:'[^']*'|\$)\s*,\s*#\d+\s*,\s*([-+0-9.Ee]+)\s*\)",
                 RegexOptions.Compiled);
+            private static readonly Regex SplineDegreeWithKnotsRegex = new Regex(
+                @"B_SPLINE_CURVE_WITH_KNOTS\s*\(\s*(?:'[^']*'|\$)\s*,\s*(\d+)",
+                RegexOptions.Compiled | RegexOptions.IgnoreCase);
+            private static readonly Regex SplineDegreeRegex = new Regex(
+                @"B_SPLINE_CURVE\s*\(\s*(\d+)\s*,",
+                RegexOptions.Compiled | RegexOptions.IgnoreCase);
+            private static readonly Regex RationalWeightsRegex = new Regex(
+                @"RATIONAL_B_SPLINE_CURVE\s*\(\s*\(([^)]*)\)",
+                RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
             private readonly Dictionary<int, ColorRgb?> _colorCache = new Dictionary<int, ColorRgb?>();
             private readonly Dictionary<string, List<Vec3d>> _pointListCache = new Dictionary<string, List<Vec3d>>();
@@ -1293,7 +1552,7 @@ namespace EasyEDA_Loader
                     }
                 }
 
-                int steps = Math.Max(10, Math.Min(128, (int)Math.Ceiling(Math.Abs(delta) / (Math.PI / 24.0))));
+                int steps = Math.Max(24, Math.Min(720, (int)Math.Ceiling(Math.Abs(delta) / (Math.PI / 180.0))));
                 for (int i = 0; i <= steps; i++)
                 {
                     double t = startAngle + delta * i / steps;
@@ -1301,6 +1560,345 @@ namespace EasyEDA_Loader
                 }
 
                 return points.Count > 1;
+            }
+
+            public bool IsSplineCurve(int id)
+            {
+                if (!Entities.TryGetValue(id, out StepEntity entity))
+                    return false;
+
+                return entity.Type.IndexOf("B_SPLINE_CURVE", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    entity.Definition.IndexOf("B_SPLINE_CURVE", StringComparison.OrdinalIgnoreCase) >= 0;
+            }
+
+            public bool TryGetSplineCurveSamples(
+                int curveId,
+                bool hasStartPoint,
+                Vec3d startPoint,
+                bool hasEndPoint,
+                Vec3d endPoint,
+                out List<Vec3d> points)
+            {
+                points = new List<Vec3d>();
+                if (!Entities.TryGetValue(curveId, out StepEntity entity) || !IsSplineCurve(curveId))
+                    return false;
+
+                if (!TryParseSplineDegree(entity.Definition, out int degree) || degree < 1)
+                    return false;
+
+                var controlPoints = new List<Vec3d>();
+                foreach (int pointId in entity.References)
+                {
+                    if (GetTypeName(pointId) == "CARTESIAN_POINT" && TryGetPoint(pointId, out Vec3d point))
+                        controlPoints.Add(point);
+                }
+
+                if (controlPoints.Count < degree + 1)
+                    return false;
+
+                List<double> weights = ParseSplineWeights(entity.Definition, controlPoints.Count);
+                if (!TryParseSplineKnotVector(entity.Definition, controlPoints.Count, degree, out List<double> knots))
+                    knots = BuildOpenUniformKnotVector(controlPoints.Count, degree);
+
+                if (!IsValidKnotVector(knots, controlPoints.Count, degree))
+                    return false;
+
+                double startParameter = knots[degree];
+                double endParameter = knots[controlPoints.Count];
+                if (endParameter - startParameter <= 0.000000000001)
+                    return false;
+
+                int samples = Math.Max(24, Math.Min(720, controlPoints.Count * 24));
+                for (int i = 0; i <= samples; i++)
+                {
+                    double parameter = i == samples
+                        ? endParameter
+                        : startParameter + (endParameter - startParameter) * i / samples;
+                    if (TryEvaluateRationalSpline(controlPoints, weights, knots, degree, parameter, out Vec3d point))
+                        points.Add(point);
+                }
+
+                OrientSamplesToVertices(points, hasStartPoint, startPoint, hasEndPoint, endPoint);
+                return points.Count > 1;
+            }
+
+            private static bool TryParseSplineDegree(string definition, out int degree)
+            {
+                Match match = SplineDegreeWithKnotsRegex.Match(definition);
+                if (!match.Success)
+                    match = SplineDegreeRegex.Match(definition);
+
+                if (match.Success && int.TryParse(match.Groups[1].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out degree))
+                    return true;
+
+                degree = 0;
+                return false;
+            }
+
+            private static bool TryParseSplineKnotVector(
+                string definition,
+                int controlPointCount,
+                int degree,
+                out List<double> knots)
+            {
+                knots = null;
+                int knotSectionStart = definition.IndexOf("B_SPLINE_CURVE_WITH_KNOTS", StringComparison.OrdinalIgnoreCase);
+                if (knotSectionStart < 0)
+                    return false;
+
+                string knotSection = definition.Substring(knotSectionStart);
+                int rationalSectionStart = knotSection.IndexOf("RATIONAL_B_SPLINE_CURVE", StringComparison.OrdinalIgnoreCase);
+                if (rationalSectionStart >= 0)
+                    knotSection = knotSection.Substring(0, rationalSectionStart);
+
+                List<List<double>> numericLists = ExtractNumericLists(knotSection);
+                if (numericLists.Count < 2)
+                    return false;
+
+                List<double> multiplicities = numericLists[0];
+                List<double> uniqueKnots = numericLists[1];
+                if (multiplicities.Count != uniqueKnots.Count)
+                    return false;
+
+                var expanded = new List<double>();
+                for (int i = 0; i < multiplicities.Count; i++)
+                {
+                    int count = (int)Math.Round(multiplicities[i], MidpointRounding.AwayFromZero);
+                    if (count < 1)
+                        return false;
+
+                    for (int j = 0; j < count; j++)
+                        expanded.Add(uniqueKnots[i]);
+                }
+
+                if (!IsValidKnotVector(expanded, controlPointCount, degree))
+                    return false;
+
+                knots = expanded;
+                return true;
+            }
+
+            private static List<double> ParseSplineWeights(string definition, int controlPointCount)
+            {
+                var weights = Enumerable.Repeat(1.0, controlPointCount).ToList();
+                Match match = RationalWeightsRegex.Match(definition);
+                if (!match.Success)
+                    return weights;
+
+                if (!TryParseNumberList(match.Groups[1].Value, out List<double> parsed) || parsed.Count != controlPointCount)
+                    return weights;
+
+                for (int i = 0; i < parsed.Count; i++)
+                    weights[i] = Math.Abs(parsed[i]) > 0.000000000001 ? parsed[i] : 0.000000000001;
+
+                return weights;
+            }
+
+            private static List<double> BuildOpenUniformKnotVector(int controlPointCount, int degree)
+            {
+                int knotCount = controlPointCount + degree + 1;
+                var knots = new List<double>(knotCount);
+                int interiorDenominator = controlPointCount - degree;
+                for (int i = 0; i < knotCount; i++)
+                {
+                    if (i <= degree)
+                        knots.Add(0.0);
+                    else if (i >= controlPointCount)
+                        knots.Add(1.0);
+                    else
+                        knots.Add((double)(i - degree) / Math.Max(1, interiorDenominator));
+                }
+
+                return knots;
+            }
+
+            private static bool IsValidKnotVector(List<double> knots, int controlPointCount, int degree)
+            {
+                if (knots == null || knots.Count != controlPointCount + degree + 1)
+                    return false;
+
+                for (int i = 1; i < knots.Count; i++)
+                {
+                    if (knots[i] + 0.000000000001 < knots[i - 1])
+                        return false;
+                }
+
+                return knots[controlPointCount] - knots[degree] > 0.000000000001;
+            }
+
+            private static bool TryEvaluateRationalSpline(
+                List<Vec3d> controlPoints,
+                List<double> weights,
+                List<double> knots,
+                int degree,
+                double parameter,
+                out Vec3d point)
+            {
+                point = default;
+                int span = FindKnotSpan(controlPoints.Count, degree, knots, parameter);
+                if (span < degree || span >= controlPoints.Count)
+                    return false;
+
+                var workPoints = new Vec3d[degree + 1];
+                var workWeights = new double[degree + 1];
+                for (int j = 0; j <= degree; j++)
+                {
+                    int controlIndex = span - degree + j;
+                    if (controlIndex < 0 || controlIndex >= controlPoints.Count)
+                        return false;
+
+                    double weight = weights[controlIndex];
+                    workPoints[j] = controlPoints[controlIndex] * weight;
+                    workWeights[j] = weight;
+                }
+
+                for (int r = 1; r <= degree; r++)
+                {
+                    for (int j = degree; j >= r; j--)
+                    {
+                        int knotIndex = span - degree + j;
+                        double denominator = knots[knotIndex + degree - r + 1] - knots[knotIndex];
+                        double alpha = Math.Abs(denominator) <= 0.000000000001
+                            ? 0.0
+                            : (parameter - knots[knotIndex]) / denominator;
+                        alpha = Math.Max(0.0, Math.Min(1.0, alpha));
+
+                        workPoints[j] = workPoints[j - 1] * (1.0 - alpha) + workPoints[j] * alpha;
+                        workWeights[j] = workWeights[j - 1] * (1.0 - alpha) + workWeights[j] * alpha;
+                    }
+                }
+
+                if (Math.Abs(workWeights[degree]) <= 0.000000000001)
+                    return false;
+
+                point = workPoints[degree] * (1.0 / workWeights[degree]);
+                return true;
+            }
+
+            private static int FindKnotSpan(int controlPointCount, int degree, List<double> knots, double parameter)
+            {
+                int lastControlIndex = controlPointCount - 1;
+                if (parameter >= knots[lastControlIndex + 1] - 0.000000000001)
+                    return lastControlIndex;
+
+                if (parameter <= knots[degree] + 0.000000000001)
+                    return degree;
+
+                int low = degree;
+                int high = lastControlIndex + 1;
+                int middle = (low + high) / 2;
+                while (parameter < knots[middle] || parameter >= knots[middle + 1])
+                {
+                    if (parameter < knots[middle])
+                        high = middle;
+                    else
+                        low = middle;
+
+                    middle = (low + high) / 2;
+                }
+
+                return middle;
+            }
+
+            private static void OrientSamplesToVertices(
+                List<Vec3d> points,
+                bool hasStartPoint,
+                Vec3d startPoint,
+                bool hasEndPoint,
+                Vec3d endPoint)
+            {
+                if (points.Count < 2 || (!hasStartPoint && !hasEndPoint))
+                    return;
+
+                Vec3d first = points[0];
+                Vec3d last = points[points.Count - 1];
+                double forward = 0.0;
+                double reversed = 0.0;
+
+                if (hasStartPoint)
+                {
+                    forward += Distance(first, startPoint);
+                    reversed += Distance(last, startPoint);
+                }
+
+                if (hasEndPoint)
+                {
+                    forward += Distance(last, endPoint);
+                    reversed += Distance(first, endPoint);
+                }
+
+                if (reversed + 0.0000001 < forward)
+                    points.Reverse();
+            }
+
+            private static List<List<double>> ExtractNumericLists(string text)
+            {
+                var result = new List<List<double>>();
+                var stack = new Stack<int>();
+                bool inString = false;
+
+                for (int i = 0; i < text.Length; i++)
+                {
+                    char c = text[i];
+                    if (c == '\'')
+                    {
+                        if (inString && i + 1 < text.Length && text[i + 1] == '\'')
+                        {
+                            i++;
+                            continue;
+                        }
+
+                        inString = !inString;
+                        continue;
+                    }
+
+                    if (inString)
+                        continue;
+
+                    if (c == '(')
+                    {
+                        stack.Push(i);
+                    }
+                    else if (c == ')' && stack.Count > 0)
+                    {
+                        int start = stack.Pop();
+                        string content = text.Substring(start + 1, i - start - 1);
+                        if (content.IndexOf('(') >= 0 || content.IndexOf(')') >= 0)
+                            continue;
+
+                        if (TryParseNumberList(content, out List<double> numbers))
+                            result.Add(numbers);
+                    }
+                }
+
+                return result;
+            }
+
+            private static bool TryParseNumberList(string text, out List<double> numbers)
+            {
+                numbers = new List<double>();
+                string[] parts = text.Split(',');
+                foreach (string part in parts)
+                {
+                    string trimmed = part.Trim();
+                    if (trimmed.Length == 0)
+                        return false;
+
+                    if (!double.TryParse(trimmed, NumberStyles.Float, CultureInfo.InvariantCulture, out double value))
+                        return false;
+
+                    numbers.Add(value);
+                }
+
+                return numbers.Count > 0;
+            }
+
+            private static double Distance(Vec3d a, Vec3d b)
+            {
+                double dx = a.X - b.X;
+                double dy = a.Y - b.Y;
+                double dz = a.Z - b.Z;
+                return Math.Sqrt(dx * dx + dy * dy + dz * dz);
             }
 
             public List<Vec3d> GetReferencedPoints(int rootId, bool includeSurface)
@@ -1651,6 +2249,62 @@ namespace EasyEDA_Loader
             }
         }
 
+        private struct DepthPlane
+        {
+            private readonly bool _isConstant;
+            private readonly Vec3d _normal;
+            private readonly double _constant;
+            private readonly double _fallbackDepth;
+
+            private DepthPlane(bool isConstant, Vec3d normal, double constant, double fallbackDepth)
+            {
+                _isConstant = isConstant;
+                _normal = normal;
+                _constant = constant;
+                _fallbackDepth = fallbackDepth;
+            }
+
+            public static DepthPlane Create(ProjectionFace face, ViewSpec view)
+            {
+                double fallbackDepth = face.Depth(view);
+                if (face.Points.Count == 0)
+                    return Constant(fallbackDepth);
+
+                Vec3d normal = face.Normal.Normalized();
+                if (normal.Length <= 0.000000001)
+                    return Constant(fallbackDepth);
+
+                if (Math.Abs(normal.Get(view.DepthAxis)) <= 0.000000001)
+                    return Constant(fallbackDepth);
+
+                double constant = -Vec3d.Dot(normal, face.Points[0]);
+                return new DepthPlane(false, normal, constant, fallbackDepth);
+            }
+
+            public double DepthAtPixel(double x, double y, ProjectionTransform transform, ViewSpec view)
+            {
+                if (_isConstant)
+                    return _fallbackDepth;
+
+                double u = transform.UnprojectU(x) * view.USign;
+                double v = transform.UnprojectV(y) * view.VSign;
+                double denominator = _normal.Get(view.DepthAxis);
+                if (Math.Abs(denominator) <= 0.000000001)
+                    return _fallbackDepth;
+
+                double known = _constant +
+                    _normal.Get(view.UAxis) * u +
+                    _normal.Get(view.VAxis) * v;
+                double depthCoordinate = -known / denominator;
+                return depthCoordinate * view.DepthSign;
+            }
+
+            private static DepthPlane Constant(double depth)
+            {
+                return new DepthPlane(true, default, 0.0, depth);
+            }
+        }
+
         private sealed class ProjectionTransform
         {
             public double Scale { get; private set; }
@@ -1713,6 +2367,16 @@ namespace EasyEDA_Loader
                 return new Point2d(x, y);
             }
 
+            public double UnprojectU(double x)
+            {
+                return UMin + (x - Padding) / Scale;
+            }
+
+            public double UnprojectV(double y)
+            {
+                return VMin + (ImageSize - Padding - y) / Scale;
+            }
+
             public Rect2i ProjectBounds(Bounds bounds, double paddingPixels)
             {
                 double u0 = bounds.Min.Get(View.UAxis) * View.USign;
@@ -1740,69 +2404,46 @@ namespace EasyEDA_Loader
 
         private sealed class RgbaImage
         {
-            private readonly byte[] _pixels;
+            private readonly SKBitmap _bitmap;
+            private readonly SKCanvas _canvas;
 
             public RgbaImage(int width, int height)
             {
                 Width = width;
                 Height = height;
-                _pixels = new byte[width * height * 4];
+                _bitmap = new SKBitmap(width, height, SKColorType.Rgba8888, SKAlphaType.Premul);
+                _canvas = new SKCanvas(_bitmap);
+            }
+
+            private RgbaImage(SKBitmap bitmap)
+            {
+                _bitmap = bitmap;
+                Width = bitmap.Width;
+                Height = bitmap.Height;
+                _canvas = new SKCanvas(_bitmap);
             }
 
             public int Width { get; private set; }
             public int Height { get; private set; }
 
+            public static RgbaImage LoadPng(string path)
+            {
+                using (var stream = File.OpenRead(path))
+                {
+                    SKBitmap bitmap = SKBitmap.Decode(stream);
+                    if (bitmap == null)
+                        throw new InvalidDataException("Could not decode PNG image: " + path);
+
+                    return new RgbaImage(bitmap);
+                }
+            }
+
             public void Clear(Rgba color)
             {
-                for (int i = 0; i < _pixels.Length; i += 4)
-                {
-                    _pixels[i] = color.R;
-                    _pixels[i + 1] = color.G;
-                    _pixels[i + 2] = color.B;
-                    _pixels[i + 3] = color.A;
-                }
+                _canvas.Clear(ToSkColor(color));
             }
 
-            public void FillPolygon(List<Point2i> points, Rgba color)
-            {
-                if (points.Count < 3)
-                    return;
-
-                int minY = Math.Max(0, points.Min(p => p.Y));
-                int maxY = Math.Min(Height - 1, points.Max(p => p.Y));
-                var nodes = new List<int>();
-
-                for (int y = minY; y <= maxY; y++)
-                {
-                    nodes.Clear();
-                    int j = points.Count - 1;
-                    for (int i = 0; i < points.Count; i++)
-                    {
-                        int yi = points[i].Y;
-                        int yj = points[j].Y;
-                        if ((yi < y && yj >= y) || (yj < y && yi >= y))
-                        {
-                            int xi = points[i].X;
-                            int xj = points[j].X;
-                            int x = xi + (int)Math.Round((double)(y - yi) / (yj - yi) * (xj - xi), MidpointRounding.AwayFromZero);
-                            nodes.Add(x);
-                        }
-
-                        j = i;
-                    }
-
-                    nodes.Sort();
-                    for (int i = 0; i + 1 < nodes.Count; i += 2)
-                    {
-                        int startX = Math.Max(0, nodes[i]);
-                        int endX = Math.Min(Width - 1, nodes[i + 1]);
-                        for (int x = startX; x <= endX; x++)
-                            BlendPixel(x, y, color);
-                    }
-                }
-            }
-
-            public void FillPolygonsEvenOdd(List<List<Point2i>> polygons, Rgba color)
+            public void FillPolygonsEvenOdd(List<List<Point2d>> polygons, Rgba color)
             {
                 polygons = polygons
                     .Where(polygon => polygon != null && polygon.Count >= 3)
@@ -1810,69 +2451,33 @@ namespace EasyEDA_Loader
                 if (polygons.Count == 0)
                     return;
 
-                int minY = Math.Max(0, polygons.Min(polygon => polygon.Min(point => point.Y)));
-                int maxY = Math.Min(Height - 1, polygons.Max(polygon => polygon.Max(point => point.Y)));
-                var nodes = new List<int>();
+                using (SKPath path = BuildPath(polygons))
+                using (SKPaint paint = CreatePaint(color, SKPaintStyle.Fill))
+                    _canvas.DrawPath(path, paint);
+            }
 
-                for (int y = minY; y <= maxY; y++)
-                {
-                    nodes.Clear();
-                    foreach (var polygon in polygons)
-                    {
-                        int j = polygon.Count - 1;
-                        for (int i = 0; i < polygon.Count; i++)
-                        {
-                            int yi = polygon[i].Y;
-                            int yj = polygon[j].Y;
-                            if ((yi < y && yj >= y) || (yj < y && yi >= y))
-                            {
-                                int xi = polygon[i].X;
-                                int xj = polygon[j].X;
-                                int x = xi + (int)Math.Round((double)(y - yi) / (yj - yi) * (xj - xi), MidpointRounding.AwayFromZero);
-                                nodes.Add(x);
-                            }
+            public void FillPolygonsEvenOdd(
+                List<List<Point2d>> polygons,
+                Rgba color,
+                double[] zBuffer,
+                Func<int, int, double> depthAtPixel)
+            {
+                polygons = polygons
+                    .Where(polygon => polygon != null && polygon.Count >= 3)
+                    .ToList();
+                if (polygons.Count == 0)
+                    return;
 
-                            j = i;
-                        }
-                    }
-
-                    nodes.Sort();
-                    for (int i = 0; i + 1 < nodes.Count; i += 2)
-                    {
-                        int startX = Math.Max(0, nodes[i]);
-                        int endX = Math.Min(Width - 1, nodes[i + 1]);
-                        for (int x = startX; x <= endX; x++)
-                            BlendPixel(x, y, color);
-                    }
-                }
+                FillPolygonsEvenOdd(polygons, color);
+                UpdateDepthBufferEvenOdd(polygons, zBuffer, depthAtPixel);
             }
 
             public void DrawLine(int x0, int y0, int x1, int y1, Rgba color)
             {
-                int dx = Math.Abs(x1 - x0);
-                int sx = x0 < x1 ? 1 : -1;
-                int dy = -Math.Abs(y1 - y0);
-                int sy = y0 < y1 ? 1 : -1;
-                int err = dx + dy;
-
-                while (true)
+                using (SKPaint paint = CreatePaint(color, SKPaintStyle.Stroke))
                 {
-                    BlendPixel(x0, y0, color);
-                    if (x0 == x1 && y0 == y1)
-                        break;
-
-                    int e2 = 2 * err;
-                    if (e2 >= dy)
-                    {
-                        err += dy;
-                        x0 += sx;
-                    }
-
-                    if (e2 <= dx)
-                    {
-                        err += dx;
-                        y0 += sy;
-                    }
+                    paint.StrokeWidth = 1.0f;
+                    _canvas.DrawLine(x0, y0, x1, y1, paint);
                 }
             }
 
@@ -1886,11 +2491,8 @@ namespace EasyEDA_Loader
                 if (right < left || bottom < top)
                     return;
 
-                for (int y = top; y <= bottom; y++)
-                {
-                    for (int x = left; x <= right; x++)
-                        BlendPixel(x, y, color);
-                }
+                using (SKPaint paint = CreatePaint(color, SKPaintStyle.Fill))
+                    _canvas.DrawRect(SKRect.Create(left, top, right - left + 1, bottom - top + 1), paint);
             }
 
             public void DrawRectangle(int left, int top, int right, int bottom, Rgba color, int thickness)
@@ -1898,138 +2500,161 @@ namespace EasyEDA_Loader
                 if (thickness < 1)
                     thickness = 1;
 
-                for (int i = 0; i < thickness; i++)
+                using (SKPaint paint = CreatePaint(color, SKPaintStyle.Stroke))
                 {
-                    DrawLine(left + i, top + i, right - i, top + i, color);
-                    DrawLine(right - i, top + i, right - i, bottom - i, color);
-                    DrawLine(right - i, bottom - i, left + i, bottom - i, color);
-                    DrawLine(left + i, bottom - i, left + i, top + i, color);
+                    paint.StrokeWidth = thickness;
+                    _canvas.DrawRect(SKRect.Create(left, top, right - left + 1, bottom - top + 1), paint);
                 }
+            }
+
+            public RgbaImage Downsample(int targetWidth, int targetHeight)
+            {
+                if (targetWidth <= 0 || targetHeight <= 0)
+                    throw new ArgumentOutOfRangeException(nameof(targetWidth));
+
+                if (targetWidth == Width && targetHeight == Height)
+                    return this;
+
+                var target = new RgbaImage(targetWidth, targetHeight);
+                using (SKImage source = SKImage.FromBitmap(_bitmap))
+                    target._canvas.DrawImage(
+                        source,
+                        SKRect.Create(0, 0, Width, Height),
+                        SKRect.Create(0, 0, targetWidth, targetHeight),
+                        new SKSamplingOptions(SKFilterMode.Linear, SKMipmapMode.Linear),
+                        null);
+
+                return target;
             }
 
             public void SavePng(string path)
             {
-                using (var stream = File.Create(path))
-                {
-                    byte[] signature = { 137, 80, 78, 71, 13, 10, 26, 10 };
-                    stream.Write(signature, 0, signature.Length);
-
-                    var ihdr = new MemoryStream();
-                    WriteUInt32(ihdr, (uint)Width);
-                    WriteUInt32(ihdr, (uint)Height);
-                    ihdr.WriteByte(8);
-                    ihdr.WriteByte(6);
-                    ihdr.WriteByte(0);
-                    ihdr.WriteByte(0);
-                    ihdr.WriteByte(0);
-                    WriteChunk(stream, "IHDR", ihdr.ToArray());
-
-                    byte[] raw = BuildRawScanlines();
-                    byte[] compressed;
-                    using (var compressedStream = new MemoryStream())
-                    {
-                        using (var zlib = new ZLibStream(compressedStream, CompressionLevel.Optimal, leaveOpen: true))
-                            zlib.Write(raw, 0, raw.Length);
-
-                        compressed = compressedStream.ToArray();
-                    }
-
-                    WriteChunk(stream, "IDAT", compressed);
-                    WriteChunk(stream, "IEND", Array.Empty<byte>());
-                }
+                _canvas.Flush();
+                using (SKImage image = SKImage.FromBitmap(_bitmap))
+                using (SKData data = image.Encode(SKEncodedImageFormat.Png, 100))
+                using (Stream stream = File.Create(path))
+                    data.SaveTo(stream);
             }
 
-            private byte[] BuildRawScanlines()
-            {
-                int stride = Width * 4;
-                byte[] raw = new byte[(stride + 1) * Height];
-                for (int y = 0; y < Height; y++)
-                {
-                    int sourceOffset = y * stride;
-                    int targetOffset = y * (stride + 1);
-                    raw[targetOffset] = 0;
-                    Buffer.BlockCopy(_pixels, sourceOffset, raw, targetOffset + 1, stride);
-                }
-
-                return raw;
-            }
-
-            private void BlendPixel(int x, int y, Rgba color)
+            public void BlendPixel(int x, int y, Rgba color)
             {
                 if (x < 0 || x >= Width || y < 0 || y >= Height)
                     return;
 
-                int offset = (y * Width + x) * 4;
                 if (color.A == 255)
                 {
-                    _pixels[offset] = color.R;
-                    _pixels[offset + 1] = color.G;
-                    _pixels[offset + 2] = color.B;
-                    _pixels[offset + 3] = color.A;
+                    _bitmap.SetPixel(x, y, ToSkColor(color));
                     return;
                 }
 
+                SKColor existing = _bitmap.GetPixel(x, y);
                 double alpha = color.A / 255.0;
                 double inverse = 1.0 - alpha;
-                _pixels[offset] = ClampToByte(color.R * alpha + _pixels[offset] * inverse);
-                _pixels[offset + 1] = ClampToByte(color.G * alpha + _pixels[offset + 1] * inverse);
-                _pixels[offset + 2] = ClampToByte(color.B * alpha + _pixels[offset + 2] * inverse);
-                _pixels[offset + 3] = 255;
+                _bitmap.SetPixel(
+                    x,
+                    y,
+                    new SKColor(
+                        ClampToByte(color.R * alpha + existing.Red * inverse),
+                        ClampToByte(color.G * alpha + existing.Green * inverse),
+                        ClampToByte(color.B * alpha + existing.Blue * inverse),
+                        255));
             }
 
-            private static void WriteChunk(Stream stream, string type, byte[] data)
+            private void UpdateDepthBufferEvenOdd(
+                List<List<Point2d>> polygons,
+                double[] zBuffer,
+                Func<int, int, double> depthAtPixel)
             {
-                byte[] typeBytes = Encoding.ASCII.GetBytes(type);
-                WriteUInt32(stream, (uint)data.Length);
-                stream.Write(typeBytes, 0, typeBytes.Length);
-                stream.Write(data, 0, data.Length);
+                Rect2i bounds = GetPixelBounds(polygons);
+                if (!bounds.Intersects(0, 0, Width - 1, Height - 1))
+                    return;
 
-                uint crc = Crc32.Compute(typeBytes, data);
-                WriteUInt32(stream, crc);
-            }
+                int minY = Math.Max(0, bounds.Top);
+                int maxY = Math.Min(Height - 1, bounds.Bottom);
+                var nodes = new List<double>();
 
-            private static void WriteUInt32(Stream stream, uint value)
-            {
-                stream.WriteByte((byte)((value >> 24) & 0xff));
-                stream.WriteByte((byte)((value >> 16) & 0xff));
-                stream.WriteByte((byte)((value >> 8) & 0xff));
-                stream.WriteByte((byte)(value & 0xff));
-            }
-        }
-
-        private static class Crc32
-        {
-            private static readonly uint[] Table = BuildTable();
-
-            public static uint Compute(byte[] typeBytes, byte[] data)
-            {
-                uint crc = 0xffffffff;
-                crc = Update(crc, typeBytes);
-                crc = Update(crc, data);
-                return crc ^ 0xffffffff;
-            }
-
-            private static uint Update(uint crc, byte[] bytes)
-            {
-                for (int i = 0; i < bytes.Length; i++)
-                    crc = Table[(crc ^ bytes[i]) & 0xff] ^ (crc >> 8);
-
-                return crc;
-            }
-
-            private static uint[] BuildTable()
-            {
-                var table = new uint[256];
-                for (uint n = 0; n < table.Length; n++)
+                for (int y = minY; y <= maxY; y++)
                 {
-                    uint c = n;
-                    for (int k = 0; k < 8; k++)
-                        c = (c & 1) != 0 ? 0xedb88320 ^ (c >> 1) : c >> 1;
+                    double scanY = y + 0.5;
+                    nodes.Clear();
+                    foreach (var polygon in polygons)
+                    {
+                        int j = polygon.Count - 1;
+                        for (int i = 0; i < polygon.Count; i++)
+                        {
+                            double yi = polygon[i].Y;
+                            double yj = polygon[j].Y;
+                            if ((yi <= scanY && yj > scanY) || (yj <= scanY && yi > scanY))
+                            {
+                                double xi = polygon[i].X;
+                                double xj = polygon[j].X;
+                                double x = xi + (scanY - yi) / (yj - yi) * (xj - xi);
+                                nodes.Add(x);
+                            }
 
-                    table[n] = c;
+                            j = i;
+                        }
+                    }
+
+                    nodes.Sort();
+                    for (int i = 0; i + 1 < nodes.Count; i += 2)
+                    {
+                        int startX = Math.Max(0, (int)Math.Ceiling(nodes[i]));
+                        int endX = Math.Min(Width - 1, (int)Math.Floor(nodes[i + 1]));
+                        for (int x = startX; x <= endX; x++)
+                        {
+                            int offset = y * Width + x;
+                            double depth = depthAtPixel(x, y);
+                            if (depth >= zBuffer[offset])
+                                zBuffer[offset] = depth;
+                        }
+                    }
+                }
+            }
+
+            private static SKPath BuildPath(List<List<Point2d>> polygons)
+            {
+                var path = new SKPath { FillType = SKPathFillType.EvenOdd };
+                foreach (var polygon in polygons)
+                {
+                    if (polygon.Count < 3)
+                        continue;
+
+                    path.MoveTo((float)polygon[0].X, (float)polygon[0].Y);
+                    for (int i = 1; i < polygon.Count; i++)
+                        path.LineTo((float)polygon[i].X, (float)polygon[i].Y);
+                    path.Close();
                 }
 
-                return table;
+                return path;
+            }
+
+            private static Rect2i GetPixelBounds(List<List<Point2d>> polygons)
+            {
+                double minX = polygons.Min(polygon => polygon.Min(point => point.X));
+                double minY = polygons.Min(polygon => polygon.Min(point => point.Y));
+                double maxX = polygons.Max(polygon => polygon.Max(point => point.X));
+                double maxY = polygons.Max(polygon => polygon.Max(point => point.Y));
+                return new Rect2i(
+                    (int)Math.Floor(minX) - 1,
+                    (int)Math.Floor(minY) - 1,
+                    (int)Math.Ceiling(maxX) + 1,
+                    (int)Math.Ceiling(maxY) + 1);
+            }
+
+            private static SKPaint CreatePaint(Rgba color, SKPaintStyle style)
+            {
+                return new SKPaint
+                {
+                    Color = ToSkColor(color),
+                    IsAntialias = true,
+                    Style = style
+                };
+            }
+
+            private static SKColor ToSkColor(Rgba color)
+            {
+                return new SKColor(color.R, color.G, color.B, color.A);
             }
         }
 

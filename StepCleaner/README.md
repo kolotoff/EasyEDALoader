@@ -93,6 +93,14 @@ JSON sidecars to `Test\StepCleaner\Data\Marked`. These rectangles are
 training/reference data for improving automatic detection; they are not runtime
 input for the regression test.
 
+Projection PNG rendering uses the installed F3D command-line renderer when
+available. F3D loads STEP through its OpenCascade/OCCT reader, so projection
+images are generated from a real STEP tessellation instead of the fallback
+in-process STEP sampler. The F3D render path uses STEP cell colors and disables
+mesh edge drawing so generated projections do not show tessellation triangles.
+SkiaSharp is still used for PNG overlay work such as debug detection
+rectangles.
+
 ## Integration
 
 The reusable implementation lives in
