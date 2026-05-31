@@ -42,6 +42,22 @@ Original test models are read from `Test\StepCleaner\Data\Original`; cleaned
 models are written to `Test\StepCleaner\Data\Clean`. If the input directory is
 named `Original`, the output directory defaults to the sibling `Clean`.
 
+## Regression test rule
+
+Run the cleaner regression test with:
+
+```powershell
+dotnet run --project Test\StepCleaner\StepCleaner.Tests.csproj
+```
+
+The test treats `Test\StepCleaner\Data\Original` and
+`Test\StepCleaner\Data\Validated` as read-only data. It cleans every STEP model
+from `Original` into the ignored `Clean` folder, then requires every generated
+clean model to have a matching golden file in `Validated`. If a generated clean
+model is missing from `Validated`, the test treats it as not fully cleaned and
+asks the reviewer to view the generated file before accepting it. Matching files
+are byte-compared against their `Validated` golden files.
+
 ## Integration
 
 The reusable implementation lives in
