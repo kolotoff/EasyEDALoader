@@ -48,10 +48,12 @@ regression test.
 
 Add `--debug` to either cleanup or `detect` to write detected-side PNG
 projections with red detected-region overlays into `Clean\Detection`. When
-compatible `Marked` sidecars exist for the same view, debug overlays on that
-view are filtered to regions that fit inside those marked rectangles. Stale
-sidecars whose stored projection axes no longer match the renderer are ignored,
-and detected views without a compatible marker are still emitted for review.
+compatible non-empty `Marked` sidecars exist for a model, debug output is
+marker-view driven: generated PNG names must match the marked model side names,
+detected geometry is matched to those marked rectangles by model-space overlap,
+and the whole marked rectangle is drawn for review. Empty marker sidecars are
+ignored. Stale sidecars whose stored projection axes no longer match the
+renderer are ignored.
 
 ## Regression test rule
 
@@ -64,12 +66,23 @@ dotnet run --project Test\StepCleaner\StepCleaner.Tests.csproj
 The test treats `Test\StepCleaner\Data\Original` and
 `Test\StepCleaner\Data\Validated` as read-only data. It cleans every STEP model
 from `Original` into the ignored `Clean` folder using automatic cleanup only;
-marked-region JSON is intentionally not loaded by the regression test. The test
-then requires every generated clean model to have a matching golden file in
-`Validated`. If a generated clean model is missing from `Validated`, the test
-treats it as not fully cleaned and asks the reviewer to view the generated file
-before accepting it. Matching files are byte-compared against their `Validated`
-golden files.
+marked-region JSON is not loaded for cleanup. The test also regenerates
+`Clean\Detection` debug PNGs and checks that generated detection images have the
+same count and side names as non-empty compatible marker sidecars. This debug
+image check is a review aid for detector coverage and does not drive cleanup.
+
+The test then requires every generated clean model to have a matching golden
+file in `Validated`. If a generated clean model is missing from `Validated`, the
+test treats it as not fully cleaned and asks the reviewer to view the generated
+file before accepting it. Matching files are byte-compared against their
+`Validated` golden files.
+
+Current cleanup notes:
+
+- `LED-SMD_XL-3838UV2SA06G3.step` is not fully cleaned.
+- `SOT-89-3_L4.3-W2.5-H1.6-LS4.1-P1.50.step` is not fully cleaned.
+- `USB-A-TH_FUS264-FDSW3K.step` is considered cleaned and should be reviewed as
+  cleaned output.
 
 ## Projection marking workflow
 
@@ -90,8 +103,10 @@ dotnet run --project StepProjectionMarker\StepProjectionMarker.csproj
 
 The marker defaults to `Test\StepCleaner\Data\Projection`; it writes matching
 JSON sidecars to `Test\StepCleaner\Data\Marked`. These rectangles are
-training/reference data for improving automatic detection; they are not runtime
-input for the regression test.
+training/reference data for improving automatic detection. Normal cleanup and
+STEP golden comparison do not use them, but the regression test does use
+non-empty compatible marker sidecars to verify generated detection-debug PNG
+count and side names.
 
 Projection PNG rendering uses the installed F3D command-line renderer when
 available. F3D loads STEP through its OpenCascade/OCCT reader, so projection
