@@ -228,6 +228,7 @@ namespace EasyEDA_Loader
                 edits);
 
             MergeHostFaceBounds(flattenResult, detection.HostFaceBoundsToRemove);
+            AddAutomaticRegionAdjacentFacesToFlattenResult(data, context.SolidInfo, flattenResult, detection.AutomaticRegions, options);
 
             foreach (int faceId in detection.CoplanarFaceIds)
             {
@@ -352,6 +353,7 @@ namespace EasyEDA_Loader
                 context.StyledByTarget,
                 options);
             detection.EmbeddedHostLoopCount = CountHostLoopBounds(embeddedHostLoops.HostFaceBoundsToRemove);
+            detection.AutomaticRegions.AddRange(embeddedHostLoops.Regions);
             MergeHostFaceBounds(detection.HostFaceBoundsToRemove, embeddedHostLoops.HostFaceBoundsToRemove);
 
             var automaticHostLoops = FindAutomaticWatermarkHostLoops(
@@ -369,6 +371,16 @@ namespace EasyEDA_Loader
                 context.FaceOwners,
                 automaticHostLoops.Regions,
                 options);
+            detection.CoplanarFaceIds = detection.CoplanarFaceIds
+                .Concat(FindNeutralCoplanarWatermarkFaces(
+                    data,
+                    context.StyledItems,
+                    context.FaceOwners,
+                    context.SolidInfo,
+                    options))
+                .Distinct()
+                .OrderBy(id => id)
+                .ToList();
             detection.HostLoopCount = CountHostLoopBounds(detection.HostFaceBoundsToRemove);
 
             return detection;
@@ -1525,6 +1537,16 @@ namespace EasyEDA_Loader
             }
         }
 
+        private static bool LooksLikeNeutralCoplanarWatermarkColor(
+            StepColor? color,
+            StepWatermarkCleanerOptions options)
+        {
+            return color.HasValue &&
+                !IsEmbeddedWatermarkColor(color.Value, options) &&
+                color.Value.Luminance <= options.NeutralBodyMaxLuminance &&
+                color.Value.ChannelSpread <= options.NeutralMaxChannelSpread;
+        }
+
         private static List<int> FilterAutomaticWatermarkClusters(
             StepData data,
             List<WatermarkFaceCandidate> candidates,
@@ -1559,6 +1581,56 @@ namespace EasyEDA_Loader
             }
 
             return result.OrderBy(id => id).ToList();
+        }
+
+        private static void AddAutomaticRegionAdjacentFacesToFlattenResult(
+            StepData data,
+            Dictionary<int, SolidInfo> solidInfo,
+            FlattenResult flattenResult,
+            List<AutomaticWatermarkRegion> regions,
+            StepWatermarkCleanerOptions options)
+        {
+            foreach (var region in regions)
+            {
+                int hostFaceId = region.HostFaceId;
+                if (TouchesProjectedBoundary(
+                    region.Bounds,
+                    region.HostBounds,
+                    region.Axis,
+                    GetAutomaticEdgeMargin(region.HostBounds, region.Axis)))
+                    continue;
+
+                var seedBounds = new HashSet<int>(
+                    data.GetMatchingInnerFaceBounds(
+                        hostFaceId,
+                        region.Bounds,
+                        region.Axis,
+                        options.HostPlaneProjectionPadding));
+                if (seedBounds.Count == 0)
+                    continue;
+
+                SolidInfo ownerInfo = solidInfo.Values.FirstOrDefault(info => info.FaceIds.Contains(hostFaceId));
+                if (ownerInfo == null)
+                    continue;
+
+                var host = new HostPlaneMatch
+                {
+                    Axis = region.Axis,
+                    TargetCoordinate = region.HostCoordinate,
+                    HostFaceId = hostFaceId
+                };
+
+                foreach (int adjacentFaceId in FindHostLoopAdjacentFaces(data, ownerInfo, host, seedBounds, options))
+                {
+                    if (adjacentFaceId == hostFaceId)
+                        continue;
+
+                    if (flattenResult.FlattenedFaces.Add(adjacentFaceId))
+                        flattenResult.FlattenedFaceCount++;
+
+                    flattenResult.ReplacementFaceByRemovedFace[adjacentFaceId] = hostFaceId;
+                }
+            }
         }
 
         private static AutomaticWatermarkLoopResult FindAutomaticWatermarkHostLoops(
@@ -1621,12 +1693,12 @@ namespace EasyEDA_Loader
                             if (!LooksLikeAutomaticWatermarkLoopCluster(cluster, axis, options))
                                 continue;
 
-                            AddAutomaticLoopCluster(result, ownerInfo, faceId, hostBounds.Value, axis, cluster);
+                            AddAutomaticLoopCluster(result, data, ownerInfo, faceId, hostBounds.Value, axis, cluster, options);
                             acceptedCluster = true;
                         }
 
                         if (!acceptedCluster && LooksLikeAutomaticWatermarkLoopCluster(candidates, axis, options))
-                            AddAutomaticLoopCluster(result, ownerInfo, faceId, hostBounds.Value, axis, candidates);
+                            AddAutomaticLoopCluster(result, data, ownerInfo, faceId, hostBounds.Value, axis, candidates, options);
                     }
                 }
             }
@@ -1636,11 +1708,13 @@ namespace EasyEDA_Loader
 
         private static void AddAutomaticLoopCluster(
             AutomaticWatermarkLoopResult result,
+            StepData data,
             SolidInfo ownerInfo,
             int faceId,
             Bounds hostBounds,
             int axis,
-            List<WatermarkLoopCandidate> cluster)
+            List<WatermarkLoopCandidate> cluster,
+            StepWatermarkCleanerOptions options)
         {
             if (!result.HostFaceBoundsToRemove.TryGetValue(faceId, out var boundIds))
             {
@@ -1649,11 +1723,15 @@ namespace EasyEDA_Loader
             }
 
             Bounds clusterBounds = new Bounds();
+            var clusterBoundIds = new HashSet<int>();
             foreach (var candidate in cluster)
             {
-                boundIds.Add(candidate.BoundId);
+                clusterBoundIds.Add(candidate.BoundId);
                 clusterBounds.Include(candidate.Bounds);
             }
+
+            foreach (int expandedBoundId in ExpandHostFaceBounds(data, faceId, clusterBoundIds, options))
+                boundIds.Add(expandedBoundId);
 
             result.Regions.Add(new AutomaticWatermarkRegion
             {
@@ -1682,7 +1760,7 @@ namespace EasyEDA_Loader
                 if (data.GetTypeName(styledItem.TargetId) != "ADVANCED_FACE")
                     continue;
 
-                if (!styledItem.Color.HasValue || !IsEmbeddedWatermarkColor(styledItem.Color.Value, options))
+                if (!LooksLikeAutomaticRegionWatermarkFaceColor(styledItem.Color, options))
                     continue;
 
                 if (!faceOwners.TryGetValue(styledItem.TargetId, out int ownerId))
@@ -1714,6 +1792,168 @@ namespace EasyEDA_Loader
             }
 
             return result.OrderBy(id => id).ToList();
+        }
+
+        private static List<int> FindNeutralCoplanarWatermarkFaces(
+            StepData data,
+            List<StyledItemInfo> styledItems,
+            Dictionary<int, int> faceOwners,
+            Dictionary<int, SolidInfo> solidInfo,
+            StepWatermarkCleanerOptions options)
+        {
+            var candidates = new List<WatermarkFaceCandidate>();
+            double planeTolerance = Math.Max(options.PlaneTolerance, 0.000001);
+
+            foreach (var styledItem in styledItems)
+            {
+                if (data.GetTypeName(styledItem.TargetId) != "ADVANCED_FACE")
+                    continue;
+
+                if (!LooksLikeNeutralCoplanarWatermarkColor(styledItem.Color, options))
+                    continue;
+
+                if (!faceOwners.TryGetValue(styledItem.TargetId, out int ownerId))
+                    continue;
+
+                if (!solidInfo.TryGetValue(ownerId, out var ownerInfo) || !ownerInfo.Bounds.HasValue)
+                    continue;
+
+                var faceBounds = data.GetBounds(styledItem.TargetId);
+                if (!faceBounds.HasValue)
+                    continue;
+
+                if (!LooksLikeSmallMark(faceBounds.Value, ownerInfo.Bounds.Value, options))
+                    continue;
+
+                int planarAxis = FindPlanarAxis(faceBounds.Value, options);
+                if (planarAxis < 0)
+                    continue;
+
+                if (!LooksLikeKnownWatermarkPatternComponent(faceBounds.Value, ownerInfo.Bounds.Value, planarAxis))
+                    continue;
+
+                candidates.Add(new WatermarkFaceCandidate
+                {
+                    FaceId = styledItem.TargetId,
+                    OwnerId = ownerId,
+                    Bounds = faceBounds.Value,
+                    PointCount = data.GetPointIds(styledItem.TargetId, includeSurface: false).Count,
+                    HostBounds = ownerInfo.Bounds.Value,
+                    HasColorCue = false,
+                    ColorClass = 0,
+                    Host = new HostPlaneMatch
+                    {
+                        Axis = planarAxis,
+                        TargetCoordinate = (faceBounds.Value.Min.Get(planarAxis) + faceBounds.Value.Max.Get(planarAxis)) / 2.0,
+                        HostFaceId = styledItem.TargetId
+                    }
+                });
+            }
+
+            var result = new HashSet<int>();
+            foreach (var group in candidates.GroupBy(candidate => new
+            {
+                candidate.OwnerId,
+                candidate.Host.Axis,
+                Coordinate = Math.Round(candidate.Host.TargetCoordinate / planeTolerance)
+            }))
+            {
+                var groupCandidates = group.ToList();
+                double gap = GetAutomaticClusterGap(groupCandidates[0].HostBounds, group.Key.Axis, options);
+                foreach (var cluster in BuildProjectedCandidateClusters(groupCandidates, group.Key.Axis, gap))
+                {
+                    if (!LooksLikeAutomaticWatermarkCluster(cluster, group.Key.Axis, options))
+                        continue;
+
+                    foreach (var candidate in cluster)
+                        result.Add(candidate.FaceId);
+
+                    AddCoplanarCompanionFaces(
+                        data,
+                        styledItems,
+                        faceOwners,
+                        solidInfo,
+                        result,
+                        cluster,
+                        group.Key.Axis,
+                        gap,
+                        options);
+                }
+            }
+
+            return result.OrderBy(id => id).ToList();
+        }
+
+        private static void AddCoplanarCompanionFaces(
+            StepData data,
+            List<StyledItemInfo> styledItems,
+            Dictionary<int, int> faceOwners,
+            Dictionary<int, SolidInfo> solidInfo,
+            HashSet<int> result,
+            List<WatermarkFaceCandidate> cluster,
+            int planarAxis,
+            double gap,
+            StepWatermarkCleanerOptions options)
+        {
+            if (cluster.Count == 0)
+                return;
+
+            int ownerId = cluster[0].OwnerId;
+            double coordinate = cluster[0].Host.TargetCoordinate;
+            Bounds clusterBounds = new Bounds();
+            foreach (var candidate in cluster)
+                clusterBounds.Include(candidate.Bounds);
+
+            foreach (var styledItem in styledItems)
+            {
+                if (result.Contains(styledItem.TargetId))
+                    continue;
+
+                if (data.GetTypeName(styledItem.TargetId) != "ADVANCED_FACE")
+                    continue;
+
+                if (!faceOwners.TryGetValue(styledItem.TargetId, out int faceOwnerId) || faceOwnerId != ownerId)
+                    continue;
+
+                if (!solidInfo.TryGetValue(ownerId, out var ownerInfo) || !ownerInfo.Bounds.HasValue)
+                    continue;
+
+                var faceBounds = data.GetBounds(styledItem.TargetId);
+                if (!faceBounds.HasValue)
+                    continue;
+
+                if (!LooksLikeSmallMark(faceBounds.Value, ownerInfo.Bounds.Value, options))
+                    continue;
+
+                if (FindPlanarAxis(faceBounds.Value, options) != planarAxis)
+                    continue;
+
+                double faceCoordinate = (faceBounds.Value.Min.Get(planarAxis) + faceBounds.Value.Max.Get(planarAxis)) / 2.0;
+                if (Math.Abs(faceCoordinate - coordinate) > Math.Max(options.PlaneTolerance, 0.000001))
+                    continue;
+
+                if (!ProjectionIntersects(faceBounds.Value, clusterBounds, planarAxis, gap))
+                    continue;
+
+                if (!LooksLikeKnownWatermarkPatternComponent(faceBounds.Value, ownerInfo.Bounds.Value, planarAxis))
+                    continue;
+
+                result.Add(styledItem.TargetId);
+            }
+        }
+
+        private static bool LooksLikeAutomaticRegionWatermarkFaceColor(
+            StepColor? color,
+            StepWatermarkCleanerOptions options)
+        {
+            if (!color.HasValue)
+                return true;
+
+            if (IsEmbeddedWatermarkColor(color.Value, options))
+                return true;
+
+            return color.Value.Luminance <= options.NeutralBodyMaxLuminance &&
+                color.Value.ChannelSpread <= options.NeutralMaxChannelSpread;
         }
 
         private static bool LooksLikeAutomaticHostFace(
@@ -2241,6 +2481,18 @@ namespace EasyEDA_Loader
                     if (host == null)
                         continue;
 
+                    if (host.HostFaceId.HasValue)
+                    {
+                        var hostBounds = data.GetBounds(host.HostFaceId.Value);
+                        if (hostBounds.HasValue &&
+                            TouchesProjectedBoundary(
+                                componentBounds.Value,
+                                hostBounds.Value,
+                                host.Axis,
+                                GetAutomaticEdgeMargin(hostBounds.Value, host.Axis)))
+                            continue;
+                    }
+
                     var hostBoundsToRemove = new HashSet<int>();
                     foreach (int boundId in data.GetMatchingInnerFaceBounds(host.HostFaceId, componentBounds.Value, host.Axis, options.HostPlaneProjectionPadding))
                         hostBoundsToRemove.Add(boundId);
@@ -2251,11 +2503,55 @@ namespace EasyEDA_Loader
                             hostBoundsToRemove.Add(boundId);
                     }
 
+                    bool removedBoundaryHostBounds = false;
+                    if (hostBoundsToRemove.Count > 0 && host.HostFaceId.HasValue)
+                    {
+                        var hostFaceBounds = data.GetBounds(host.HostFaceId.Value);
+                        if (hostFaceBounds.HasValue)
+                        {
+                            double hostEdgeMargin = GetAutomaticEdgeMargin(hostFaceBounds.Value, host.Axis);
+                            var filteredHostBounds = new HashSet<int>();
+                            foreach (int boundId in hostBoundsToRemove)
+                            {
+                                var boundBounds = data.GetBounds(boundId);
+                                if (boundBounds.HasValue &&
+                                    TouchesProjectedBoundary(boundBounds.Value, hostFaceBounds.Value, host.Axis, hostEdgeMargin))
+                                {
+                                    removedBoundaryHostBounds = true;
+                                    continue;
+                                }
+
+                                filteredHostBounds.Add(boundId);
+                            }
+
+                            hostBoundsToRemove = filteredHostBounds;
+                        }
+                    }
+
+                    if (removedBoundaryHostBounds && hostBoundsToRemove.Count == 0)
+                        continue;
+
                     var facesToRemove = new HashSet<int>(componentFaces);
                     if (hostBoundsToRemove.Count > 0)
                     {
+                        var hostFaceBounds = host.HostFaceId.HasValue
+                            ? data.GetBounds(host.HostFaceId.Value)
+                            : null;
+                        double hostEdgeMargin = hostFaceBounds.HasValue
+                            ? GetAutomaticEdgeMargin(hostFaceBounds.Value, host.Axis)
+                            : 0.0;
                         foreach (int adjacentFaceId in FindHostLoopAdjacentFaces(data, ownerInfo, host, hostBoundsToRemove, options))
+                        {
+                            if (hostFaceBounds.HasValue)
+                            {
+                                var adjacentBounds = data.GetBounds(adjacentFaceId);
+                                if (adjacentBounds.HasValue &&
+                                    TouchesProjectedBoundary(adjacentBounds.Value, hostFaceBounds.Value, host.Axis, hostEdgeMargin))
+                                    continue;
+                            }
+
                             facesToRemove.Add(adjacentFaceId);
+                        }
                     }
 
                     var editPointIds = new HashSet<int>();
@@ -2414,6 +2710,7 @@ namespace EasyEDA_Loader
                     if (!ProjectionIntersects(hostBounds.Value, group.Bounds, group.Axis, padding))
                         continue;
 
+                    bool addedAnyBound = false;
                     foreach (int boundId in data.GetMatchingInnerFaceBounds(hostFaceId, group.Bounds, group.Axis, padding))
                     {
                         if (!result.HostFaceBoundsToRemove.TryGetValue(hostFaceId, out var boundIds))
@@ -2423,7 +2720,23 @@ namespace EasyEDA_Loader
                         }
 
                         if (boundIds.Add(boundId))
+                        {
                             result.CandidateCount++;
+                            addedAnyBound = true;
+                        }
+                    }
+
+                    if (addedAnyBound)
+                    {
+                        result.Regions.Add(new AutomaticWatermarkRegion
+                        {
+                            OwnerId = group.OwnerId,
+                            HostFaceId = hostFaceId,
+                            Axis = group.Axis,
+                            HostCoordinate = hostCoordinate,
+                            Bounds = group.Bounds,
+                            HostBounds = hostBounds.Value
+                        });
                     }
                 }
             }

@@ -80,7 +80,6 @@ file before accepting it. Matching files are byte-compared against their
 Current cleanup notes:
 
 - `LED-SMD_XL-3838UV2SA06G3.step` is not fully cleaned.
-- `SOT-89-3_L4.3-W2.5-H1.6-LS4.1-P1.50.step` is not fully cleaned.
 - `USB-A-TH_FUS264-FDSW3K.step` is considered cleaned and should be reviewed as
   cleaned output.
 
