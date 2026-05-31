@@ -58,6 +58,22 @@ model is missing from `Validated`, the test treats it as not fully cleaned and
 asks the reviewer to view the generated file before accepting it. Matching files
 are byte-compared against their `Validated` golden files.
 
+## Projection marking workflow
+
+The next cleanup algorithm is projection-guided. Generate six side-view PNGs
+and matching JSON pixel-to-model mapping files with:
+
+```powershell
+dotnet run --project StepCleaner\StepCleaner.csproj -- project Test\StepCleaner\Data\Original
+```
+
+When the input directory is named `Original`, the projection output defaults to
+the sibling `Projection` folder. `Projection` is generated and ignored by git.
+Save user-marked PNGs with red watermark rectangles to sibling `Marked`, using
+the same filenames as the generated projection PNGs. See
+`StepCleaner\ProjectionCleanupPlan.md` for the rule that the future cleaner may
+only edit geometry inside marked rectangles.
+
 ## Integration
 
 The reusable implementation lives in

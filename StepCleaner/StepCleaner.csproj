@@ -9,5 +9,6 @@
 
   <ItemGroup>
     <Compile Include="..\EasyEDA-Loader\StepWatermarkCleaner.cs" Link="StepWatermarkCleaner.cs" />
+    <Compile Include="..\EasyEDA-Loader\StepProjectionRenderer.cs" Link="StepProjectionRenderer.cs" />
   </ItemGroup>
 </Project>
