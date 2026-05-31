@@ -1,10 +1,10 @@
 # STEP Watermark Cleaner
 
-`StepCleaner` removes the EasyEDA/LCEDA STEP watermark without a CAD kernel or
-manual picking. EasyEDA commonly exports the logo/text as 0.001 mm neutral
-white relief geometry on dark plastic bodies. The cleaner parses the STEP graph,
-removes thin standalone watermark solids from the BREP shape representation,
-then collapses embedded watermark faces back onto the detected dark host plane.
+`StepCleaner` removes the EasyEDA/LCEDA STEP watermark without a CAD kernel.
+For project test data, cleanup is projection-guided: generated side-view
+metadata and user-authored marker JSON rectangles define the only regions where
+geometry may be edited. Geometry outside marked rectangles is not selected by
+the cleaner.
 
 This does not run a boolean operation. It keeps the surrounding BREP intact and
 only rewrites the watermark geometry needed to flatten the surface, which makes
@@ -15,12 +15,10 @@ Embedded watermark topology is merged into the detected host plane by default.
 The cleaner removes only `FACE_BOUND` cut loops from that host face and always
 preserves `FACE_OUTER_BOUND`, because STEP files do not guarantee the outer bound
 is listed first.
-Medium-neutral bodies are supported as host surfaces too, so grey metal shells
-with same-colour LCEDA cuts can be cleaned without requiring white watermark
-styling.
-After a host face is confirmed, the cleaner follows the removed inner-loop
-edges to adjacent shallow faces in the same solid. This removes residual text
-sidewalls and caps that remain visible even after the main surface is flat.
+The cleaner still uses local geometry rules inside each marked rectangle. It can
+remove thin standalone watermark solids, flatten styled relief faces back onto
+the detected host plane, and remove marked `FACE_BOUND` text loops plus their
+adjacent shallow sidewalls. `FACE_OUTER_BOUND` is preserved.
 
 ## Usage
 
@@ -41,6 +39,9 @@ dotnet run --project StepCleaner\StepCleaner.csproj -- Test\StepCleaner\Data\Ori
 Original test models are read from `Test\StepCleaner\Data\Original`; cleaned
 models are written to `Test\StepCleaner\Data\Clean`. If the input directory is
 named `Original`, the output directory defaults to the sibling `Clean`.
+When sibling `Marked` and `Projection` folders exist, the cleaner loads
+`Marked\<model>__*.json` and the matching projection metadata automatically and
+runs in marked-region-only mode.
 
 ## Regression test rule
 
@@ -60,8 +61,7 @@ are byte-compared against their `Validated` golden files.
 
 ## Projection marking workflow
 
-The next cleanup algorithm is projection-guided. Generate six side-view PNGs
-and matching JSON pixel-to-model mapping files with:
+Generate six side-view PNGs and matching JSON pixel-to-model mapping files with:
 
 ```powershell
 dotnet run --project StepCleaner\StepCleaner.csproj -- project Test\StepCleaner\Data\Original
@@ -69,10 +69,17 @@ dotnet run --project StepCleaner\StepCleaner.csproj -- project Test\StepCleaner\
 
 When the input directory is named `Original`, the projection output defaults to
 the sibling `Projection` folder. `Projection` is generated and ignored by git.
-Save user-marked PNGs with red watermark rectangles to sibling `Marked`, using
-the same filenames as the generated projection PNGs. See
-`StepCleaner\ProjectionCleanupPlan.md` for the rule that the future cleaner may
-only edit geometry inside marked rectangles.
+Use the marker GUI to create sidecar JSON rectangles in sibling `Marked` without
+editing PNG files:
+
+```powershell
+dotnet run --project StepProjectionMarker\StepProjectionMarker.csproj
+```
+
+The marker defaults to `Test\StepCleaner\Data\Projection`; it writes matching
+JSON sidecars to `Test\StepCleaner\Data\Marked`. See
+`StepCleaner\ProjectionCleanupPlan.md` for the rule that the cleaner may only
+edit geometry inside marked rectangles.
 
 ## Integration
 

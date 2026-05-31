@@ -44,7 +44,7 @@ with the mouse, save with Ctrl+S or Save, undo with Ctrl+Z, and redo with Ctrl+Y
 
 ## Cleanup Algorithm Rule
 
-The future common cleaner should:
+The common cleaner should:
 
 1. Load marked rectangles from `Marked` JSON sidecars and their matching
    projection JSON files.

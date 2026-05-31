@@ -1,8 +1,10 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.IO;
 using System.Linq;
 using System.Text;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 
 namespace EasyEDA_Loader
@@ -11,6 +13,7 @@ namespace EasyEDA_Loader
     {
         public double WatermarkMinLuminance { get; set; } = 0.92;
         public double EmbeddedWatermarkMinLuminance { get; set; } = 0.62;
+        public double DarkWatermarkMaxLuminance { get; set; } = 0.08;
         public double BodyMaxLuminance { get; set; } = 0.46;
         public double NeutralBodyMaxLuminance { get; set; } = 0.78;
         public double NeutralMaxChannelSpread { get; set; } = 0.16;
@@ -25,6 +28,35 @@ namespace EasyEDA_Loader
         public double PlaneTolerance { get; set; } = 0.0002;
         public bool RequireDarkOwner { get; set; } = true;
         public bool RemoveEmbeddedWatermarkTopology { get; set; } = true;
+        public bool UseMarkedRegionsOnly { get; set; }
+        public double MarkedRegionPaddingPixels { get; set; } = 8.0;
+        public double MarkedCandidateMinOverlap { get; set; } = 0.05;
+        public double MarkedLoopMinOverlap { get; set; } = 0.25;
+        public List<StepWatermarkMarkedRegion> MarkedRegions { get; } = new List<StepWatermarkMarkedRegion>();
+    }
+
+    public sealed class StepWatermarkMarkedRegion
+    {
+        public string ViewName { get; set; }
+        public string SourceMarkerPath { get; set; }
+        public string SourceProjectionPath { get; set; }
+        public int UAxis { get; set; }
+        public int USign { get; set; }
+        public int VAxis { get; set; }
+        public int VSign { get; set; }
+        public int DepthAxis { get; set; }
+        public int DepthSign { get; set; }
+        public double ModelUMin { get; set; }
+        public double ModelUMax { get; set; }
+        public double ModelVMin { get; set; }
+        public double ModelVMax { get; set; }
+        public double ScalePixelsPerModelUnit { get; set; }
+        public int ImageWidth { get; set; }
+        public int ImageHeight { get; set; }
+        public int RectangleX { get; set; }
+        public int RectangleY { get; set; }
+        public int RectangleWidth { get; set; }
+        public int RectangleHeight { get; set; }
     }
 
     public sealed class StepWatermarkCleanerReport
@@ -66,6 +98,34 @@ namespace EasyEDA_Loader
             return CleanWithReport(stepText, options).CleanedStep;
         }
 
+        public static IReadOnlyList<StepWatermarkMarkedRegion> LoadMarkedRegionsForStepFile(
+            string stepFilePath,
+            string projectionDirectory,
+            string markedDirectory)
+        {
+            if (string.IsNullOrEmpty(stepFilePath))
+                throw new ArgumentException("STEP file path is required.", nameof(stepFilePath));
+
+            var result = new List<StepWatermarkMarkedRegion>();
+            if (string.IsNullOrEmpty(markedDirectory) || !Directory.Exists(markedDirectory))
+                return result;
+
+            if (string.IsNullOrEmpty(projectionDirectory) || !Directory.Exists(projectionDirectory))
+                return result;
+
+            string modelName = Path.GetFileNameWithoutExtension(stepFilePath);
+            foreach (string markerPath in Directory.GetFiles(markedDirectory, modelName + "__*.json"))
+            {
+                string projectionPath = Path.Combine(projectionDirectory, Path.GetFileName(markerPath));
+                if (!File.Exists(projectionPath))
+                    continue;
+
+                AppendMarkedRegions(result, markerPath, projectionPath);
+            }
+
+            return result;
+        }
+
         public static StepWatermarkCleanerReport CleanWithReport(string stepText, StepWatermarkCleanerOptions options = null)
         {
             if (stepText == null)
@@ -90,6 +150,20 @@ namespace EasyEDA_Loader
             var solidInfo = BuildSolidInfo(data, solidIds, faceOwners, styledByTarget, options);
 
             int styledFaceCount = styledItems.Count(s => data.GetTypeName(s.TargetId) == "ADVANCED_FACE");
+            if (options.UseMarkedRegionsOnly || options.MarkedRegions.Count > 0)
+            {
+                return CleanWithMarkedRegions(
+                    stepText,
+                    data,
+                    options,
+                    solidIds,
+                    styledItems,
+                    styledByTarget,
+                    faceOwners,
+                    solidInfo,
+                    styledFaceCount);
+            }
+
             var edits = new Dictionary<int, string>();
 
             var removableSolids = FindRemovableWatermarkSolids(solidInfo, styledByTarget, options);
@@ -106,7 +180,7 @@ namespace EasyEDA_Loader
                 removedHostLoops = RemoveFaceBounds(data, flattenResult.HostFaceBoundsToRemove, edits);
             }
 
-            int recoloredCount = RecolorFlattenedFaces(data, flattenResult.FlattenedFaces, faceOwners, solidInfo, styledItems, edits);
+            int recoloredCount = RecolorFlattenedFaces(data, flattenResult.FlattenedFaces, flattenResult.ReplacementFaceByRemovedFace, faceOwners, solidInfo, styledItems, edits);
             string cleaned = data.ApplyDefinitionEdits(edits);
 
             diagnostics.Add("Approach: remove thin neutral watermark solids, then flatten embedded neutral relief faces and merge their host-plane cut loops.");
@@ -145,6 +219,544 @@ namespace EasyEDA_Loader
             };
         }
 
+        private static StepWatermarkCleanerReport CleanWithMarkedRegions(
+            string stepText,
+            StepData data,
+            StepWatermarkCleanerOptions options,
+            List<int> solidIds,
+            List<StyledItemInfo> styledItems,
+            Dictionary<int, List<StyledItemInfo>> styledByTarget,
+            Dictionary<int, int> faceOwners,
+            Dictionary<int, SolidInfo> solidInfo,
+            int styledFaceCount)
+        {
+            var markedRegions = options.MarkedRegions
+                .Where(HasMarkedRegionArea)
+                .ToList();
+
+            var diagnostics = new List<string>();
+            var edits = new Dictionary<int, string>();
+
+            diagnostics.Add("Approach: projection-guided cleanup; only geometry inside marked rectangle sidecars may be selected.");
+            diagnostics.Add("Marked regions: " + markedRegions.Count.ToString(CultureInfo.InvariantCulture));
+
+            if (markedRegions.Count == 0)
+            {
+                diagnostics.Add("No marked rectangles were provided, so no geometry was changed.");
+                return new StepWatermarkCleanerReport
+                {
+                    CleanedStep = stepText,
+                    SolidCount = solidIds.Count,
+                    StyledFaceCount = styledFaceCount,
+                    CandidateFaceCount = 0,
+                    RecoloredFaceCount = 0,
+                    RemovedSolidCount = 0,
+                    FlattenedFaceCount = 0,
+                    FlattenedPointCount = 0,
+                    Diagnostics = diagnostics
+                };
+            }
+
+            var removableSolids = FindMarkedRemovableWatermarkSolids(data, solidInfo, styledByTarget, markedRegions, options);
+            RemoveSolidsFromShapeRepresentations(data, removableSolids, edits);
+
+            var embeddedFaces = FindMarkedEmbeddedWatermarkFaces(
+                data,
+                styledItems,
+                faceOwners,
+                solidInfo,
+                removableSolids,
+                markedRegions,
+                options);
+
+            var flattenResult = FlattenEmbeddedWatermarkFaces(
+                data,
+                embeddedFaces,
+                faceOwners,
+                solidInfo,
+                styledByTarget,
+                options,
+                edits);
+
+            int markedHostLoopCount = AddMarkedHostLoopCleanup(
+                data,
+                markedRegions,
+                faceOwners,
+                solidInfo,
+                flattenResult,
+                options);
+
+            int removedEmbeddedFaces = 0;
+            int removedHostLoops = 0;
+            if (options.RemoveEmbeddedWatermarkTopology)
+            {
+                removedEmbeddedFaces = RemoveFacesFromClosedShells(data, flattenResult.FlattenedFaces, edits);
+                removedHostLoops = RemoveFaceBounds(data, flattenResult.HostFaceBoundsToRemove, edits);
+            }
+
+            int recoloredCount = RecolorFlattenedFaces(
+                data,
+                flattenResult.FlattenedFaces,
+                flattenResult.ReplacementFaceByRemovedFace,
+                faceOwners,
+                solidInfo,
+                styledItems,
+                edits);
+
+            string cleaned = data.ApplyDefinitionEdits(edits);
+
+            diagnostics.Add("Removed marked thin watermark solids: " + removableSolids.Count.ToString(CultureInfo.InvariantCulture));
+            diagnostics.Add("Marked styled watermark faces: " + embeddedFaces.Count.ToString(CultureInfo.InvariantCulture));
+            diagnostics.Add("Marked host loops selected: " + markedHostLoopCount.ToString(CultureInfo.InvariantCulture));
+            diagnostics.Add("Removed embedded watermark faces from shells: " + removedEmbeddedFaces.ToString(CultureInfo.InvariantCulture));
+            diagnostics.Add("Removed host-face inner loops: " + removedHostLoops.ToString(CultureInfo.InvariantCulture));
+            if (removableSolids.Count > 0)
+                diagnostics.Add("Removed solid ids: " + string.Join(", ", removableSolids.OrderBy(id => id).Select(id => "#" + id.ToString(CultureInfo.InvariantCulture))));
+
+            foreach (var operation in flattenResult.Operations)
+            {
+                diagnostics.Add(
+                    $"Flattened {operation.FaceCount} faces on solid #{operation.SolidId} along {AxisName(operation.Axis)} to {operation.TargetCoordinate.ToString("G17", CultureInfo.InvariantCulture)} using host face #{operation.HostFaceId?.ToString(CultureInfo.InvariantCulture) ?? "none"}.");
+            }
+
+            return new StepWatermarkCleanerReport
+            {
+                CleanedStep = cleaned,
+                SolidCount = solidIds.Count,
+                StyledFaceCount = styledFaceCount,
+                CandidateFaceCount = embeddedFaces.Count + markedHostLoopCount,
+                RecoloredFaceCount = recoloredCount,
+                RemovedSolidCount = removableSolids.Count,
+                FlattenedFaceCount = flattenResult.FlattenedFaceCount,
+                FlattenedPointCount = flattenResult.FlattenedPointCount,
+                Diagnostics = diagnostics
+            };
+        }
+
+        private static HashSet<int> FindMarkedRemovableWatermarkSolids(
+            StepData data,
+            Dictionary<int, SolidInfo> solidInfo,
+            Dictionary<int, List<StyledItemInfo>> styledByTarget,
+            List<StepWatermarkMarkedRegion> markedRegions,
+            StepWatermarkCleanerOptions options)
+        {
+            var result = new HashSet<int>();
+
+            foreach (var info in solidInfo.Values)
+            {
+                if (!info.Bounds.HasValue)
+                    continue;
+
+                if (!BoundsOverlapsMarkedRegions(info.Bounds.Value, markedRegions, options.MarkedCandidateMinOverlap, options))
+                    continue;
+
+                var size = info.Bounds.Value.Size;
+                double minSize = Math.Min(size.X, Math.Min(size.Y, size.Z));
+                double maxSize = Math.Max(size.X, Math.Max(size.Y, size.Z));
+                if (minSize > options.ThinSolidMaxThickness || maxSize > options.ThinSolidMaxSize)
+                    continue;
+
+                int styledFaceCount = 0;
+                int watermarkFaceCount = 0;
+
+                foreach (int faceId in info.FaceIds)
+                {
+                    if (!styledByTarget.TryGetValue(faceId, out var faceStyles))
+                        continue;
+
+                    foreach (var faceStyle in faceStyles)
+                    {
+                        if (!faceStyle.Color.HasValue)
+                            continue;
+
+                        styledFaceCount++;
+                        if (IsStandaloneWatermarkColor(faceStyle.Color.Value, options))
+                            watermarkFaceCount++;
+                    }
+                }
+
+                if (styledFaceCount == 0)
+                    continue;
+
+                if (watermarkFaceCount >= Math.Max(3, styledFaceCount * 3 / 4))
+                    result.Add(info.SolidId);
+            }
+
+            return result;
+        }
+
+        private static List<int> FindMarkedEmbeddedWatermarkFaces(
+            StepData data,
+            List<StyledItemInfo> styledItems,
+            Dictionary<int, int> faceOwners,
+            Dictionary<int, SolidInfo> solidInfo,
+            HashSet<int> removableSolids,
+            List<StepWatermarkMarkedRegion> markedRegions,
+            StepWatermarkCleanerOptions options)
+        {
+            var result = new List<int>();
+            var seenFaces = new HashSet<int>();
+
+            foreach (var styledItem in styledItems)
+            {
+                if (data.GetTypeName(styledItem.TargetId) != "ADVANCED_FACE")
+                    continue;
+
+                if (!styledItem.Color.HasValue || !IsEmbeddedWatermarkColor(styledItem.Color.Value, options))
+                    continue;
+
+                if (!faceOwners.TryGetValue(styledItem.TargetId, out int ownerSolidId))
+                    continue;
+
+                if (removableSolids.Contains(ownerSolidId))
+                    continue;
+
+                if (!solidInfo.TryGetValue(ownerSolidId, out var ownerInfo))
+                    continue;
+
+                if (!ownerInfo.ReplacementStyleId.HasValue || !ownerInfo.ReplacementColor.HasValue)
+                    continue;
+
+                if (options.RequireDarkOwner && ownerInfo.ReplacementColor.Value.Luminance > options.NeutralBodyMaxLuminance)
+                    continue;
+
+                var faceBounds = data.GetBounds(styledItem.TargetId);
+                if (!faceBounds.HasValue || !ownerInfo.Bounds.HasValue)
+                    continue;
+
+                if (!LooksLikeSmallMark(faceBounds.Value, ownerInfo.Bounds.Value, options))
+                    continue;
+
+                if (!BoundsOverlapsMarkedRegions(faceBounds.Value, markedRegions, options.MarkedCandidateMinOverlap, options))
+                    continue;
+
+                if (seenFaces.Add(styledItem.TargetId))
+                    result.Add(styledItem.TargetId);
+            }
+
+            return result;
+        }
+
+        private static int AddMarkedHostLoopCleanup(
+            StepData data,
+            List<StepWatermarkMarkedRegion> markedRegions,
+            Dictionary<int, int> faceOwners,
+            Dictionary<int, SolidInfo> solidInfo,
+            FlattenResult result,
+            StepWatermarkCleanerOptions options)
+        {
+            int selectedLoopCount = 0;
+
+            foreach (var ownerInfo in solidInfo.Values)
+            {
+                if (!ownerInfo.Bounds.HasValue)
+                    continue;
+
+                foreach (int faceId in ownerInfo.FaceIds)
+                {
+                    var faceBounds = data.GetBounds(faceId);
+                    if (!faceBounds.HasValue)
+                        continue;
+
+                    var markedBoundIds = new HashSet<int>();
+                    StepWatermarkMarkedRegion bestRegion = null;
+                    foreach (int boundId in data.GetInnerFaceBounds(faceId))
+                    {
+                        var boundBounds = data.GetBounds(boundId);
+                        if (!boundBounds.HasValue)
+                            continue;
+
+                        if (!LooksLikeSmallMark(boundBounds.Value, faceBounds.Value, options))
+                            continue;
+
+                        if (!TryFindMarkedRegion(boundBounds.Value, markedRegions, options.MarkedLoopMinOverlap, options, out StepWatermarkMarkedRegion matchingRegion))
+                            continue;
+
+                        bestRegion = matchingRegion;
+                        markedBoundIds.Add(boundId);
+                    }
+
+                    if (markedBoundIds.Count == 0)
+                        continue;
+
+                    int hostAxis = FindPlanarAxis(faceBounds.Value, options);
+                    if (hostAxis < 0 && bestRegion != null)
+                        hostAxis = bestRegion.DepthAxis;
+
+                    if (hostAxis < 0)
+                        continue;
+
+                    double targetCoordinate = (faceBounds.Value.Min.Get(hostAxis) + faceBounds.Value.Max.Get(hostAxis)) / 2.0;
+                    var host = new HostPlaneMatch
+                    {
+                        Axis = hostAxis,
+                        TargetCoordinate = targetCoordinate,
+                        HostFaceId = faceId,
+                        Score = 1.0
+                    };
+
+                    foreach (int boundId in markedBoundIds)
+                    {
+                        if (!result.HostFaceBoundsToRemove.TryGetValue(faceId, out var boundIds))
+                        {
+                            boundIds = new HashSet<int>();
+                            result.HostFaceBoundsToRemove.Add(faceId, boundIds);
+                        }
+
+                        if (boundIds.Add(boundId))
+                            selectedLoopCount++;
+                    }
+
+                    foreach (int adjacentFaceId in FindHostLoopAdjacentFaces(data, ownerInfo, host, markedBoundIds, options))
+                    {
+                        if (adjacentFaceId == faceId)
+                            continue;
+
+                        if (result.FlattenedFaces.Add(adjacentFaceId))
+                            result.FlattenedFaceCount++;
+
+                        result.ReplacementFaceByRemovedFace[adjacentFaceId] = faceId;
+                    }
+                }
+            }
+
+            return selectedLoopCount;
+        }
+
+        private static void AppendMarkedRegions(List<StepWatermarkMarkedRegion> result, string markerPath, string projectionPath)
+        {
+            using (JsonDocument markerDocument = JsonDocument.Parse(File.ReadAllText(markerPath)))
+            using (JsonDocument projectionDocument = JsonDocument.Parse(File.ReadAllText(projectionPath)))
+            {
+                JsonElement markerRoot = markerDocument.RootElement;
+                JsonElement projectionRoot = projectionDocument.RootElement;
+                if (!markerRoot.TryGetProperty("Rectangles", out JsonElement rectangles) ||
+                    rectangles.ValueKind != JsonValueKind.Array)
+                    return;
+
+                JsonElement image = RequireObject(projectionRoot, "image", projectionPath);
+                JsonElement axes = RequireObject(projectionRoot, "model_axes", projectionPath);
+                JsonElement mapping = RequireObject(projectionRoot, "mapping", projectionPath);
+
+                int imageWidth = RequireInt(image, "width", projectionPath);
+                int imageHeight = RequireInt(image, "height", projectionPath);
+                int padding = RequireInt(image, "padding", projectionPath);
+                int uAxis = AxisIndex(RequireString(axes, "u_axis", projectionPath));
+                int uSign = RequireInt(axes, "u_sign", projectionPath);
+                int vAxis = AxisIndex(RequireString(axes, "v_axis", projectionPath));
+                int vSign = RequireInt(axes, "v_sign", projectionPath);
+                int depthAxis = AxisIndex(RequireString(axes, "depth_axis", projectionPath));
+                int depthSign = RequireInt(axes, "depth_sign", projectionPath);
+                string viewName = RequireString(projectionRoot, "view", projectionPath);
+                double scale = RequireDouble(mapping, "scale_pixels_per_model_unit", projectionPath);
+                double mappingUMin = RequireDouble(mapping, "u_min", projectionPath);
+                double mappingVMin = RequireDouble(mapping, "v_min", projectionPath);
+
+                if (scale <= 0.0)
+                    return;
+
+                foreach (JsonElement rectangle in rectangles.EnumerateArray())
+                {
+                    int x = RequireInt(rectangle, "X", markerPath);
+                    int y = RequireInt(rectangle, "Y", markerPath);
+                    int width = RequireInt(rectangle, "Width", markerPath);
+                    int height = RequireInt(rectangle, "Height", markerPath);
+                    if (width <= 0 || height <= 0)
+                        continue;
+
+                    double u0 = mappingUMin + (x - padding) / scale;
+                    double u1 = mappingUMin + (x + width - padding) / scale;
+                    double v0 = mappingVMin + (imageHeight - padding - y) / scale;
+                    double v1 = mappingVMin + (imageHeight - padding - (y + height)) / scale;
+
+                    result.Add(new StepWatermarkMarkedRegion
+                    {
+                        ViewName = viewName,
+                        SourceMarkerPath = markerPath,
+                        SourceProjectionPath = projectionPath,
+                        UAxis = uAxis,
+                        USign = NormalizeSign(uSign),
+                        VAxis = vAxis,
+                        VSign = NormalizeSign(vSign),
+                        DepthAxis = depthAxis,
+                        DepthSign = NormalizeSign(depthSign),
+                        ModelUMin = Math.Min(u0, u1),
+                        ModelUMax = Math.Max(u0, u1),
+                        ModelVMin = Math.Min(v0, v1),
+                        ModelVMax = Math.Max(v0, v1),
+                        ScalePixelsPerModelUnit = scale,
+                        ImageWidth = imageWidth,
+                        ImageHeight = imageHeight,
+                        RectangleX = x,
+                        RectangleY = y,
+                        RectangleWidth = width,
+                        RectangleHeight = height
+                    });
+                }
+            }
+        }
+
+        private static bool HasMarkedRegionArea(StepWatermarkMarkedRegion region)
+        {
+            return region != null &&
+                region.ModelUMax > region.ModelUMin &&
+                region.ModelVMax > region.ModelVMin &&
+                region.ScalePixelsPerModelUnit > 0.0;
+        }
+
+        private static bool BoundsOverlapsMarkedRegions(
+            Bounds bounds,
+            List<StepWatermarkMarkedRegion> markedRegions,
+            double minOverlapRatio,
+            StepWatermarkCleanerOptions options)
+        {
+            return TryFindMarkedRegion(bounds, markedRegions, minOverlapRatio, options, out _);
+        }
+
+        private static bool TryFindMarkedRegion(
+            Bounds bounds,
+            List<StepWatermarkMarkedRegion> markedRegions,
+            double minOverlapRatio,
+            StepWatermarkCleanerOptions options,
+            out StepWatermarkMarkedRegion bestRegion)
+        {
+            bestRegion = null;
+            double bestRatio = 0.0;
+            foreach (var region in markedRegions)
+            {
+                double ratio = MarkedOverlapRatio(bounds, region, options);
+                if (ratio <= bestRatio)
+                    continue;
+
+                bestRatio = ratio;
+                bestRegion = region;
+            }
+
+            return bestRatio >= minOverlapRatio;
+        }
+
+        private static double MarkedOverlapRatio(
+            Bounds bounds,
+            StepWatermarkMarkedRegion region,
+            StepWatermarkCleanerOptions options)
+        {
+            double padding = region.ScalePixelsPerModelUnit > 0.0
+                ? options.MarkedRegionPaddingPixels / region.ScalePixelsPerModelUnit
+                : 0.0;
+
+            double u0 = bounds.Min.Get(region.UAxis) * region.USign;
+            double u1 = bounds.Max.Get(region.UAxis) * region.USign;
+            double v0 = bounds.Min.Get(region.VAxis) * region.VSign;
+            double v1 = bounds.Max.Get(region.VAxis) * region.VSign;
+            double uMin = Math.Min(u0, u1);
+            double uMax = Math.Max(u0, u1);
+            double vMin = Math.Min(v0, v1);
+            double vMax = Math.Max(v0, v1);
+
+            double candidateWidth = Math.Max(uMax - uMin, 0.0);
+            double candidateHeight = Math.Max(vMax - vMin, 0.0);
+            double centerU = (uMin + uMax) / 2.0;
+            double centerV = (vMin + vMax) / 2.0;
+
+            if (candidateWidth <= 0.0000001 || candidateHeight <= 0.0000001)
+            {
+                return centerU >= region.ModelUMin - padding &&
+                    centerU <= region.ModelUMax + padding &&
+                    centerV >= region.ModelVMin - padding &&
+                    centerV <= region.ModelVMax + padding
+                    ? 1.0
+                    : 0.0;
+            }
+
+            double intersectionUMin = Math.Max(uMin, region.ModelUMin - padding);
+            double intersectionUMax = Math.Min(uMax, region.ModelUMax + padding);
+            double intersectionVMin = Math.Max(vMin, region.ModelVMin - padding);
+            double intersectionVMax = Math.Min(vMax, region.ModelVMax + padding);
+            double intersectionWidth = Math.Max(0.0, intersectionUMax - intersectionUMin);
+            double intersectionHeight = Math.Max(0.0, intersectionVMax - intersectionVMin);
+            double candidateArea = candidateWidth * candidateHeight;
+            if (candidateArea <= 0.0000000001)
+                return 0.0;
+
+            double overlap = intersectionWidth * intersectionHeight / candidateArea;
+            if (overlap > 0.0 &&
+                centerU >= region.ModelUMin - padding &&
+                centerU <= region.ModelUMax + padding &&
+                centerV >= region.ModelVMin - padding &&
+                centerV <= region.ModelVMax + padding)
+                overlap = Math.Max(overlap, 0.5);
+
+            return overlap;
+        }
+
+        private static int FindPlanarAxis(Bounds bounds, StepWatermarkCleanerOptions options)
+        {
+            Vec3d size = bounds.Size;
+            int axis = 0;
+            double best = Math.Abs(size.X);
+            if (Math.Abs(size.Y) < best)
+            {
+                axis = 1;
+                best = Math.Abs(size.Y);
+            }
+
+            if (Math.Abs(size.Z) < best)
+            {
+                axis = 2;
+                best = Math.Abs(size.Z);
+            }
+
+            return best <= Math.Max(options.PlaneTolerance, 0.000001) ? axis : -1;
+        }
+
+        private static JsonElement RequireObject(JsonElement element, string propertyName, string path)
+        {
+            if (!element.TryGetProperty(propertyName, out JsonElement value) || value.ValueKind != JsonValueKind.Object)
+                throw new InvalidDataException("Projection metadata is missing object '" + propertyName + "': " + path);
+
+            return value;
+        }
+
+        private static string RequireString(JsonElement element, string propertyName, string path)
+        {
+            if (!element.TryGetProperty(propertyName, out JsonElement value) || value.ValueKind != JsonValueKind.String)
+                throw new InvalidDataException("JSON is missing string '" + propertyName + "': " + path);
+
+            return value.GetString();
+        }
+
+        private static int RequireInt(JsonElement element, string propertyName, string path)
+        {
+            if (!element.TryGetProperty(propertyName, out JsonElement value) || !value.TryGetInt32(out int result))
+                throw new InvalidDataException("JSON is missing integer '" + propertyName + "': " + path);
+
+            return result;
+        }
+
+        private static double RequireDouble(JsonElement element, string propertyName, string path)
+        {
+            if (!element.TryGetProperty(propertyName, out JsonElement value) || !value.TryGetDouble(out double result))
+                throw new InvalidDataException("JSON is missing number '" + propertyName + "': " + path);
+
+            return result;
+        }
+
+        private static int NormalizeSign(int sign)
+        {
+            return sign < 0 ? -1 : 1;
+        }
+
+        private static int AxisIndex(string axisName)
+        {
+            switch (axisName?.Trim().ToUpperInvariant())
+            {
+                case "X": return 0;
+                case "Y": return 1;
+                case "Z": return 2;
+                default: throw new InvalidDataException("Unsupported projection axis name: " + axisName);
+            }
+        }
+
         private static HashSet<int> FindRemovableWatermarkSolids(
             Dictionary<int, SolidInfo> solidInfo,
             Dictionary<int, List<StyledItemInfo>> styledByTarget,
@@ -177,7 +789,7 @@ namespace EasyEDA_Loader
                             continue;
 
                         styledFaceCount++;
-                        if (IsWatermarkColor(faceStyle.Color.Value, options))
+                        if (IsStandaloneWatermarkColor(faceStyle.Color.Value, options))
                             watermarkFaceCount++;
                     }
                 }
@@ -332,6 +944,9 @@ namespace EasyEDA_Loader
                     {
                         if (result.FlattenedFaces.Add(faceId))
                             addedFaceCount++;
+
+                        if (host.HostFaceId.HasValue && faceId != host.HostFaceId.Value)
+                            result.ReplacementFaceByRemovedFace[faceId] = host.HostFaceId.Value;
                     }
 
                     foreach (int boundId in hostBoundsToRemove)
@@ -666,6 +1281,7 @@ namespace EasyEDA_Loader
         private static int RecolorFlattenedFaces(
             StepData data,
             HashSet<int> embeddedFaces,
+            Dictionary<int, int> replacementFaceByRemovedFace,
             Dictionary<int, int> faceOwners,
             Dictionary<int, SolidInfo> solidInfo,
             List<StyledItemInfo> styledItems,
@@ -688,6 +1304,9 @@ namespace EasyEDA_Loader
                     continue;
 
                 string newDefinition = ReplaceFirstReference(styledItem.Entity.Definition, styledItem.StyleId, ownerInfo.ReplacementStyleId.Value);
+                if (replacementFaceByRemovedFace.TryGetValue(styledItem.TargetId, out int replacementFaceId))
+                    newDefinition = ReplaceLastReference(newDefinition, styledItem.TargetId, ResolveReplacementFace(replacementFaceByRemovedFace, embeddedFaces, ownerInfo, replacementFaceId));
+
                 if (newDefinition == styledItem.Entity.Definition)
                     continue;
 
@@ -809,10 +1428,34 @@ namespace EasyEDA_Loader
                 color.ChannelSpread <= options.NeutralMaxChannelSpread;
         }
 
+        private static bool IsDarkWatermarkColor(StepColor color, StepWatermarkCleanerOptions options)
+        {
+            return color.Luminance <= options.DarkWatermarkMaxLuminance &&
+                color.ChannelSpread <= options.NeutralMaxChannelSpread;
+        }
+
+        private static bool IsStandaloneWatermarkColor(StepColor color, StepWatermarkCleanerOptions options)
+        {
+            return IsWatermarkColor(color, options) ||
+                IsDarkWatermarkColor(color, options);
+        }
+
         private static bool IsEmbeddedWatermarkColor(StepColor color, StepWatermarkCleanerOptions options)
         {
-            return color.Luminance >= options.EmbeddedWatermarkMinLuminance &&
+            return (color.Luminance >= options.EmbeddedWatermarkMinLuminance ||
+                    color.Luminance <= options.DarkWatermarkMaxLuminance) &&
                 color.ChannelSpread <= options.NeutralMaxChannelSpread;
+        }
+
+        private static bool IsReplacementBodyColor(StepColor color, StepWatermarkCleanerOptions options, bool allowDark)
+        {
+            if (color.Luminance > options.NeutralBodyMaxLuminance)
+                return false;
+
+            if (IsWatermarkColor(color, options))
+                return false;
+
+            return allowDark || !IsDarkWatermarkColor(color, options);
         }
 
         private static bool ProjectionIntersects(Bounds a, Bounds b, int excludedAxis, double padding)
@@ -927,6 +1570,7 @@ namespace EasyEDA_Loader
                     .ToList();
 
                 var styleCounts = new Dictionary<int, StyleUse>();
+                var nonDarkStyleCounts = new Dictionary<int, StyleUse>();
 
                 foreach (int faceId in faceIds)
                 {
@@ -938,30 +1582,24 @@ namespace EasyEDA_Loader
                         if (!faceStyle.Color.HasValue)
                             continue;
 
-                        if (faceStyle.Color.Value.Luminance > options.NeutralBodyMaxLuminance)
+                        if (!IsReplacementBodyColor(faceStyle.Color.Value, options, allowDark: true))
                             continue;
 
-                        if (IsWatermarkColor(faceStyle.Color.Value, options))
-                            continue;
+                        AddStyleUse(styleCounts, faceStyle.StyleId, faceStyle.Color.Value);
 
-                        if (!styleCounts.TryGetValue(faceStyle.StyleId, out var use))
-                        {
-                            use = new StyleUse
-                            {
-                                StyleId = faceStyle.StyleId,
-                                Color = faceStyle.Color.Value
-                            };
-                            styleCounts.Add(faceStyle.StyleId, use);
-                        }
-
-                        use.Count++;
+                        if (IsReplacementBodyColor(faceStyle.Color.Value, options, allowDark: false))
+                            AddStyleUse(nonDarkStyleCounts, faceStyle.StyleId, faceStyle.Color.Value);
                     }
                 }
 
                 int? replacementStyleId = null;
                 StepColor? replacementColor = null;
 
-                var dominant = styleCounts.Values
+                var dominant = nonDarkStyleCounts.Values
+                    .OrderByDescending(s => s.Count)
+                    .ThenBy(s => s.Color.Luminance)
+                    .FirstOrDefault()
+                    ?? styleCounts.Values
                     .OrderByDescending(s => s.Count)
                     .ThenBy(s => s.Color.Luminance)
                     .FirstOrDefault();
@@ -975,8 +1613,10 @@ namespace EasyEDA_Loader
                 {
                     var solidStyle = solidStyles.FirstOrDefault(s =>
                         s.Color.HasValue &&
-                        s.Color.Value.Luminance <= options.NeutralBodyMaxLuminance &&
-                        !IsWatermarkColor(s.Color.Value, options));
+                        IsReplacementBodyColor(s.Color.Value, options, allowDark: false))
+                        ?? solidStyles.FirstOrDefault(s =>
+                            s.Color.HasValue &&
+                            IsReplacementBodyColor(s.Color.Value, options, allowDark: true));
                     if (solidStyle != null)
                     {
                         replacementStyleId = solidStyle.StyleId;
@@ -997,6 +1637,49 @@ namespace EasyEDA_Loader
             return result;
         }
 
+        private static int ResolveReplacementFace(
+            Dictionary<int, int> replacementFaceByRemovedFace,
+            HashSet<int> removedFaces,
+            SolidInfo ownerInfo,
+            int faceId)
+        {
+            var seen = new HashSet<int>();
+            int current = faceId;
+            while (replacementFaceByRemovedFace.TryGetValue(current, out int replacementFaceId))
+            {
+                if (!seen.Add(current) || replacementFaceId == current)
+                    break;
+
+                current = replacementFaceId;
+            }
+
+            if (removedFaces.Contains(current))
+            {
+                foreach (int ownerFaceId in ownerInfo.FaceIds)
+                {
+                    if (!removedFaces.Contains(ownerFaceId))
+                        return ownerFaceId;
+                }
+            }
+
+            return current;
+        }
+
+        private static void AddStyleUse(Dictionary<int, StyleUse> styleCounts, int styleId, StepColor color)
+        {
+            if (!styleCounts.TryGetValue(styleId, out var use))
+            {
+                use = new StyleUse
+                {
+                    StyleId = styleId,
+                    Color = color
+                };
+                styleCounts.Add(styleId, use);
+            }
+
+            use.Count++;
+        }
+
         private static string ReplaceFirstReference(string definition, int oldReferenceId, int newReferenceId)
         {
             bool replaced = false;
@@ -1014,6 +1697,26 @@ namespace EasyEDA_Loader
                 replaced = true;
                 return "#" + newReferenceId.ToString(CultureInfo.InvariantCulture);
             }, 1);
+        }
+
+        private static string ReplaceLastReference(string definition, int oldReferenceId, int newReferenceId)
+        {
+            Match replacementMatch = null;
+            foreach (Match match in ReferenceRegex.Matches(definition))
+            {
+                if (!int.TryParse(match.Groups[1].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out int id))
+                    continue;
+
+                if (id == oldReferenceId)
+                    replacementMatch = match;
+            }
+
+            if (replacementMatch == null)
+                return definition;
+
+            return definition.Substring(0, replacementMatch.Index) +
+                "#" + newReferenceId.ToString(CultureInfo.InvariantCulture) +
+                definition.Substring(replacementMatch.Index + replacementMatch.Length);
         }
 
         private sealed class StyledItemInfo
@@ -1062,6 +1765,7 @@ namespace EasyEDA_Loader
             public int FlattenedFaceCount { get; set; }
             public int FlattenedPointCount { get; set; }
             public HashSet<int> FlattenedFaces { get; } = new HashSet<int>();
+            public Dictionary<int, int> ReplacementFaceByRemovedFace { get; } = new Dictionary<int, int>();
             public Dictionary<int, HashSet<int>> HostFaceBoundsToRemove { get; } = new Dictionary<int, HashSet<int>>();
             public List<FlattenOperation> Operations { get; } = new List<FlattenOperation>();
         }

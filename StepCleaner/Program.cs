@@ -33,7 +33,9 @@ namespace StepCleaner
 
             try
             {
-                var report = CleanFile(inputPath, outputPath);
+                string projectionDirectory = GetDefaultProjectionOutputPath(inputPath);
+                string markedDirectory = GetDefaultMarkedDirectory(inputPath);
+                var report = CleanFile(inputPath, outputPath, projectionDirectory, markedDirectory);
 
                 Console.WriteLine("STEP watermark cleanup complete");
                 Console.WriteLine("Input:  " + Path.GetFullPath(inputPath));
@@ -134,6 +136,10 @@ namespace StepCleaner
             Console.WriteLine("STEP watermark batch cleanup");
             Console.WriteLine("Input directory:  " + Path.GetFullPath(inputDirectory));
             Console.WriteLine("Output directory: " + Path.GetFullPath(outputDirectory));
+            string projectionDirectory = GetDefaultProjectionOutputPath(inputDirectory);
+            string markedDirectory = GetDefaultMarkedDirectory(inputDirectory);
+            Console.WriteLine("Projection directory: " + Path.GetFullPath(projectionDirectory));
+            Console.WriteLine("Marked directory:     " + Path.GetFullPath(markedDirectory));
             Console.WriteLine("Files: " + inputFiles.Count.ToString(CultureInfo.InvariantCulture));
 
             int totalRemovedSolids = 0;
@@ -146,7 +152,7 @@ namespace StepCleaner
                 foreach (string inputFile in inputFiles)
                 {
                     string outputFile = Path.Combine(outputDirectory, Path.GetFileName(inputFile));
-                    var report = CleanFile(inputFile, outputFile);
+                    var report = CleanFile(inputFile, outputFile, projectionDirectory, markedDirectory);
 
                     totalRemovedSolids += report.RemovedSolidCount;
                     totalFlattenedFaces += report.FlattenedFaceCount;
@@ -177,9 +183,23 @@ namespace StepCleaner
 
         private static StepWatermarkCleanerReport CleanFile(string inputPath, string outputPath)
         {
+            return CleanFile(inputPath, outputPath, GetDefaultProjectionOutputPath(inputPath), GetDefaultMarkedDirectory(inputPath));
+        }
+
+        private static StepWatermarkCleanerReport CleanFile(string inputPath, string outputPath, string projectionDirectory, string markedDirectory)
+        {
             byte[] stepBytes = File.ReadAllBytes(inputPath);
             string stepText = System.Text.Encoding.Latin1.GetString(stepBytes);
-            var report = StepWatermarkCleaner.CleanWithReport(stepText);
+
+            var options = new StepWatermarkCleanerOptions();
+            var markedRegions = StepWatermarkCleaner.LoadMarkedRegionsForStepFile(inputPath, projectionDirectory, markedDirectory);
+            foreach (var region in markedRegions)
+                options.MarkedRegions.Add(region);
+
+            if (Directory.Exists(markedDirectory) || options.MarkedRegions.Count > 0)
+                options.UseMarkedRegionsOnly = true;
+
+            var report = StepWatermarkCleaner.CleanWithReport(stepText, options);
             File.WriteAllBytes(outputPath, System.Text.Encoding.Latin1.GetBytes(report.CleanedStep));
             return report;
         }
@@ -206,15 +226,37 @@ namespace StepCleaner
             if (Directory.Exists(inputPath))
             {
                 string fullInput = Path.GetFullPath(inputPath).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-                string parent = Path.GetDirectoryName(fullInput) ?? fullInput;
+                string inputParent = Path.GetDirectoryName(fullInput) ?? fullInput;
                 string name = Path.GetFileName(fullInput);
                 return string.Equals(name, "Original", StringComparison.OrdinalIgnoreCase)
-                    ? Path.Combine(parent, "Projection")
+                    ? Path.Combine(inputParent, "Projection")
                     : Path.Combine(fullInput, "Projection");
             }
 
-            string directory = Path.GetDirectoryName(Path.GetFullPath(inputPath)) ?? string.Empty;
-            return Path.Combine(directory, "Projection");
+            string fullInputDirectory = Path.GetDirectoryName(Path.GetFullPath(inputPath)) ?? string.Empty;
+            string fileParent = Path.GetDirectoryName(fullInputDirectory) ?? fullInputDirectory;
+            return string.Equals(Path.GetFileName(fullInputDirectory), "Original", StringComparison.OrdinalIgnoreCase)
+                ? Path.Combine(fileParent, "Projection")
+                : Path.Combine(fullInputDirectory, "Projection");
+        }
+
+        private static string GetDefaultMarkedDirectory(string inputPath)
+        {
+            if (Directory.Exists(inputPath))
+            {
+                string fullInput = Path.GetFullPath(inputPath).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+                string parent = Path.GetDirectoryName(fullInput) ?? fullInput;
+                string name = Path.GetFileName(fullInput);
+                return string.Equals(name, "Original", StringComparison.OrdinalIgnoreCase)
+                    ? Path.Combine(parent, "Marked")
+                    : Path.Combine(fullInput, "Marked");
+            }
+
+            string fullInputDirectory = Path.GetDirectoryName(Path.GetFullPath(inputPath)) ?? string.Empty;
+            string directoryParent = Path.GetDirectoryName(fullInputDirectory) ?? fullInputDirectory;
+            return string.Equals(Path.GetFileName(fullInputDirectory), "Original", StringComparison.OrdinalIgnoreCase)
+                ? Path.Combine(directoryParent, "Marked")
+                : Path.Combine(fullInputDirectory, "Marked");
         }
 
         private static List<string> GetStepFiles(string inputDirectory)

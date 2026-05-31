@@ -408,6 +408,7 @@ namespace EasyEDA_Loader
             public static ProjectionModel Build(StepModel step)
             {
                 var colors = BuildTargetColors(step);
+                var drawableFaceIds = step.GetDrawableAdvancedFaceIds();
                 var faces = new List<ProjectionFace>();
                 var bounds = new Bounds();
                 bool hasBounds = false;
@@ -416,6 +417,9 @@ namespace EasyEDA_Loader
                 foreach (StepEntity entity in step.Entities.Values)
                 {
                     if (entity.Type != "ADVANCED_FACE")
+                        continue;
+
+                    if (drawableFaceIds.Count > 0 && !drawableFaceIds.Contains(entity.Id))
                         continue;
 
                     ProjectionFace face = BuildFace(step, entity, colors);
@@ -741,6 +745,26 @@ namespace EasyEDA_Loader
             public string GetTypeName(int id)
             {
                 return Entities.TryGetValue(id, out StepEntity entity) ? entity.Type : string.Empty;
+            }
+
+            public HashSet<int> GetDrawableAdvancedFaceIds()
+            {
+                var result = new HashSet<int>();
+                foreach (StepEntity entity in Entities.Values)
+                {
+                    if (entity.Type != "MANIFOLD_SOLID_BREP" &&
+                        entity.Type != "SHELL_BASED_SURFACE_MODEL" &&
+                        entity.Type != "ADVANCED_BREP_SHAPE_REPRESENTATION")
+                        continue;
+
+                    foreach (int id in TraverseReferences(entity.Id))
+                    {
+                        if (GetTypeName(id) == "ADVANCED_FACE")
+                            result.Add(id);
+                    }
+                }
+
+                return result;
             }
 
             public bool TryGetVertexPoint(int vertexId, out Vec3d point)
