@@ -7,6 +7,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "EasyEDA-Loader", "EasyEDA-L
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Standalone", "..\Standalone\Standalone.csproj", "{78759C90-0844-482F-A87F-A40E25ADF6EA}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "StepCleaner", "..\StepCleaner\StepCleaner.csproj", "{E08727B4-8486-4D2A-8626-6F52895080B0}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -21,6 +23,10 @@ Global
 		{78759C90-0844-482F-A87F-A40E25ADF6EA}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{78759C90-0844-482F-A87F-A40E25ADF6EA}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{78759C90-0844-482F-A87F-A40E25ADF6EA}.Release|Any CPU.Build.0 = Release|Any CPU
+		{E08727B4-8486-4D2A-8626-6F52895080B0}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{E08727B4-8486-4D2A-8626-6F52895080B0}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{E08727B4-8486-4D2A-8626-6F52895080B0}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{E08727B4-8486-4D2A-8626-6F52895080B0}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
