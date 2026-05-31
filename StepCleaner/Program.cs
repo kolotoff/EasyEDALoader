@@ -30,9 +30,10 @@ namespace StepCleaner
 
             try
             {
-                string stepText = File.ReadAllText(inputPath);
+                byte[] stepBytes = File.ReadAllBytes(inputPath);
+                string stepText = System.Text.Encoding.Latin1.GetString(stepBytes);
                 var report = StepWatermarkCleaner.CleanWithReport(stepText);
-                File.WriteAllText(outputPath, report.CleanedStep);
+                File.WriteAllBytes(outputPath, System.Text.Encoding.Latin1.GetBytes(report.CleanedStep));
 
                 Console.WriteLine("STEP watermark cleanup complete");
                 Console.WriteLine("Input:  " + Path.GetFullPath(inputPath));

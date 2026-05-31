@@ -12,6 +12,7 @@ namespace EasyEDA_Loader
         public double WatermarkMinLuminance { get; set; } = 0.92;
         public double EmbeddedWatermarkMinLuminance { get; set; } = 0.62;
         public double BodyMaxLuminance { get; set; } = 0.46;
+        public double NeutralBodyMaxLuminance { get; set; } = 0.78;
         public double NeutralMaxChannelSpread { get; set; } = 0.16;
         public double MaxFaceAreaRatio { get; set; } = 0.18;
         public double MaxFaceDiagonalRatio { get; set; } = 0.45;
@@ -20,6 +21,7 @@ namespace EasyEDA_Loader
         public double EmbeddedReliefMaxDepth { get; set; } = 0.01;
         public double HostPlaneSearchDistance { get; set; } = 0.02;
         public double HostPlaneProjectionPadding { get; set; } = 0.05;
+        public double HostLoopAdjacentMaxDepth { get; set; } = 0.08;
         public double PlaneTolerance { get; set; } = 0.0002;
         public bool RequireDarkOwner { get; set; } = true;
         public bool RemoveEmbeddedWatermarkTopology { get; set; } = true;
@@ -54,9 +56,9 @@ namespace EasyEDA_Loader
             if (stepData == null)
                 throw new ArgumentNullException(nameof(stepData));
 
-            var text = Encoding.UTF8.GetString(stepData);
+            var text = Encoding.Latin1.GetString(stepData);
             var report = CleanWithReport(text, options);
-            return Encoding.UTF8.GetBytes(report.CleanedStep);
+            return Encoding.Latin1.GetBytes(report.CleanedStep);
         }
 
         public static string Clean(string stepText, StepWatermarkCleanerOptions options = null)
@@ -221,7 +223,7 @@ namespace EasyEDA_Loader
                 if (!ownerInfo.ReplacementStyleId.HasValue || !ownerInfo.ReplacementColor.HasValue)
                     continue;
 
-                if (options.RequireDarkOwner && ownerInfo.ReplacementColor.Value.Luminance > options.BodyMaxLuminance)
+                if (options.RequireDarkOwner && ownerInfo.ReplacementColor.Value.Luminance > options.NeutralBodyMaxLuminance)
                     continue;
 
                 var faceBounds = data.GetBounds(styledItem.TargetId);
@@ -274,6 +276,23 @@ namespace EasyEDA_Loader
                     if (host == null)
                         continue;
 
+                    var hostBoundsToRemove = new HashSet<int>();
+                    foreach (int boundId in data.GetMatchingInnerFaceBounds(host.HostFaceId, componentBounds.Value, host.Axis, options.HostPlaneProjectionPadding))
+                        hostBoundsToRemove.Add(boundId);
+
+                    if (hostBoundsToRemove.Count > 0)
+                    {
+                        foreach (int boundId in ExpandHostFaceBounds(data, host.HostFaceId, hostBoundsToRemove, options))
+                            hostBoundsToRemove.Add(boundId);
+                    }
+
+                    var facesToRemove = new HashSet<int>(componentFaces);
+                    if (hostBoundsToRemove.Count > 0)
+                    {
+                        foreach (int adjacentFaceId in FindHostLoopAdjacentFaces(data, ownerInfo, host, hostBoundsToRemove, options))
+                            facesToRemove.Add(adjacentFaceId);
+                    }
+
                     var editPointIds = new HashSet<int>();
                     foreach (int faceId in componentFaces)
                     {
@@ -303,12 +322,19 @@ namespace EasyEDA_Loader
                     }
 
                     if (changedPoints == 0)
-                        continue;
+                    {
+                        if (hostBoundsToRemove.Count == 0)
+                            continue;
+                    }
 
-                    foreach (int faceId in componentFaces)
-                        result.FlattenedFaces.Add(faceId);
+                    int addedFaceCount = 0;
+                    foreach (int faceId in facesToRemove)
+                    {
+                        if (result.FlattenedFaces.Add(faceId))
+                            addedFaceCount++;
+                    }
 
-                    foreach (int boundId in data.GetMatchingInnerFaceBounds(host.HostFaceId, componentBounds.Value, host.Axis, options.HostPlaneProjectionPadding))
+                    foreach (int boundId in hostBoundsToRemove)
                     {
                         if (!result.HostFaceBoundsToRemove.TryGetValue(host.HostFaceId.Value, out var boundIds))
                         {
@@ -319,7 +345,7 @@ namespace EasyEDA_Loader
                         boundIds.Add(boundId);
                     }
 
-                    result.FlattenedFaceCount += componentFaces.Count;
+                    result.FlattenedFaceCount += addedFaceCount;
                     result.FlattenedPointCount += changedPoints;
                     result.Operations.Add(new FlattenOperation
                     {
@@ -402,10 +428,10 @@ namespace EasyEDA_Loader
                     var color = styles.FirstOrDefault(s => s.Color.HasValue)?.Color;
                     if (color.HasValue)
                     {
-                        if (color.Value.Luminance > options.BodyMaxLuminance)
+                        if (color.Value.Luminance > options.NeutralBodyMaxLuminance)
                             continue;
 
-                        colorWeight = 1.0 + (options.BodyMaxLuminance - color.Value.Luminance);
+                        colorWeight = 1.0 + (options.NeutralBodyMaxLuminance - color.Value.Luminance);
                     }
                 }
 
@@ -424,6 +450,165 @@ namespace EasyEDA_Loader
             }
 
             return best;
+        }
+
+        private static HashSet<int> ExpandHostFaceBounds(
+            StepData data,
+            int? hostFaceId,
+            HashSet<int> seedBounds,
+            StepWatermarkCleanerOptions options)
+        {
+            var result = new HashSet<int>(seedBounds);
+            if (!hostFaceId.HasValue || seedBounds.Count == 0)
+                return result;
+
+            var allInnerBounds = data.GetInnerFaceBounds(hostFaceId).ToList();
+            if (allInnerBounds.Count == 0 || allInnerBounds.Count == seedBounds.Count)
+                return result;
+
+            var hostBounds = data.GetBounds(hostFaceId.Value);
+            var innerBounds = UnionBounds(data, allInnerBounds);
+            if (!hostBounds.HasValue || !innerBounds.HasValue)
+                return result;
+
+            if (!LooksLikeSmallMark(innerBounds.Value, hostBounds.Value, options))
+                return result;
+
+            foreach (int boundId in allInnerBounds)
+                result.Add(boundId);
+
+            return result;
+        }
+
+        private static HashSet<int> FindHostLoopAdjacentFaces(
+            StepData data,
+            SolidInfo ownerInfo,
+            HostPlaneMatch host,
+            HashSet<int> hostBoundIds,
+            StepWatermarkCleanerOptions options)
+        {
+            var result = new HashSet<int>();
+            if (!host.HostFaceId.HasValue || hostBoundIds.Count == 0)
+                return result;
+
+            var loopBounds = UnionBounds(data, hostBoundIds);
+            if (!loopBounds.HasValue)
+                return result;
+
+            var seedEdgeIds = new HashSet<int>();
+            foreach (int boundId in hostBoundIds)
+            {
+                foreach (int edgeId in data.GetReferencedIdsOfType(boundId, "EDGE_CURVE"))
+                    seedEdgeIds.Add(edgeId);
+            }
+
+            if (seedEdgeIds.Count == 0)
+                return result;
+
+            var faceEdges = new Dictionary<int, HashSet<int>>();
+            var edgeFaces = new Dictionary<int, List<int>>();
+            foreach (int faceId in ownerInfo.FaceIds)
+            {
+                var edges = new HashSet<int>(data.GetReferencedIdsOfType(faceId, "EDGE_CURVE"));
+                faceEdges.Add(faceId, edges);
+
+                foreach (int edgeId in edges)
+                {
+                    if (!edgeFaces.TryGetValue(edgeId, out var faces))
+                    {
+                        faces = new List<int>();
+                        edgeFaces.Add(edgeId, faces);
+                    }
+
+                    faces.Add(faceId);
+                }
+            }
+
+            var queue = new Queue<int>();
+            foreach (int edgeId in seedEdgeIds)
+            {
+                if (!edgeFaces.TryGetValue(edgeId, out var faces))
+                    continue;
+
+                foreach (int faceId in faces)
+                {
+                    if (faceId == host.HostFaceId.Value)
+                        continue;
+
+                    if (result.Contains(faceId))
+                        continue;
+
+                    if (!IsShallowFaceInHostLoopRegion(data, faceId, loopBounds.Value, host, options))
+                        continue;
+
+                    result.Add(faceId);
+                    queue.Enqueue(faceId);
+                }
+            }
+
+            while (queue.Count > 0)
+            {
+                int faceId = queue.Dequeue();
+                if (!faceEdges.TryGetValue(faceId, out var edges))
+                    continue;
+
+                foreach (int edgeId in edges)
+                {
+                    if (!edgeFaces.TryGetValue(edgeId, out var neighbors))
+                        continue;
+
+                    foreach (int neighborFaceId in neighbors)
+                    {
+                        if (neighborFaceId == host.HostFaceId.Value || result.Contains(neighborFaceId))
+                            continue;
+
+                        if (!IsShallowFaceInHostLoopRegion(data, neighborFaceId, loopBounds.Value, host, options))
+                            continue;
+
+                        result.Add(neighborFaceId);
+                        queue.Enqueue(neighborFaceId);
+                    }
+                }
+            }
+
+            return result;
+        }
+
+        private static bool IsShallowFaceInHostLoopRegion(
+            StepData data,
+            int faceId,
+            Bounds loopBounds,
+            HostPlaneMatch host,
+            StepWatermarkCleanerOptions options)
+        {
+            var faceBounds = data.GetBounds(faceId);
+            if (!faceBounds.HasValue)
+                return false;
+
+            if (!ProjectionIntersects(faceBounds.Value, loopBounds, host.Axis, options.HostPlaneProjectionPadding))
+                return false;
+
+            double minDistance = Math.Abs(faceBounds.Value.Min.Get(host.Axis) - host.TargetCoordinate);
+            double maxDistance = Math.Abs(faceBounds.Value.Max.Get(host.Axis) - host.TargetCoordinate);
+            return Math.Max(minDistance, maxDistance) <= options.HostLoopAdjacentMaxDepth;
+        }
+
+        private static Bounds? UnionBounds(StepData data, IEnumerable<int> entityIds)
+        {
+            Bounds result = new Bounds();
+            bool hasBounds = false;
+
+            foreach (int entityId in entityIds)
+            {
+                var bounds = data.GetBounds(entityId);
+                if (!bounds.HasValue)
+                    continue;
+
+                result.Include(bounds.Value);
+                hasBounds = true;
+            }
+
+            return hasBounds ? result : (Bounds?)null;
         }
 
         private static List<HashSet<int>> BuildFaceComponents(StepData data, List<int> faceIds)
@@ -753,7 +938,10 @@ namespace EasyEDA_Loader
                         if (!faceStyle.Color.HasValue)
                             continue;
 
-                        if (faceStyle.Color.Value.Luminance > options.BodyMaxLuminance)
+                        if (faceStyle.Color.Value.Luminance > options.NeutralBodyMaxLuminance)
+                            continue;
+
+                        if (IsWatermarkColor(faceStyle.Color.Value, options))
                             continue;
 
                         if (!styleCounts.TryGetValue(faceStyle.StyleId, out var use))
@@ -785,7 +973,10 @@ namespace EasyEDA_Loader
                 }
                 else if (styledByTarget.TryGetValue(solidId, out var solidStyles))
                 {
-                    var solidStyle = solidStyles.FirstOrDefault(s => s.Color.HasValue && s.Color.Value.Luminance <= options.BodyMaxLuminance);
+                    var solidStyle = solidStyles.FirstOrDefault(s =>
+                        s.Color.HasValue &&
+                        s.Color.Value.Luminance <= options.NeutralBodyMaxLuminance &&
+                        !IsWatermarkColor(s.Color.Value, options));
                     if (solidStyle != null)
                     {
                         replacementStyleId = solidStyle.StyleId;
@@ -1042,6 +1233,29 @@ namespace EasyEDA_Loader
                         continue;
 
                     yield return boundId;
+                }
+            }
+
+            public IEnumerable<int> GetInnerFaceBounds(int? faceId)
+            {
+                if (!faceId.HasValue)
+                    yield break;
+
+                var bounds = GetAdvancedFaceBounds(faceId.Value);
+                foreach (int boundId in bounds)
+                {
+                    string boundType = GetTypeName(boundId);
+                    if (boundType == "FACE_BOUND")
+                        yield return boundId;
+                }
+            }
+
+            public IEnumerable<int> GetReferencedIdsOfType(int rootId, string typeName)
+            {
+                foreach (int id in TraverseReferences(rootId))
+                {
+                    if (GetTypeName(id) == typeName)
+                        yield return id;
                 }
             }
 

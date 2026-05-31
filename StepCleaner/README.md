@@ -15,6 +15,12 @@ Embedded watermark topology is merged into the detected host plane by default.
 The cleaner removes only `FACE_BOUND` cut loops from that host face and always
 preserves `FACE_OUTER_BOUND`, because STEP files do not guarantee the outer bound
 is listed first.
+Medium-neutral bodies are supported as host surfaces too, so grey metal shells
+with same-colour LCEDA cuts can be cleaned without requiring white watermark
+styling.
+After a host face is confirmed, the cleaner follows the removed inner-loop
+edges to adjacent shallow faces in the same solid. This removes residual text
+sidewalls and caps that remain visible even after the main surface is flat.
 
 ## Usage
 
@@ -35,3 +41,7 @@ downloaded STEP bytes before writing the temporary file:
 byte[] step = StepWatermarkCleaner.Clean(modelTask.Result);
 File.WriteAllBytes(temp, step);
 ```
+
+Use the byte-based API for integration. It parses STEP syntax through a
+byte-preserving Latin-1 view so non-ASCII metadata from CAD exporters is not
+corrupted while ASCII STEP entities are edited.
