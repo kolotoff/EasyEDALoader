@@ -28,12 +28,12 @@ namespace EasyEDA_Loader
     {
         private static readonly ViewSpec[] Views =
         {
-            new ViewSpec("x_plus", 0, 1, 1, -1, 2, 1),
-            new ViewSpec("x_minus", 0, -1, 1, 1, 2, 1),
+            new ViewSpec("x_plus", 0, 1, 1, 1, 2, 1),
+            new ViewSpec("x_minus", 0, -1, 1, -1, 2, 1),
             new ViewSpec("y_plus", 1, 1, 0, 1, 2, 1),
             new ViewSpec("y_minus", 1, -1, 0, -1, 2, 1),
-            new ViewSpec("z_plus", 2, 1, 0, 1, 1, -1),
-            new ViewSpec("z_minus", 2, -1, 0, 1, 1, 1)
+            new ViewSpec("z_plus", 2, 1, 0, 1, 1, 1),
+            new ViewSpec("z_minus", 2, -1, 0, -1, 1, 1)
         };
 
         public static IReadOnlyList<StepProjectionReport> ProjectDirectory(
@@ -121,16 +121,10 @@ namespace EasyEDA_Loader
             foreach (ProjectionFace face in sortedFaces)
             {
                 Rgba fill = Shade(face.Color, face.Normal, view);
-                ProjectionLoop outerLoop = face.Loops
-                    .Where(l => l.Points.Count >= 3)
-                    .OrderByDescending(l => Math.Abs(ProjectedArea(l.Points, transform)))
-                    .FirstOrDefault();
+                var polygon = BuildFillPolygon(face, transform);
 
-                if (outerLoop != null)
-                {
-                    var polygon = outerLoop.Points.Select(transform.Project).ToList();
+                if (polygon.Count >= 3)
                     image.FillPolygon(polygon, fill);
-                }
 
                 Rgba line = ContrastLine(fill);
                 foreach (ProjectionLoop loop in face.Loops)
@@ -170,6 +164,85 @@ namespace EasyEDA_Loader
             foreach (Vec3d point in points)
             {
                 Point2d current = transform.ProjectDouble(point);
+                area += previous.X * current.Y - current.X * previous.Y;
+                previous = current;
+            }
+
+            return area / 2.0;
+        }
+
+        private static List<Point2i> BuildFillPolygon(ProjectionFace face, ProjectionTransform transform)
+        {
+            var points = new List<Point2d>();
+            foreach (Vec3d point in face.Points)
+                AddDistinctPoint(points, transform.ProjectDouble(point));
+
+            if (points.Count < 3)
+                return new List<Point2i>();
+
+            List<Point2d> hull = ConvexHull(points);
+            if (hull.Count < 3 || Math.Abs(Area(hull)) < 0.5)
+                return new List<Point2i>();
+
+            return hull.Select(p => new Point2i(
+                (int)Math.Round(p.X, MidpointRounding.AwayFromZero),
+                (int)Math.Round(p.Y, MidpointRounding.AwayFromZero))).ToList();
+        }
+
+        private static void AddDistinctPoint(List<Point2d> points, Point2d point)
+        {
+            foreach (Point2d existing in points)
+            {
+                if (Math.Abs(existing.X - point.X) < 0.25 && Math.Abs(existing.Y - point.Y) < 0.25)
+                    return;
+            }
+
+            points.Add(point);
+        }
+
+        private static List<Point2d> ConvexHull(List<Point2d> points)
+        {
+            var sorted = points
+                .OrderBy(p => p.X)
+                .ThenBy(p => p.Y)
+                .ToList();
+
+            var lower = new List<Point2d>();
+            foreach (Point2d point in sorted)
+            {
+                while (lower.Count >= 2 && Cross(lower[lower.Count - 2], lower[lower.Count - 1], point) <= 0.0)
+                    lower.RemoveAt(lower.Count - 1);
+
+                lower.Add(point);
+            }
+
+            var upper = new List<Point2d>();
+            for (int i = sorted.Count - 1; i >= 0; i--)
+            {
+                Point2d point = sorted[i];
+                while (upper.Count >= 2 && Cross(upper[upper.Count - 2], upper[upper.Count - 1], point) <= 0.0)
+                    upper.RemoveAt(upper.Count - 1);
+
+                upper.Add(point);
+            }
+
+            lower.RemoveAt(lower.Count - 1);
+            upper.RemoveAt(upper.Count - 1);
+            lower.AddRange(upper);
+            return lower;
+        }
+
+        private static double Cross(Point2d origin, Point2d a, Point2d b)
+        {
+            return (a.X - origin.X) * (b.Y - origin.Y) - (a.Y - origin.Y) * (b.X - origin.X);
+        }
+
+        private static double Area(List<Point2d> points)
+        {
+            double area = 0.0;
+            Point2d previous = points[points.Count - 1];
+            foreach (Point2d current in points)
+            {
                 area += previous.X * current.Y - current.X * previous.Y;
                 previous = current;
             }
@@ -451,14 +524,27 @@ namespace EasyEDA_Loader
                     .Take(2)
                     .ToList();
 
-                if (vertexPointIds.Count > 0 && step.TryGetVertexPoint(vertexPointIds[0], out Vec3d startPoint))
+                Vec3d startPoint = default;
+                Vec3d endPoint = default;
+                bool hasStartPoint = vertexPointIds.Count > 0 && step.TryGetVertexPoint(vertexPointIds[0], out startPoint);
+                bool hasEndPoint = vertexPointIds.Count > 1 && step.TryGetVertexPoint(vertexPointIds[1], out endPoint);
+
+                if (hasStartPoint)
                     edgePoints.Add(startPoint);
 
-                int curveId = edgeCurve.References.FirstOrDefault(id => id != 0 && step.GetTypeName(id).Contains("B_SPLINE_CURVE"));
-                if (curveId != 0)
-                    AppendPolyline(edgePoints, step.GetReferencedPoints(curveId, includeSurface: true));
+                int circleId = edgeCurve.References.FirstOrDefault(id => step.GetTypeName(id) == "CIRCLE");
+                if (circleId != 0 && step.TryGetCircleArc(circleId, hasStartPoint, startPoint, hasEndPoint, endPoint, ParseLastLogical(edgeCurve.Definition), out List<Vec3d> circlePoints))
+                {
+                    AppendPolyline(edgePoints, circlePoints);
+                }
+                else
+                {
+                    int curveId = edgeCurve.References.FirstOrDefault(id => id != 0 && step.GetTypeName(id).Contains("B_SPLINE_CURVE"));
+                    if (curveId != 0)
+                        AppendPolyline(edgePoints, step.GetReferencedPoints(curveId, includeSurface: true));
+                }
 
-                if (vertexPointIds.Count > 1 && step.TryGetVertexPoint(vertexPointIds[1], out Vec3d endPoint))
+                if (hasEndPoint)
                     edgePoints.Add(endPoint);
 
                 if (!ParseLastLogical(orientedEdge.Definition))
@@ -580,6 +666,12 @@ namespace EasyEDA_Loader
             private static readonly Regex CartesianPointRegex = new Regex(
                 @"CARTESIAN_POINT\s*\(\s*(?:'[^']*'|\$)\s*,\s*\(([^)]*)\)",
                 RegexOptions.Compiled);
+            private static readonly Regex DirectionRegex = new Regex(
+                @"DIRECTION\s*\(\s*(?:'[^']*'|\$)\s*,\s*\(([^)]*)\)",
+                RegexOptions.Compiled);
+            private static readonly Regex CircleRegex = new Regex(
+                @"CIRCLE\s*\(\s*(?:'[^']*'|\$)\s*,\s*#\d+\s*,\s*([-+0-9.Ee]+)\s*\)",
+                RegexOptions.Compiled);
 
             private readonly Dictionary<int, ColorRgb?> _colorCache = new Dictionary<int, ColorRgb?>();
             private readonly Dictionary<string, List<Vec3d>> _pointListCache = new Dictionary<string, List<Vec3d>>();
@@ -661,6 +753,53 @@ namespace EasyEDA_Loader
                 return pointId != 0 && TryGetPoint(pointId, out point);
             }
 
+            public bool TryGetCircleArc(
+                int circleId,
+                bool hasStartPoint,
+                Vec3d startPoint,
+                bool hasEndPoint,
+                Vec3d endPoint,
+                bool edgeCurveSameSense,
+                out List<Vec3d> points)
+            {
+                points = new List<Vec3d>();
+                if (!TryGetCircle(circleId, out CircleInfo circle))
+                    return false;
+
+                bool fullCircle = !hasStartPoint || !hasEndPoint || AlmostSame(startPoint, endPoint);
+                double startAngle = hasStartPoint ? circle.AngleOf(startPoint) : 0.0;
+                double delta;
+
+                if (fullCircle)
+                {
+                    delta = edgeCurveSameSense ? Math.PI * 2.0 : -Math.PI * 2.0;
+                }
+                else
+                {
+                    double endAngle = circle.AngleOf(endPoint);
+                    delta = endAngle - startAngle;
+                    if (edgeCurveSameSense)
+                    {
+                        while (delta <= 0.000000001)
+                            delta += Math.PI * 2.0;
+                    }
+                    else
+                    {
+                        while (delta >= -0.000000001)
+                            delta -= Math.PI * 2.0;
+                    }
+                }
+
+                int steps = Math.Max(10, Math.Min(128, (int)Math.Ceiling(Math.Abs(delta) / (Math.PI / 24.0))));
+                for (int i = 0; i <= steps; i++)
+                {
+                    double t = startAngle + delta * i / steps;
+                    points.Add(circle.PointAt(t));
+                }
+
+                return points.Count > 1;
+            }
+
             public List<Vec3d> GetReferencedPoints(int rootId, bool includeSurface)
             {
                 string key = rootId.ToString(CultureInfo.InvariantCulture) + "|" + includeSurface.ToString(CultureInfo.InvariantCulture);
@@ -691,6 +830,74 @@ namespace EasyEDA_Loader
 
                 _pointListCache[key] = new List<Vec3d>(result);
                 return result;
+            }
+
+            private bool TryGetCircle(int circleId, out CircleInfo circle)
+            {
+                circle = default;
+                if (!Entities.TryGetValue(circleId, out StepEntity entity) || entity.Type != "CIRCLE")
+                    return false;
+
+                if (!TryParseCircleRadius(entity.Definition, out double radius) || radius <= 0.0)
+                    return false;
+
+                int placementId = entity.References.FirstOrDefault(id => GetTypeName(id) == "AXIS2_PLACEMENT_3D");
+                if (placementId == 0 || !TryGetAxis2Placement(placementId, out Vec3d center, out Vec3d xDirection, out Vec3d yDirection))
+                    return false;
+
+                circle = new CircleInfo(center, xDirection, yDirection, radius);
+                return true;
+            }
+
+            private bool TryGetAxis2Placement(int placementId, out Vec3d center, out Vec3d xDirection, out Vec3d yDirection)
+            {
+                center = default;
+                xDirection = default;
+                yDirection = default;
+
+                if (!Entities.TryGetValue(placementId, out StepEntity placement) || placement.Type != "AXIS2_PLACEMENT_3D")
+                    return false;
+
+                int centerId = placement.References.FirstOrDefault(id => GetTypeName(id) == "CARTESIAN_POINT");
+                if (centerId == 0 || !TryGetPoint(centerId, out center))
+                    return false;
+
+                var directionIds = placement.References
+                    .Where(id => GetTypeName(id) == "DIRECTION")
+                    .ToList();
+
+                Vec3d axis = new Vec3d(0, 0, 1);
+                Vec3d reference = new Vec3d(1, 0, 0);
+
+                if (directionIds.Count > 0 && TryGetDirection(directionIds[0], out Vec3d parsedAxis))
+                    axis = parsedAxis;
+
+                if (directionIds.Count > 1 && TryGetDirection(directionIds[1], out Vec3d parsedReference))
+                    reference = parsedReference;
+
+                axis = axis.Normalized();
+                if (axis.Length <= 0.000000001)
+                    axis = new Vec3d(0, 0, 1);
+
+                reference = reference - axis * Vec3d.Dot(reference, axis);
+                xDirection = reference.Normalized();
+                if (xDirection.Length <= 0.000000001)
+                    xDirection = ChoosePerpendicular(axis);
+
+                yDirection = Vec3d.Cross(axis, xDirection).Normalized();
+                if (yDirection.Length <= 0.000000001)
+                    return false;
+
+                return true;
+            }
+
+            private bool TryGetDirection(int directionId, out Vec3d direction)
+            {
+                direction = default;
+                if (!Entities.TryGetValue(directionId, out StepEntity entity) || entity.Type != "DIRECTION")
+                    return false;
+
+                return TryParseDirection(entity.Definition, out direction);
             }
 
             public bool ResolveColor(int rootId, out ColorRgb color)
@@ -795,6 +1002,55 @@ namespace EasyEDA_Loader
                 return true;
             }
 
+            private static bool TryParseDirection(string definition, out Vec3d direction)
+            {
+                Match match = DirectionRegex.Match(definition);
+                if (!match.Success)
+                {
+                    direction = default;
+                    return false;
+                }
+
+                string[] parts = match.Groups[1].Value.Split(',');
+                if (parts.Length < 3)
+                {
+                    direction = default;
+                    return false;
+                }
+
+                direction = new Vec3d(ParseDouble(parts[0]), ParseDouble(parts[1]), ParseDouble(parts[2]));
+                return true;
+            }
+
+            private static bool TryParseCircleRadius(string definition, out double radius)
+            {
+                Match match = CircleRegex.Match(definition);
+                if (!match.Success)
+                {
+                    radius = 0.0;
+                    return false;
+                }
+
+                radius = ParseDouble(match.Groups[1].Value);
+                return true;
+            }
+
+            private static Vec3d ChoosePerpendicular(Vec3d axis)
+            {
+                Vec3d candidate = Math.Abs(axis.X) < 0.9
+                    ? new Vec3d(1, 0, 0)
+                    : new Vec3d(0, 1, 0);
+
+                return (candidate - axis * Vec3d.Dot(candidate, axis)).Normalized();
+            }
+
+            private static bool AlmostSame(Vec3d a, Vec3d b)
+            {
+                return Math.Abs(a.X - b.X) < 0.0000001
+                    && Math.Abs(a.Y - b.Y) < 0.0000001
+                    && Math.Abs(a.Z - b.Z) < 0.0000001;
+            }
+
             private static List<int> ParseReferences(string definition)
             {
                 var result = new List<int>();
@@ -859,6 +1115,37 @@ namespace EasyEDA_Loader
             public string Definition { get; set; }
             public string Type { get; set; }
             public List<int> References { get; set; } = new List<int>();
+        }
+
+        private struct CircleInfo
+        {
+            private readonly Vec3d _center;
+            private readonly Vec3d _xDirection;
+            private readonly Vec3d _yDirection;
+            private readonly double _radius;
+
+            public CircleInfo(Vec3d center, Vec3d xDirection, Vec3d yDirection, double radius)
+            {
+                _center = center;
+                _xDirection = xDirection;
+                _yDirection = yDirection;
+                _radius = radius;
+            }
+
+            public double AngleOf(Vec3d point)
+            {
+                Vec3d relative = point - _center;
+                double x = Vec3d.Dot(relative, _xDirection);
+                double y = Vec3d.Dot(relative, _yDirection);
+                return Math.Atan2(y, x);
+            }
+
+            public Vec3d PointAt(double angle)
+            {
+                return _center +
+                    _xDirection * (_radius * Math.Cos(angle)) +
+                    _yDirection * (_radius * Math.Sin(angle));
+            }
         }
 
         private sealed class ProjectionTransform
@@ -1262,9 +1549,24 @@ namespace EasyEDA_Loader
                     a.X * b.Y - a.Y * b.X);
             }
 
+            public static double Dot(Vec3d a, Vec3d b)
+            {
+                return a.X * b.X + a.Y * b.Y + a.Z * b.Z;
+            }
+
+            public static Vec3d operator +(Vec3d a, Vec3d b)
+            {
+                return new Vec3d(a.X + b.X, a.Y + b.Y, a.Z + b.Z);
+            }
+
             public static Vec3d operator -(Vec3d a, Vec3d b)
             {
                 return new Vec3d(a.X - b.X, a.Y - b.Y, a.Z - b.Z);
+            }
+
+            public static Vec3d operator *(Vec3d vector, double scale)
+            {
+                return new Vec3d(vector.X * scale, vector.Y * scale, vector.Z * scale);
             }
         }
 

@@ -1,0 +1,14 @@
+{
+  "Version": 1,
+  "ImageFile": "LQFP-100_L14.0-W14.0-H1.4-LS16.0-P0.50__z_plus.png",
+  "ImageWidth": 1600,
+  "ImageHeight": 1600,
+  "Rectangles": [
+    {
+      "X": 1039,
+      "Y": 242,
+      "Width": 336,
+      "Height": 144
+    }
+  ]
+}

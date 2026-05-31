@@ -1,0 +1,14 @@
+{
+  "Version": 1,
+  "ImageFile": "LED-SMD_XL-3838UV2SA06G3__z_minus.png",
+  "ImageWidth": 1600,
+  "ImageHeight": 1600,
+  "Rectangles": [
+    {
+      "X": 632,
+      "Y": 315,
+      "Width": 345,
+      "Height": 126
+    }
+  ]
+}

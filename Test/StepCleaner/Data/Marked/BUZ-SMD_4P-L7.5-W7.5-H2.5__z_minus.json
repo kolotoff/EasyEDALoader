@@ -1,0 +1,14 @@
+{
+  "Version": 1,
+  "ImageFile": "BUZ-SMD_4P-L7.5-W7.5-H2.5__z_minus.png",
+  "ImageWidth": 1600,
+  "ImageHeight": 1600,
+  "Rectangles": [
+    {
+      "X": 523,
+      "Y": 662,
+      "Width": 578,
+      "Height": 210
+    }
+  ]
+}

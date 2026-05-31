@@ -1,0 +1,14 @@
+{
+  "Version": 1,
+  "ImageFile": "USB-C-SMD_TYPE-C-6PIN-2MD-073__z_minus.png",
+  "ImageWidth": 1600,
+  "ImageHeight": 1600,
+  "Rectangles": [
+    {
+      "X": 443,
+      "Y": 529,
+      "Width": 699,
+      "Height": 197
+    }
+  ]
+}

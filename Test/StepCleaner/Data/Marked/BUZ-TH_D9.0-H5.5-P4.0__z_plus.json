@@ -1,0 +1,14 @@
+{
+  "Version": 1,
+  "ImageFile": "BUZ-TH_D9.0-H5.5-P4.0__z_plus.png",
+  "ImageWidth": 1600,
+  "ImageHeight": 1600,
+  "Rectangles": [
+    {
+      "X": 1234,
+      "Y": 608,
+      "Width": 214,
+      "Height": 416
+    }
+  ]
+}

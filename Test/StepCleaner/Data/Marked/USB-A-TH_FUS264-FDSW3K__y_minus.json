@@ -1,0 +1,14 @@
+{
+  "Version": 1,
+  "ImageFile": "USB-A-TH_FUS264-FDSW3K__y_minus.png",
+  "ImageWidth": 1600,
+  "ImageHeight": 1600,
+  "Rectangles": [
+    {
+      "X": 617,
+      "Y": 930,
+      "Width": 368,
+      "Height": 120
+    }
+  ]
+}

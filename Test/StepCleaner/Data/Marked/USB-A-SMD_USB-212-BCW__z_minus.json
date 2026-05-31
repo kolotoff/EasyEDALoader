@@ -1,0 +1,14 @@
+{
+  "Version": 1,
+  "ImageFile": "USB-A-SMD_USB-212-BCW__z_minus.png",
+  "ImageWidth": 1600,
+  "ImageHeight": 1600,
+  "Rectangles": [
+    {
+      "X": 366,
+      "Y": 606,
+      "Width": 97,
+      "Height": 356
+    }
+  ]
+}

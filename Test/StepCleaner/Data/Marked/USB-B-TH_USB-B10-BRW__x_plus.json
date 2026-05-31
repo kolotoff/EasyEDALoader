@@ -1,0 +1,14 @@
+{
+  "Version": 1,
+  "ImageFile": "USB-B-TH_USB-B10-BRW__x_plus.png",
+  "ImageWidth": 1600,
+  "ImageHeight": 1600,
+  "Rectangles": [
+    {
+      "X": 218,
+      "Y": 276,
+      "Width": 446,
+      "Height": 174
+    }
+  ]
+}

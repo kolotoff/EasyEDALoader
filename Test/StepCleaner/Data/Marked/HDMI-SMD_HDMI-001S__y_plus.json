@@ -1,0 +1,14 @@
+{
+  "Version": 1,
+  "ImageFile": "HDMI-SMD_HDMI-001S__y_plus.png",
+  "ImageWidth": 1600,
+  "ImageHeight": 1600,
+  "Rectangles": [
+    {
+      "X": 546,
+      "Y": 608,
+      "Width": 491,
+      "Height": 193
+    }
+  ]
+}

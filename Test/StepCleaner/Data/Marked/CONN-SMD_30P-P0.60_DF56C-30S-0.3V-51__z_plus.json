@@ -1,0 +1,14 @@
+{
+  "Version": 1,
+  "ImageFile": "CONN-SMD_30P-P0.60_DF56C-30S-0.3V-51__z_plus.png",
+  "ImageWidth": 1600,
+  "ImageHeight": 1600,
+  "Rectangles": [
+    {
+      "X": 750,
+      "Y": 835,
+      "Width": 135,
+      "Height": 58
+    }
+  ]
+}

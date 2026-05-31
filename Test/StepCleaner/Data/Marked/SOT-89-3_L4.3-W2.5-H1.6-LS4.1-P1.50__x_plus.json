@@ -1,0 +1,14 @@
+{
+  "Version": 1,
+  "ImageFile": "SOT-89-3_L4.3-W2.5-H1.6-LS4.1-P1.50__x_plus.png",
+  "ImageWidth": 1600,
+  "ImageHeight": 1600,
+  "Rectangles": [
+    {
+      "X": 583,
+      "Y": 653,
+      "Width": 488,
+      "Height": 217
+    }
+  ]
+}

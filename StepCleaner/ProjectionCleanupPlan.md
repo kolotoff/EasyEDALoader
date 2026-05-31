@@ -8,8 +8,8 @@ algorithm must be driven by explicit marked projection regions.
 
 - `Test\StepCleaner\Data\Original` is read-only source data.
 - `Test\StepCleaner\Data\Projection` is generated output from the projection tool.
-- `Test\StepCleaner\Data\Marked` is user-authored annotation data. Marked PNG
-  filenames should match the generated projection PNG filenames.
+- `Test\StepCleaner\Data\Marked` is user-authored annotation data. Marker JSON
+  filenames should match the generated projection PNG base names.
 - `Test\StepCleaner\Data\Validated` is read-only accepted STEP output.
 - Do not modify `Original` or `Validated` from tools or tests.
 
@@ -30,16 +30,24 @@ For every model, the tool writes these six views to `Projection`:
 - `z_plus`
 - `z_minus`
 
-Each PNG has a matching JSON file with the model-axis mapping and
-pixels-per-model-unit scale. Copy or save marked PNGs to `Marked` with the same
-filename and draw red rectangles around only watermark regions.
+Each PNG has a matching projection JSON file with the model-axis mapping and
+pixels-per-model-unit scale. Mark watermark regions with the graphical marker
+tool; it overlays red rectangles in the UI and saves rectangle coordinates as
+JSON sidecars in `Marked` without modifying PNG files:
+
+```powershell
+dotnet run --project StepProjectionMarker\StepProjectionMarker.csproj -- Test\StepCleaner\Data\Projection Test\StepCleaner\Data\Marked
+```
+
+Use the file list or Previous/Next buttons to switch images. Draw rectangles
+with the mouse, save with Ctrl+S or Save, undo with Ctrl+Z, and redo with Ctrl+Y.
 
 ## Cleanup Algorithm Rule
 
 The future common cleaner should:
 
-1. Load marked red rectangles from `Marked` PNGs and their matching projection
-   JSON files.
+1. Load marked rectangles from `Marked` JSON sidecars and their matching
+   projection JSON files.
 2. Convert each rectangle to a model-space projection region on the matching
    view axis.
 3. Select only STEP faces, thin solids, host loops, and shallow adjacent faces
