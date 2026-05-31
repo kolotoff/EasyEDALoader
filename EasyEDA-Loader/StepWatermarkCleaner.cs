@@ -1871,15 +1871,23 @@ namespace EasyEDA_Loader
                 ? options.AutomaticClusterMinPointCount
                 : options.AutomaticClusterMinPointCount * 3;
 
-            if (cluster.Count < minFaceCount && pointCount < minPointCount)
-                return false;
-
             Bounds clusterBounds = new Bounds();
             foreach (var candidate in cluster)
                 clusterBounds.Include(candidate.Bounds);
 
             var hostBounds = cluster[0].HostBounds;
             if (!LooksLikeSmallMark(clusterBounds, hostBounds, options))
+                return false;
+
+            bool compactEngravedCandidate =
+                !hasColorCue &&
+                cluster.Count >= 3 &&
+                pointCount >= 30 &&
+                LooksLikeCompactEngravedWordPattern(clusterBounds, hostBounds, axis);
+
+            if (!compactEngravedCandidate &&
+                cluster.Count < minFaceCount &&
+                pointCount < minPointCount)
                 return false;
 
             if (TouchesProjectedBoundary(clusterBounds, hostBounds, axis, GetAutomaticEdgeMargin(hostBounds, axis)) &&
@@ -1895,6 +1903,34 @@ namespace EasyEDA_Loader
                     cluster.Count,
                     pointCount,
                     hasColorCue);
+        }
+
+        private static bool LooksLikeCompactEngravedWordPattern(
+            Bounds clusterBounds,
+            Bounds hostBounds,
+            int excludedAxis)
+        {
+            int uAxis;
+            int vAxis;
+            GetProjectedAxes(excludedAxis, out uAxis, out vAxis);
+
+            double width = Math.Abs(clusterBounds.Size.Get(uAxis));
+            double height = Math.Abs(clusterBounds.Size.Get(vAxis));
+            if (width <= 0.000001 || height <= 0.000001)
+                return false;
+
+            double hostWidth = Math.Max(Math.Abs(hostBounds.Size.Get(uAxis)), 0.000001);
+            double hostHeight = Math.Max(Math.Abs(hostBounds.Size.Get(vAxis)), 0.000001);
+            double widthRatio = width / hostWidth;
+            double heightRatio = height / hostHeight;
+            double areaRatio = (width * height) / Math.Max(hostWidth * hostHeight, 0.000001);
+            double aspect = width >= height ? width / height : height / width;
+
+            return aspect >= 2.0 &&
+                aspect <= 5.0 &&
+                widthRatio <= 0.45 &&
+                heightRatio <= 0.45 &&
+                areaRatio <= 0.08;
         }
 
         private static bool LooksLikeKnownWatermarkPattern(
@@ -2010,6 +2046,19 @@ namespace EasyEDA_Loader
                 areaRatio <= 0.10;
 
             if (engravedSingleWordPattern)
+                return true;
+
+            bool compactEngravedWordPattern =
+                !hasColorCue &&
+                componentCount >= 3 &&
+                pointCount >= 30 &&
+                aspect >= 2.0 &&
+                aspect <= 5.0 &&
+                widthRatio <= 0.45 &&
+                heightRatio <= 0.45 &&
+                areaRatio <= 0.08;
+
+            if (compactEngravedWordPattern)
                 return true;
 
             bool stackedTextLike =

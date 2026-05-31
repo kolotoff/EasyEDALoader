@@ -190,26 +190,29 @@ namespace StepCleaner.Tests
         private static List<string> GetMarkedDetectionImageNames(string markedDirectory, HashSet<string> originalBaseNames)
         {
             var result = new List<string>();
-            foreach (string markerPath in Directory.GetFiles(markedDirectory, "*.json"))
+            foreach (string modelName in originalBaseNames.OrderBy(name => name, StringComparer.OrdinalIgnoreCase))
             {
-                string baseName = Path.GetFileNameWithoutExtension(markerPath);
-                string modelName = GetModelNameFromMarkedBaseName(baseName);
-                if (!originalBaseNames.Contains(modelName))
-                    continue;
+                string stepFileName = modelName + ".step";
+                var markedRegions = StepWatermarkCleaner.LoadMarkedRegionsForStepFile(
+                    stepFileName,
+                    Path.Combine(Path.GetDirectoryName(markedDirectory) ?? string.Empty, "Projection"),
+                    markedDirectory);
 
-                result.Add(baseName + ".png");
+                foreach (var region in markedRegions)
+                {
+                    string markerPath = region.SourceMarkerPath;
+                    if (string.IsNullOrEmpty(markerPath))
+                        continue;
+
+                    result.Add(Path.GetFileNameWithoutExtension(markerPath) + ".png");
+                }
             }
 
+            result = result
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
             result.Sort(StringComparer.OrdinalIgnoreCase);
             return result;
-        }
-
-        private static string GetModelNameFromMarkedBaseName(string baseName)
-        {
-            int separator = baseName.LastIndexOf("__", StringComparison.Ordinal);
-            return separator >= 0
-                ? baseName.Substring(0, separator)
-                : baseName;
         }
 
         private static IReadOnlyList<string> GetCleanupNotes()

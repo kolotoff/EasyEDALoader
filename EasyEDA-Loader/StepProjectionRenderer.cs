@@ -438,19 +438,29 @@ namespace EasyEDA_Loader
                 return new List<ProjectionHighlight>();
 
             var result = new List<ProjectionHighlight>();
-            foreach (ProjectionHighlight highlight in highlights)
+            foreach (StepWatermarkMarkedRegion region in validRegions)
             {
-                var viewRegions = validRegions
-                    .Where(region => string.Equals(highlight.ViewName, region.ViewName, StringComparison.OrdinalIgnoreCase))
-                    .ToList();
-                if (viewRegions.Count == 0)
+                ProjectionHighlight matchedHighlight = null;
+                foreach (ProjectionHighlight highlight in highlights)
+                {
+                    if (!BoundsInsideMarkedRegion(highlight.Bounds, region))
+                        continue;
+
+                    matchedHighlight = highlight;
+                    break;
+                }
+
+                if (matchedHighlight == null)
                     continue;
 
-                if (!TryFindContainingMarkedRegion(highlight, viewRegions, out StepWatermarkMarkedRegion matchedRegion))
-                    continue;
-
-                highlight.MarkedRegion = matchedRegion;
-                result.Add(highlight);
+                result.Add(new ProjectionHighlight
+                {
+                    EntityId = matchedHighlight.EntityId,
+                    Kind = matchedHighlight.Kind,
+                    Bounds = matchedHighlight.Bounds,
+                    ViewName = region.ViewName,
+                    MarkedRegion = region
+                });
             }
 
             return result;
@@ -485,27 +495,6 @@ namespace EasyEDA_Loader
             }
 
             return result;
-        }
-
-        private static bool TryFindContainingMarkedRegion(
-            ProjectionHighlight highlight,
-            List<StepWatermarkMarkedRegion> markedRegions,
-            out StepWatermarkMarkedRegion matchedRegion)
-        {
-            matchedRegion = null;
-            foreach (var region in markedRegions)
-            {
-                if (!string.Equals(highlight.ViewName, region.ViewName, StringComparison.OrdinalIgnoreCase))
-                    continue;
-
-                if (BoundsInsideMarkedRegion(highlight.Bounds, region))
-                {
-                    matchedRegion = region;
-                    return true;
-                }
-            }
-
-            return false;
         }
 
         private static bool HasMarkedRegionArea(StepWatermarkMarkedRegion region)
@@ -544,10 +533,36 @@ namespace EasyEDA_Loader
                     centerV <= region.ModelVMax + padding;
             }
 
-            return uMin >= region.ModelUMin - padding &&
+            if (uMin >= region.ModelUMin - padding &&
                 uMax <= region.ModelUMax + padding &&
                 vMin >= region.ModelVMin - padding &&
-                vMax <= region.ModelVMax + padding;
+                vMax <= region.ModelVMax + padding)
+                return true;
+
+            double intersectionUMin = Math.Max(uMin, region.ModelUMin - padding);
+            double intersectionUMax = Math.Min(uMax, region.ModelUMax + padding);
+            double intersectionVMin = Math.Max(vMin, region.ModelVMin - padding);
+            double intersectionVMax = Math.Min(vMax, region.ModelVMax + padding);
+            double intersectionWidth = Math.Max(0.0, intersectionUMax - intersectionUMin);
+            double intersectionHeight = Math.Max(0.0, intersectionVMax - intersectionVMin);
+            if (intersectionWidth <= 0.0 || intersectionHeight <= 0.0)
+                return false;
+
+            bool centerInside =
+                centerU >= region.ModelUMin - padding &&
+                centerU <= region.ModelUMax + padding &&
+                centerV >= region.ModelVMin - padding &&
+                centerV <= region.ModelVMax + padding;
+            if (centerInside)
+                return true;
+
+            double candidateArea = Math.Max(candidateWidth * candidateHeight, 0.0000000001);
+            double regionArea = Math.Max(
+                (region.ModelUMax - region.ModelUMin) * (region.ModelVMax - region.ModelVMin),
+                0.0000000001);
+            double intersectionArea = intersectionWidth * intersectionHeight;
+            return intersectionArea / candidateArea >= 0.05 ||
+                intersectionArea / regionArea >= 0.05;
         }
 
         private static string GetDetectedSideViewName(Bounds bounds, Bounds modelBounds)
