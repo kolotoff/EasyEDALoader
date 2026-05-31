@@ -26,10 +26,21 @@ sidewalls and caps that remain visible even after the main surface is flat.
 
 ```powershell
 dotnet run --project StepCleaner\StepCleaner.csproj -- <input.step> [output.step]
+dotnet run --project StepCleaner\StepCleaner.csproj -- <input-directory> [output-directory]
 ```
 
 If `output.step` is omitted, the tool writes `<input>.clean.step` next to the
 input file.
+
+Project test-data rule:
+
+```powershell
+dotnet run --project StepCleaner\StepCleaner.csproj -- Test\StepCleaner\Data\Original Test\StepCleaner\Data\Clean
+```
+
+Original test models are read from `Test\StepCleaner\Data\Original`; cleaned
+models are written to `Test\StepCleaner\Data\Clean`. If the input directory is
+named `Original`, the output directory defaults to the sibling `Clean`.
 
 ## Integration
 

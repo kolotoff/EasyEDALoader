@@ -56,3 +56,6 @@ CodeCoverage/
 *.VisualState.xml
 TestResult.xml
 nunit-*.xml
+
+# Generated STEP cleaner outputs
+Test/StepCleaner/Data/Clean/
