@@ -1,10 +1,11 @@
 # STEP Watermark Cleaner
 
 `StepCleaner` removes the EasyEDA/LCEDA STEP watermark without a CAD kernel.
-For project test data, cleanup is projection-guided: generated side-view
-metadata and user-authored marker JSON rectangles define the only regions where
-geometry may be edited. Geometry outside marked rectangles is not selected by
-the cleaner.
+For project test data, cleanup is automatic and pattern-gated: stage 1 detects
+only known EasyEDA watermark patterns (`LCEDA`, `EasyEDA`, or the cloud/key
+logo) from the STEP geometry, and stage 2 edits only the geometry returned by
+that detection. User-authored marker JSON is reference/debug data and is not
+loaded by normal cleanup or tests.
 
 This does not run a boolean operation. It keeps the surrounding BREP intact and
 only rewrites the watermark geometry needed to flatten the surface, which makes
@@ -15,16 +16,17 @@ Embedded watermark topology is merged into the detected host plane by default.
 The cleaner removes only `FACE_BOUND` cut loops from that host face and always
 preserves `FACE_OUTER_BOUND`, because STEP files do not guarantee the outer bound
 is listed first.
-The cleaner still uses local geometry rules inside each marked rectangle. It can
-remove thin standalone watermark solids, flatten styled relief faces back onto
-the detected host plane, and remove marked `FACE_BOUND` text loops plus their
-adjacent shallow sidewalls. `FACE_OUTER_BOUND` is preserved.
+The cleaner uses local projection geometry inside each detected pattern region.
+It can remove thin standalone watermark solids, flatten styled relief faces back
+onto the detected host plane, and remove detected `FACE_BOUND` text loops plus
+their adjacent shallow sidewalls. `FACE_OUTER_BOUND` is preserved.
 
 ## Usage
 
 ```powershell
-dotnet run --project StepCleaner\StepCleaner.csproj -- <input.step> [output.step]
-dotnet run --project StepCleaner\StepCleaner.csproj -- <input-directory> [output-directory]
+dotnet run --project StepCleaner\StepCleaner.csproj -- <input.step> [output.step] [--debug]
+dotnet run --project StepCleaner\StepCleaner.csproj -- <input-directory> [output-directory] [--debug]
+dotnet run --project StepCleaner\StepCleaner.csproj -- detect <input.step|input-directory> [--debug]
 ```
 
 If `output.step` is omitted, the tool writes `<input>.clean.step` next to the
@@ -34,14 +36,22 @@ Project test-data rule:
 
 ```powershell
 dotnet run --project StepCleaner\StepCleaner.csproj -- Test\StepCleaner\Data\Original Test\StepCleaner\Data\Clean
+dotnet run --project StepCleaner\StepCleaner.csproj -- detect Test\StepCleaner\Data\Original --debug
 ```
 
 Original test models are read from `Test\StepCleaner\Data\Original`; cleaned
 models are written to `Test\StepCleaner\Data\Clean`. If the input directory is
 named `Original`, the output directory defaults to the sibling `Clean`.
-When sibling `Marked` and `Projection` folders exist, the cleaner loads
-`Marked\<model>__*.json` and the matching projection metadata automatically and
-runs in marked-region-only mode.
+The cleaner runs automatic stage 1 detection first, then stage 2 removal from
+the detected geometry. Marked JSON is not loaded by normal cleaning or by the
+regression test.
+
+Add `--debug` to either cleanup or `detect` to write detected-side PNG
+projections with red detected-region overlays into `Clean\Detection`. When
+compatible `Marked` sidecars exist for the same view, debug overlays on that
+view are filtered to regions that fit inside those marked rectangles. Stale
+sidecars whose stored projection axes no longer match the renderer are ignored,
+and detected views without a compatible marker are still emitted for review.
 
 ## Regression test rule
 
@@ -53,11 +63,13 @@ dotnet run --project Test\StepCleaner\StepCleaner.Tests.csproj
 
 The test treats `Test\StepCleaner\Data\Original` and
 `Test\StepCleaner\Data\Validated` as read-only data. It cleans every STEP model
-from `Original` into the ignored `Clean` folder, then requires every generated
-clean model to have a matching golden file in `Validated`. If a generated clean
-model is missing from `Validated`, the test treats it as not fully cleaned and
-asks the reviewer to view the generated file before accepting it. Matching files
-are byte-compared against their `Validated` golden files.
+from `Original` into the ignored `Clean` folder using automatic cleanup only;
+marked-region JSON is intentionally not loaded by the regression test. The test
+then requires every generated clean model to have a matching golden file in
+`Validated`. If a generated clean model is missing from `Validated`, the test
+treats it as not fully cleaned and asks the reviewer to view the generated file
+before accepting it. Matching files are byte-compared against their `Validated`
+golden files.
 
 ## Projection marking workflow
 
@@ -77,9 +89,9 @@ dotnet run --project StepProjectionMarker\StepProjectionMarker.csproj
 ```
 
 The marker defaults to `Test\StepCleaner\Data\Projection`; it writes matching
-JSON sidecars to `Test\StepCleaner\Data\Marked`. See
-`StepCleaner\ProjectionCleanupPlan.md` for the rule that the cleaner may only
-edit geometry inside marked rectangles.
+JSON sidecars to `Test\StepCleaner\Data\Marked`. These rectangles are
+training/reference data for improving automatic detection; they are not runtime
+input for the regression test.
 
 ## Integration
 

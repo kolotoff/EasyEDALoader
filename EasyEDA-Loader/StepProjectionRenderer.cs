@@ -26,12 +26,16 @@ namespace EasyEDA_Loader
 
     public static class StepProjectionRenderer
     {
+        private const double MarkedDetectionRegionPaddingRatio = 0.15;
+        private const int MarkedDetectionRegionMinPaddingPixels = 3;
+        private const int MarkedDetectionRegionMaxPaddingPixels = 9;
+
         private static readonly ViewSpec[] Views =
         {
             new ViewSpec("x_plus", 0, 1, 1, 1, 2, 1),
             new ViewSpec("x_minus", 0, -1, 1, -1, 2, 1),
-            new ViewSpec("y_plus", 1, 1, 0, 1, 2, 1),
-            new ViewSpec("y_minus", 1, -1, 0, -1, 2, 1),
+            new ViewSpec("y_plus", 1, 1, 0, -1, 2, 1),
+            new ViewSpec("y_minus", 1, -1, 0, 1, 2, 1),
             new ViewSpec("z_plus", 2, 1, 0, 1, 1, 1),
             new ViewSpec("z_minus", 2, -1, 0, -1, 1, 1)
         };
@@ -100,6 +104,77 @@ namespace EasyEDA_Loader
             };
         }
 
+        public static StepProjectionReport ProjectDetectionFile(
+            string inputPath,
+            string outputDirectory,
+            StepWatermarkDetectionReport detectionReport,
+            StepProjectionOptions options = null,
+            IReadOnlyList<StepWatermarkMarkedRegion> markedRegions = null)
+        {
+            if (inputPath == null)
+                throw new ArgumentNullException(nameof(inputPath));
+
+            if (outputDirectory == null)
+                throw new ArgumentNullException(nameof(outputDirectory));
+
+            if (detectionReport == null)
+                throw new ArgumentNullException(nameof(detectionReport));
+
+            options = NormalizeOptions(options);
+            Directory.CreateDirectory(outputDirectory);
+
+            string stepText = Encoding.Latin1.GetString(File.ReadAllBytes(inputPath));
+            StepModel model = StepModel.Parse(stepText);
+            model.BuildIndexes();
+            var drawingModel = ProjectionModel.Build(model);
+            var highlights = BuildDetectionHighlights(model, detectionReport, drawingModel.Bounds);
+            var compatibleMarkedRegions = GetCompatibleMarkedRegions(markedRegions);
+            if (compatibleMarkedRegions.Count > 0)
+                highlights = FilterHighlightsByMarkedRegions(highlights, compatibleMarkedRegions);
+
+            var outputFiles = new List<string>();
+            string modelName = Path.GetFileNameWithoutExtension(inputPath);
+            DeleteExistingDetectionProjectionFiles(outputDirectory, modelName);
+
+            foreach (ViewSpec view in Views)
+            {
+                var viewHighlights = highlights
+                    .Where(highlight => string.Equals(highlight.ViewName, view.Name, StringComparison.OrdinalIgnoreCase))
+                    .ToList();
+                if (viewHighlights.Count == 0)
+                    continue;
+
+                ProjectionTransform transform = ProjectionTransform.Create(drawingModel.Bounds, view, options);
+                string outputPath = Path.Combine(outputDirectory, modelName + "__" + view.Name + ".png");
+                RenderProjection(drawingModel, view, transform, outputPath, options, viewHighlights);
+                outputFiles.Add(outputPath);
+
+                if (options.WriteMetadata)
+                {
+                    string metadataPath = Path.Combine(outputDirectory, modelName + "__" + view.Name + ".json");
+                    File.WriteAllText(metadataPath, WriteMetadata(inputPath, outputPath, view, transform, options), Encoding.UTF8);
+                    outputFiles.Add(metadataPath);
+                }
+            }
+
+            return new StepProjectionReport
+            {
+                InputPath = inputPath,
+                FaceCount = drawingModel.Faces.Count,
+                EdgeCount = drawingModel.EdgeCount,
+                OutputFiles = outputFiles
+            };
+        }
+
+        private static void DeleteExistingDetectionProjectionFiles(string outputDirectory, string modelName)
+        {
+            foreach (string file in Directory.GetFiles(outputDirectory, modelName + "__*.png"))
+                File.Delete(file);
+
+            foreach (string file in Directory.GetFiles(outputDirectory, modelName + "__*.json"))
+                File.Delete(file);
+        }
+
         public static IReadOnlyList<string> ViewNames => Views.Select(v => v.Name).ToList();
 
         private static void RenderProjection(
@@ -107,7 +182,8 @@ namespace EasyEDA_Loader
             ViewSpec view,
             ProjectionTransform transform,
             string outputPath,
-            StepProjectionOptions options)
+            StepProjectionOptions options,
+            IReadOnlyList<ProjectionHighlight> highlights = null)
         {
             var image = new RgbaImage(options.ImageSizePixels, options.ImageSizePixels);
             image.Clear(new Rgba(250, 250, 250, 255));
@@ -121,10 +197,10 @@ namespace EasyEDA_Loader
             foreach (ProjectionFace face in sortedFaces)
             {
                 Rgba fill = Shade(face.Color, face.Normal, view);
-                var polygon = BuildFillPolygon(face, transform);
+                var polygons = BuildFillPolygons(face, transform);
 
-                if (polygon.Count >= 3)
-                    image.FillPolygon(polygon, fill);
+                if (polygons.Count > 0)
+                    image.FillPolygonsEvenOdd(polygons, fill);
 
                 Rgba line = ContrastLine(fill);
                 foreach (ProjectionLoop loop in face.Loops)
@@ -133,7 +209,330 @@ namespace EasyEDA_Loader
                 }
             }
 
+            DrawDetectionHighlights(image, view, transform, highlights);
             image.SavePng(outputPath);
+        }
+
+        private static List<ProjectionHighlight> BuildDetectionHighlights(
+            StepModel model,
+            StepWatermarkDetectionReport detectionReport,
+            Bounds modelBounds)
+        {
+            var result = new List<ProjectionHighlight>();
+            var seen = new HashSet<string>(StringComparer.Ordinal);
+
+            if (detectionReport.Regions != null && detectionReport.Regions.Count > 0)
+            {
+                foreach (var region in detectionReport.Regions)
+                    AddDetectionHighlight(model, result, seen, region.EntityId, region.Kind, region.ViewName, modelBounds);
+
+                return result;
+            }
+
+            foreach (int solidId in detectionReport.RemovableSolidIds ?? Array.Empty<int>())
+                AddDetectionHighlight(model, result, seen, solidId, "solid", null, modelBounds);
+
+            foreach (int faceId in detectionReport.EmbeddedFaceIds ?? Array.Empty<int>())
+                AddDetectionHighlight(model, result, seen, faceId, "face", null, modelBounds);
+
+            foreach (int faceId in detectionReport.CoplanarFaceIds ?? Array.Empty<int>())
+                AddDetectionHighlight(model, result, seen, faceId, "face", null, modelBounds);
+
+            foreach (var loop in detectionReport.HostLoops ?? Array.Empty<StepWatermarkHostLoopDetection>())
+                AddDetectionHighlight(model, result, seen, loop.BoundId, "loop", null, modelBounds);
+
+            return result;
+        }
+
+        private static void AddDetectionHighlight(
+            StepModel model,
+            List<ProjectionHighlight> result,
+            HashSet<string> seen,
+            int entityId,
+            string kind,
+            string viewName,
+            Bounds modelBounds)
+        {
+            string key = kind + "|" + entityId.ToString(CultureInfo.InvariantCulture);
+            if (!seen.Add(key))
+                return;
+
+            bool includeSurface = model.GetTypeName(entityId) != "ADVANCED_FACE";
+            List<Vec3d> points = model.GetReferencedPoints(entityId, includeSurface);
+            if (points.Count == 0)
+                return;
+
+            Bounds bounds = new Bounds();
+            foreach (Vec3d point in points)
+                bounds.Include(point);
+
+            result.Add(new ProjectionHighlight
+            {
+                EntityId = entityId,
+                Kind = kind,
+                Bounds = bounds,
+                ViewName = string.IsNullOrEmpty(viewName)
+                    ? GetDetectedSideViewName(bounds, modelBounds)
+                    : viewName
+            });
+        }
+
+        private static List<ProjectionHighlight> FilterHighlightsByMarkedRegions(
+            List<ProjectionHighlight> highlights,
+            IReadOnlyList<StepWatermarkMarkedRegion> markedRegions)
+        {
+            var validRegions = markedRegions
+                .Where(HasMarkedRegionArea)
+                .ToList();
+            if (validRegions.Count == 0)
+                return new List<ProjectionHighlight>();
+
+            var result = new List<ProjectionHighlight>();
+            foreach (ProjectionHighlight highlight in highlights)
+            {
+                var viewRegions = validRegions
+                    .Where(region => string.Equals(highlight.ViewName, region.ViewName, StringComparison.OrdinalIgnoreCase))
+                    .ToList();
+                if (viewRegions.Count == 0)
+                {
+                    result.Add(highlight);
+                    continue;
+                }
+
+                if (!TryFindContainingMarkedRegion(highlight, viewRegions, out StepWatermarkMarkedRegion matchedRegion))
+                    continue;
+
+                highlight.MarkedRegion = matchedRegion;
+                result.Add(highlight);
+            }
+
+            return result;
+        }
+
+        private static List<StepWatermarkMarkedRegion> GetCompatibleMarkedRegions(
+            IReadOnlyList<StepWatermarkMarkedRegion> markedRegions)
+        {
+            if (markedRegions == null || markedRegions.Count == 0)
+                return new List<StepWatermarkMarkedRegion>();
+
+            var result = new List<StepWatermarkMarkedRegion>();
+            foreach (var region in markedRegions)
+            {
+                if (!HasMarkedRegionArea(region))
+                    continue;
+
+                ViewSpec view = Views.FirstOrDefault(candidate =>
+                    string.Equals(candidate.Name, region.ViewName, StringComparison.OrdinalIgnoreCase));
+                if (view.Name == null)
+                    continue;
+
+                if (region.UAxis != view.UAxis ||
+                    region.USign != view.USign ||
+                    region.VAxis != view.VAxis ||
+                    region.VSign != view.VSign ||
+                    region.DepthAxis != view.DepthAxis ||
+                    region.DepthSign != view.DepthSign)
+                    continue;
+
+                result.Add(region);
+            }
+
+            return result;
+        }
+
+        private static bool TryFindContainingMarkedRegion(
+            ProjectionHighlight highlight,
+            List<StepWatermarkMarkedRegion> markedRegions,
+            out StepWatermarkMarkedRegion matchedRegion)
+        {
+            matchedRegion = null;
+            foreach (var region in markedRegions)
+            {
+                if (!string.Equals(highlight.ViewName, region.ViewName, StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                if (BoundsInsideMarkedRegion(highlight.Bounds, region))
+                {
+                    matchedRegion = region;
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static bool HasMarkedRegionArea(StepWatermarkMarkedRegion region)
+        {
+            return region != null &&
+                region.ModelUMax > region.ModelUMin &&
+                region.ModelVMax > region.ModelVMin &&
+                region.ScalePixelsPerModelUnit > 0.0;
+        }
+
+        private static bool BoundsInsideMarkedRegion(Bounds bounds, StepWatermarkMarkedRegion region)
+        {
+            double padding = region.ScalePixelsPerModelUnit > 0.0
+                ? 2.0 / region.ScalePixelsPerModelUnit
+                : 0.0;
+
+            double u0 = bounds.Min.Get(region.UAxis) * region.USign;
+            double u1 = bounds.Max.Get(region.UAxis) * region.USign;
+            double v0 = bounds.Min.Get(region.VAxis) * region.VSign;
+            double v1 = bounds.Max.Get(region.VAxis) * region.VSign;
+            double uMin = Math.Min(u0, u1);
+            double uMax = Math.Max(u0, u1);
+            double vMin = Math.Min(v0, v1);
+            double vMax = Math.Max(v0, v1);
+
+            double candidateWidth = Math.Max(uMax - uMin, 0.0);
+            double candidateHeight = Math.Max(vMax - vMin, 0.0);
+            double centerU = (uMin + uMax) / 2.0;
+            double centerV = (vMin + vMax) / 2.0;
+
+            if (candidateWidth <= 0.0000001 || candidateHeight <= 0.0000001)
+            {
+                return centerU >= region.ModelUMin - padding &&
+                    centerU <= region.ModelUMax + padding &&
+                    centerV >= region.ModelVMin - padding &&
+                    centerV <= region.ModelVMax + padding;
+            }
+
+            return uMin >= region.ModelUMin - padding &&
+                uMax <= region.ModelUMax + padding &&
+                vMin >= region.ModelVMin - padding &&
+                vMax <= region.ModelVMax + padding;
+        }
+
+        private static string GetDetectedSideViewName(Bounds bounds, Bounds modelBounds)
+        {
+            Vec3d size = bounds.Size;
+            int axis = 0;
+            double best = Math.Abs(size.X);
+            if (Math.Abs(size.Y) < best)
+            {
+                axis = 1;
+                best = Math.Abs(size.Y);
+            }
+
+            if (Math.Abs(size.Z) < best)
+            {
+                axis = 2;
+            }
+
+            double center = (bounds.Min.Get(axis) + bounds.Max.Get(axis)) / 2.0;
+            double modelCenter = (modelBounds.Min.Get(axis) + modelBounds.Max.Get(axis)) / 2.0;
+            int sign = center >= modelCenter ? 1 : -1;
+
+            switch (axis)
+            {
+                case 0: return sign > 0 ? "x_plus" : "x_minus";
+                case 1: return sign > 0 ? "y_plus" : "y_minus";
+                case 2: return sign > 0 ? "z_plus" : "z_minus";
+                default: return "z_plus";
+            }
+        }
+
+        private static void DrawDetectionHighlights(
+            RgbaImage image,
+            ViewSpec view,
+            ProjectionTransform transform,
+            IReadOnlyList<ProjectionHighlight> highlights)
+        {
+            if (highlights == null || highlights.Count == 0)
+                return;
+
+            var rectangles = new List<DetectionRectangle>();
+            foreach (ProjectionHighlight highlight in highlights)
+            {
+                Rect2i rectangle = transform.ProjectBounds(highlight.Bounds, 0.0);
+                if (!rectangle.Intersects(0, 0, image.Width - 1, image.Height - 1))
+                    continue;
+
+                if (rectangle.Width < 4)
+                    rectangle = rectangle.Expand((4 - rectangle.Width) / 2 + 1, 0);
+
+                if (rectangle.Height < 4)
+                    rectangle = rectangle.Expand(0, (4 - rectangle.Height) / 2 + 1);
+
+                rectangles.Add(new DetectionRectangle(
+                    rectangle.Clamp(0, 0, image.Width - 1, image.Height - 1),
+                    highlight.MarkedRegion));
+            }
+
+            foreach (DetectionRectangle detectionRectangle in ClusterRectangles(rectangles, 10))
+            {
+                Rect2i rectangle = detectionRectangle.Rectangle;
+                if (detectionRectangle.MarkedRegion != null)
+                {
+                    int padding = GetMarkedDetectionRegionPaddingPixels(detectionRectangle.MarkedRegion);
+                    rectangle = rectangle
+                        .Expand(padding, padding)
+                        .Clamp(
+                            detectionRectangle.MarkedRegion.RectangleX,
+                            detectionRectangle.MarkedRegion.RectangleY,
+                            detectionRectangle.MarkedRegion.RectangleX + detectionRectangle.MarkedRegion.RectangleWidth - 1,
+                            detectionRectangle.MarkedRegion.RectangleY + detectionRectangle.MarkedRegion.RectangleHeight - 1);
+                }
+
+                rectangle = rectangle.Clamp(0, 0, image.Width - 1, image.Height - 1);
+                image.FillRectangle(rectangle.Left, rectangle.Top, rectangle.Right, rectangle.Bottom, new Rgba(255, 0, 0, 35));
+                image.DrawRectangle(rectangle.Left, rectangle.Top, rectangle.Right, rectangle.Bottom, new Rgba(255, 0, 0, 255), 4);
+            }
+        }
+
+        private static int GetMarkedDetectionRegionPaddingPixels(StepWatermarkMarkedRegion region)
+        {
+            int shortestSide = Math.Min(region.RectangleWidth, region.RectangleHeight);
+            if (shortestSide <= 0)
+                return 0;
+
+            int padding = (int)Math.Round(shortestSide * MarkedDetectionRegionPaddingRatio, MidpointRounding.AwayFromZero);
+            return Math.Min(
+                MarkedDetectionRegionMaxPaddingPixels,
+                Math.Max(MarkedDetectionRegionMinPaddingPixels, padding));
+        }
+
+        private static List<DetectionRectangle> ClusterRectangles(List<DetectionRectangle> rectangles, int gap)
+        {
+            var result = new List<DetectionRectangle>();
+            var visited = new bool[rectangles.Count];
+
+            for (int i = 0; i < rectangles.Count; i++)
+            {
+                if (visited[i])
+                    continue;
+
+                DetectionRectangle cluster = rectangles[i];
+                visited[i] = true;
+
+                bool changed;
+                do
+                {
+                    changed = false;
+                    for (int j = 0; j < rectangles.Count; j++)
+                    {
+                        if (visited[j])
+                            continue;
+
+                        if (!ReferenceEquals(cluster.MarkedRegion, rectangles[j].MarkedRegion))
+                            continue;
+
+                        if (!cluster.Rectangle.Expand(gap, gap).Overlaps(rectangles[j].Rectangle))
+                            continue;
+
+                        cluster = new DetectionRectangle(
+                            cluster.Rectangle.Union(rectangles[j].Rectangle),
+                            cluster.MarkedRegion);
+                        visited[j] = true;
+                        changed = true;
+                    }
+                }
+                while (changed);
+
+                result.Add(cluster);
+            }
+
+            return result;
         }
 
         private static void DrawLoop(RgbaImage image, List<Vec3d> points, ProjectionTransform transform, Rgba color)
@@ -171,22 +570,55 @@ namespace EasyEDA_Loader
             return area / 2.0;
         }
 
-        private static List<Point2i> BuildFillPolygon(ProjectionFace face, ProjectionTransform transform)
+        private static List<List<Point2i>> BuildFillPolygons(ProjectionFace face, ProjectionTransform transform)
         {
+            var polygons = new List<List<Point2i>>();
+            foreach (ProjectionLoop loop in face.Loops)
+            {
+                var polygon = BuildLoopPolygon(loop, transform);
+                if (polygon.Count >= 3)
+                    polygons.Add(polygon);
+            }
+
+            if (polygons.Count > 0)
+                return polygons;
+
             var points = new List<Point2d>();
             foreach (Vec3d point in face.Points)
                 AddDistinctPoint(points, transform.ProjectDouble(point));
 
             if (points.Count < 3)
-                return new List<Point2i>();
+                return polygons;
 
             List<Point2d> hull = ConvexHull(points);
             if (hull.Count < 3 || Math.Abs(Area(hull)) < 0.5)
+                return polygons;
+
+            polygons.Add(hull.Select(p => new Point2i(
+                (int)Math.Round(p.X, MidpointRounding.AwayFromZero),
+                (int)Math.Round(p.Y, MidpointRounding.AwayFromZero))).ToList());
+            return polygons;
+        }
+
+        private static List<Point2i> BuildLoopPolygon(ProjectionLoop loop, ProjectionTransform transform)
+        {
+            var polygon = new List<Point2i>();
+            foreach (Vec3d point in loop.Points)
+            {
+                Point2i projected = transform.Project(point);
+                if (polygon.Count == 0 || polygon[polygon.Count - 1].X != projected.X || polygon[polygon.Count - 1].Y != projected.Y)
+                    polygon.Add(projected);
+            }
+
+            while (polygon.Count > 1 &&
+                polygon[0].X == polygon[polygon.Count - 1].X &&
+                polygon[0].Y == polygon[polygon.Count - 1].Y)
+                polygon.RemoveAt(polygon.Count - 1);
+
+            if (polygon.Count < 3 || Math.Abs(Area(polygon)) < 0.5)
                 return new List<Point2i>();
 
-            return hull.Select(p => new Point2i(
-                (int)Math.Round(p.X, MidpointRounding.AwayFromZero),
-                (int)Math.Round(p.Y, MidpointRounding.AwayFromZero))).ToList();
+            return polygon;
         }
 
         private static void AddDistinctPoint(List<Point2d> points, Point2d point)
@@ -242,6 +674,19 @@ namespace EasyEDA_Loader
             double area = 0.0;
             Point2d previous = points[points.Count - 1];
             foreach (Point2d current in points)
+            {
+                area += previous.X * current.Y - current.X * previous.Y;
+                previous = current;
+            }
+
+            return area / 2.0;
+        }
+
+        private static double Area(List<Point2i> points)
+        {
+            double area = 0.0;
+            Point2i previous = points[points.Count - 1];
+            foreach (Point2i current in points)
             {
                 area += previous.X * current.Y - current.X * previous.Y;
                 previous = current;
@@ -660,6 +1105,15 @@ namespace EasyEDA_Loader
             public List<Vec3d> Points { get; private set; }
         }
 
+        private sealed class ProjectionHighlight
+        {
+            public int EntityId { get; set; }
+            public string Kind { get; set; }
+            public string ViewName { get; set; }
+            public Bounds Bounds { get; set; }
+            public StepWatermarkMarkedRegion MarkedRegion { get; set; }
+        }
+
         private sealed class StepModel
         {
             private static readonly Regex ReferenceRegex = new Regex(@"#(\d+)", RegexOptions.Compiled);
@@ -750,11 +1204,26 @@ namespace EasyEDA_Loader
             public HashSet<int> GetDrawableAdvancedFaceIds()
             {
                 var result = new HashSet<int>();
+                var representationRoots = Entities.Values
+                    .Where(entity => IsShapeRepresentationType(entity.Type))
+                    .ToList();
+
+                foreach (StepEntity entity in representationRoots)
+                {
+                    foreach (int id in TraverseReferences(entity.Id))
+                    {
+                        if (GetTypeName(id) == "ADVANCED_FACE")
+                            result.Add(id);
+                    }
+                }
+
+                if (result.Count > 0)
+                    return result;
+
                 foreach (StepEntity entity in Entities.Values)
                 {
                     if (entity.Type != "MANIFOLD_SOLID_BREP" &&
-                        entity.Type != "SHELL_BASED_SURFACE_MODEL" &&
-                        entity.Type != "ADVANCED_BREP_SHAPE_REPRESENTATION")
+                        entity.Type != "SHELL_BASED_SURFACE_MODEL")
                         continue;
 
                     foreach (int id in TraverseReferences(entity.Id))
@@ -765,6 +1234,16 @@ namespace EasyEDA_Loader
                 }
 
                 return result;
+            }
+
+            private static bool IsShapeRepresentationType(string type)
+            {
+                return type == "ADVANCED_BREP_SHAPE_REPRESENTATION" ||
+                    type == "SHAPE_REPRESENTATION" ||
+                    type == "MANIFOLD_SURFACE_SHAPE_REPRESENTATION" ||
+                    type == "GEOMETRICALLY_BOUNDED_SURFACE_SHAPE_REPRESENTATION" ||
+                    type == "FACETED_BREP_SHAPE_REPRESENTATION" ||
+                    type == "SHELL_BASED_SURFACE_MODEL";
             }
 
             public bool TryGetVertexPoint(int vertexId, out Vec3d point)
@@ -1233,6 +1712,30 @@ namespace EasyEDA_Loader
                 double y = ImageSize - Padding - (v - VMin) * Scale;
                 return new Point2d(x, y);
             }
+
+            public Rect2i ProjectBounds(Bounds bounds, double paddingPixels)
+            {
+                double u0 = bounds.Min.Get(View.UAxis) * View.USign;
+                double u1 = bounds.Max.Get(View.UAxis) * View.USign;
+                double v0 = bounds.Min.Get(View.VAxis) * View.VSign;
+                double v1 = bounds.Max.Get(View.VAxis) * View.VSign;
+
+                double uMin = Math.Min(u0, u1);
+                double uMax = Math.Max(u0, u1);
+                double vMin = Math.Min(v0, v1);
+                double vMax = Math.Max(v0, v1);
+
+                double x0 = Padding + (uMin - UMin) * Scale - paddingPixels;
+                double x1 = Padding + (uMax - UMin) * Scale + paddingPixels;
+                double y0 = ImageSize - Padding - (vMax - VMin) * Scale - paddingPixels;
+                double y1 = ImageSize - Padding - (vMin - VMin) * Scale + paddingPixels;
+
+                return new Rect2i(
+                    (int)Math.Floor(Math.Min(x0, x1)),
+                    (int)Math.Floor(Math.Min(y0, y1)),
+                    (int)Math.Ceiling(Math.Max(x0, x1)),
+                    (int)Math.Ceiling(Math.Max(y0, y1)));
+            }
         }
 
         private sealed class RgbaImage
@@ -1299,6 +1802,51 @@ namespace EasyEDA_Loader
                 }
             }
 
+            public void FillPolygonsEvenOdd(List<List<Point2i>> polygons, Rgba color)
+            {
+                polygons = polygons
+                    .Where(polygon => polygon != null && polygon.Count >= 3)
+                    .ToList();
+                if (polygons.Count == 0)
+                    return;
+
+                int minY = Math.Max(0, polygons.Min(polygon => polygon.Min(point => point.Y)));
+                int maxY = Math.Min(Height - 1, polygons.Max(polygon => polygon.Max(point => point.Y)));
+                var nodes = new List<int>();
+
+                for (int y = minY; y <= maxY; y++)
+                {
+                    nodes.Clear();
+                    foreach (var polygon in polygons)
+                    {
+                        int j = polygon.Count - 1;
+                        for (int i = 0; i < polygon.Count; i++)
+                        {
+                            int yi = polygon[i].Y;
+                            int yj = polygon[j].Y;
+                            if ((yi < y && yj >= y) || (yj < y && yi >= y))
+                            {
+                                int xi = polygon[i].X;
+                                int xj = polygon[j].X;
+                                int x = xi + (int)Math.Round((double)(y - yi) / (yj - yi) * (xj - xi), MidpointRounding.AwayFromZero);
+                                nodes.Add(x);
+                            }
+
+                            j = i;
+                        }
+                    }
+
+                    nodes.Sort();
+                    for (int i = 0; i + 1 < nodes.Count; i += 2)
+                    {
+                        int startX = Math.Max(0, nodes[i]);
+                        int endX = Math.Min(Width - 1, nodes[i + 1]);
+                        for (int x = startX; x <= endX; x++)
+                            BlendPixel(x, y, color);
+                    }
+                }
+            }
+
             public void DrawLine(int x0, int y0, int x1, int y1, Rgba color)
             {
                 int dx = Math.Abs(x1 - x0);
@@ -1325,6 +1873,37 @@ namespace EasyEDA_Loader
                         err += dx;
                         y0 += sy;
                     }
+                }
+            }
+
+            public void FillRectangle(int left, int top, int right, int bottom, Rgba color)
+            {
+                left = Math.Max(0, left);
+                top = Math.Max(0, top);
+                right = Math.Min(Width - 1, right);
+                bottom = Math.Min(Height - 1, bottom);
+
+                if (right < left || bottom < top)
+                    return;
+
+                for (int y = top; y <= bottom; y++)
+                {
+                    for (int x = left; x <= right; x++)
+                        BlendPixel(x, y, color);
+                }
+            }
+
+            public void DrawRectangle(int left, int top, int right, int bottom, Rgba color, int thickness)
+            {
+                if (thickness < 1)
+                    thickness = 1;
+
+                for (int i = 0; i < thickness; i++)
+                {
+                    DrawLine(left + i, top + i, right - i, top + i, color);
+                    DrawLine(right - i, top + i, right - i, bottom - i, color);
+                    DrawLine(right - i, bottom - i, left + i, bottom - i, color);
+                    DrawLine(left + i, bottom - i, left + i, top + i, color);
                 }
             }
 
@@ -1530,6 +2109,76 @@ namespace EasyEDA_Loader
             }
         }
 
+        private struct Rect2i
+        {
+            public readonly int Left;
+            public readonly int Top;
+            public readonly int Right;
+            public readonly int Bottom;
+
+            public Rect2i(int left, int top, int right, int bottom)
+            {
+                Left = Math.Min(left, right);
+                Top = Math.Min(top, bottom);
+                Right = Math.Max(left, right);
+                Bottom = Math.Max(top, bottom);
+            }
+
+            public int Width => Right - Left + 1;
+            public int Height => Bottom - Top + 1;
+
+            public bool Overlaps(Rect2i other)
+            {
+                return Left <= other.Right &&
+                    Right >= other.Left &&
+                    Top <= other.Bottom &&
+                    Bottom >= other.Top;
+            }
+
+            public bool Intersects(int left, int top, int right, int bottom)
+            {
+                return Left <= right &&
+                    Right >= left &&
+                    Top <= bottom &&
+                    Bottom >= top;
+            }
+
+            public Rect2i Expand(int x, int y)
+            {
+                return new Rect2i(Left - x, Top - y, Right + x, Bottom + y);
+            }
+
+            public Rect2i Clamp(int left, int top, int right, int bottom)
+            {
+                return new Rect2i(
+                    Math.Max(left, Left),
+                    Math.Max(top, Top),
+                    Math.Min(right, Right),
+                    Math.Min(bottom, Bottom));
+            }
+
+            public Rect2i Union(Rect2i other)
+            {
+                return new Rect2i(
+                    Math.Min(Left, other.Left),
+                    Math.Min(Top, other.Top),
+                    Math.Max(Right, other.Right),
+                    Math.Max(Bottom, other.Bottom));
+            }
+        }
+
+        private struct DetectionRectangle
+        {
+            public readonly Rect2i Rectangle;
+            public readonly StepWatermarkMarkedRegion MarkedRegion;
+
+            public DetectionRectangle(Rect2i rectangle, StepWatermarkMarkedRegion markedRegion)
+            {
+                Rectangle = rectangle;
+                MarkedRegion = markedRegion;
+            }
+        }
+
         private struct Vec3d
         {
             public readonly double X;
@@ -1602,6 +2251,10 @@ namespace EasyEDA_Loader
 
             public Vec3d Min => _min;
             public Vec3d Max => _max;
+            public Vec3d Size => new Vec3d(
+                _max.X - _min.X,
+                _max.Y - _min.Y,
+                _max.Z - _min.Z);
 
             public void Include(Vec3d point)
             {

@@ -17,8 +17,6 @@ namespace StepCleaner.Tests
                 string originalDirectory = Path.Combine(dataRoot, "Original");
                 string cleanDirectory = Path.Combine(dataRoot, "Clean");
                 string validatedDirectory = Path.Combine(dataRoot, "Validated");
-                string projectionDirectory = Path.Combine(dataRoot, "Projection");
-                string markedDirectory = Path.Combine(dataRoot, "Marked");
 
                 Directory.CreateDirectory(cleanDirectory);
 
@@ -38,15 +36,7 @@ namespace StepCleaner.Tests
                 {
                     string fileName = Path.GetFileName(originalFile);
                     string outputFile = Path.Combine(cleanDirectory, fileName);
-                    var options = new StepWatermarkCleanerOptions
-                    {
-                        UseMarkedRegionsOnly = true
-                    };
-
-                    foreach (var region in StepWatermarkCleaner.LoadMarkedRegionsForStepFile(originalFile, projectionDirectory, markedDirectory))
-                        options.MarkedRegions.Add(region);
-
-                    byte[] cleanedStep = StepWatermarkCleaner.Clean(File.ReadAllBytes(originalFile), options);
+                    byte[] cleanedStep = StepWatermarkCleaner.Clean(File.ReadAllBytes(originalFile), new StepWatermarkCleanerOptions());
                     File.WriteAllBytes(outputFile, cleanedStep);
                     generatedCleanByName[fileName] = outputFile;
 

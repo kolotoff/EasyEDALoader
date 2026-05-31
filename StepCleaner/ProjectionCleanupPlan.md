@@ -1,8 +1,9 @@
 # Projection-Guided STEP Watermark Cleanup Plan
 
 The heuristic-only cleaner is not the final rule. It can miss watermark faces and
-can touch geometry that only happens to look like a watermark. The next cleanup
-algorithm must be driven by explicit marked projection regions.
+can touch geometry that only happens to look like a watermark. Marked projection
+regions are training/reference data for designing the common detector, but the
+regression test and normal cleanup must run without loading marked data.
 
 ## Data Rule
 
@@ -46,19 +47,23 @@ with the mouse, save with Ctrl+S or Save, undo with Ctrl+Z, and redo with Ctrl+Y
 
 The common cleaner should:
 
-1. Load marked rectangles from `Marked` JSON sidecars and their matching
-   projection JSON files.
-2. Convert each rectangle to a model-space projection region on the matching
-   view axis.
-3. Select only STEP faces, thin solids, host loops, and shallow adjacent faces
-   whose projected bounds lie inside a marked region for that model.
-4. Flatten those selected faces to the nearest local host plane and recolor them
-   to the local host style.
-5. Reject any candidate outside marked rectangles, even if it has EasyEDA-like
-   color, text-like size, or shallow relief geometry.
+1. Stage 1: find watermark geometry from the STEP model without marked JSON.
+   The detector may use the marked set only as offline training/reference data.
+2. Stage 1 is pattern-gated. It must project thin standalone solids, shallow
+   candidate faces, and host-loop bounds onto their local side/host plane,
+   cluster them, and keep only clusters that match one of the known EasyEDA
+   watermark patterns: `LCEDA`, `EasyEDA`, or the cloud/key logo. Digit-like or
+   unrelated symbol clusters are not valid watermark patterns.
+3. Projection orientation must be stable per side; text on `x/y/z` side views
+   should not be mirrored by the renderer. If a view-axis mapping changes, stale
+   marker JSON/projection metadata must be treated as incompatible reference
+   data rather than as a runtime constraint.
+4. Stage 1 returns detected thin solids, embedded/relief faces, coplanar faces,
+   and host-face inner loops only inside accepted pattern regions. It does not
+   edit the model.
+5. Stage 2 consumes only the stage 1 detection result, flattens selected faces to
+   the nearest local host plane, and removes selected host loops/topology.
+6. Normal cleanup and regression tests must not load `Marked`; they use
+   automatic stage 1 detection only.
 6. Write cleaned output only to `Clean`; never rewrite `Original`, `Marked`, or
    `Validated`.
-
-This makes visual annotation the boundary of trust. Geometry heuristics may
-rank candidates inside a marked rectangle, but they must not authorize edits
-outside the marked rectangle.

@@ -10,20 +10,26 @@ namespace StepCleaner
     {
         private static int Main(string[] args)
         {
-            if (args.Length > 0 && IsProjectionCommand(args[0]))
-                return Project(args);
+            var arguments = new List<string>(args);
+            bool writeDetectionDebug = RemoveDetectionDebugFlag(arguments);
 
-            if (args.Length < 1 || args.Length > 2 || IsHelp(args[0]))
+            if (arguments.Count > 0 && IsProjectionCommand(arguments[0]))
+                return Project(arguments.ToArray());
+
+            if (arguments.Count > 0 && IsDetectionCommand(arguments[0]))
+                return Detect(arguments.ToArray(), writeDetectionDebug);
+
+            if (arguments.Count < 1 || arguments.Count > 2 || IsHelp(arguments[0]))
             {
                 PrintUsage();
-                return args.Length == 0 ? 1 : 0;
+                return arguments.Count == 0 ? 1 : 0;
             }
 
-            string inputPath = args[0];
-            string outputPath = args.Length == 2 ? args[1] : GetDefaultOutputPath(inputPath);
+            string inputPath = arguments[0];
+            string outputPath = arguments.Count == 2 ? arguments[1] : GetDefaultOutputPath(inputPath);
 
             if (Directory.Exists(inputPath))
-                return CleanDirectory(inputPath, outputPath);
+                return CleanDirectory(inputPath, outputPath, writeDetectionDebug);
 
             if (!File.Exists(inputPath))
             {
@@ -33,13 +39,15 @@ namespace StepCleaner
 
             try
             {
-                string projectionDirectory = GetDefaultProjectionOutputPath(inputPath);
-                string markedDirectory = GetDefaultMarkedDirectory(inputPath);
-                var report = CleanFile(inputPath, outputPath, projectionDirectory, markedDirectory);
+                var report = CleanFile(inputPath, outputPath);
+                if (writeDetectionDebug)
+                    WriteDetectionDebug(inputPath, GetDefaultDetectionDebugOutputPath(inputPath, outputPath), report.DetectionReport);
 
                 Console.WriteLine("STEP watermark cleanup complete");
                 Console.WriteLine("Input:  " + Path.GetFullPath(inputPath));
                 Console.WriteLine("Output: " + Path.GetFullPath(outputPath));
+                if (writeDetectionDebug)
+                    Console.WriteLine("Detection debug: " + Path.GetFullPath(GetDefaultDetectionDebugOutputPath(inputPath, outputPath)));
                 Console.WriteLine("Solids: " + report.SolidCount.ToString(CultureInfo.InvariantCulture));
                 Console.WriteLine("Styled faces: " + report.StyledFaceCount.ToString(CultureInfo.InvariantCulture));
                 Console.WriteLine("Candidates: " + report.CandidateFaceCount.ToString(CultureInfo.InvariantCulture));
@@ -56,6 +64,70 @@ namespace StepCleaner
             catch (Exception ex)
             {
                 Console.Error.WriteLine("STEP watermark cleanup failed: " + ex.Message);
+                return 3;
+            }
+        }
+
+        private static int Detect(string[] args, bool writeDetectionDebug)
+        {
+            if (args.Length != 2 || IsHelp(args[1]))
+            {
+                PrintUsage();
+                return args.Length < 2 ? 1 : 0;
+            }
+
+            string inputPath = args[1];
+            if (!Directory.Exists(inputPath) && !File.Exists(inputPath))
+            {
+                Console.Error.WriteLine("Input STEP file or directory was not found: " + inputPath);
+                return 2;
+            }
+
+            try
+            {
+                if (Directory.Exists(inputPath))
+                {
+                    var inputFiles = GetStepFiles(inputPath);
+                    if (inputFiles.Count == 0)
+                    {
+                        Console.Error.WriteLine("No STEP files were found in: " + inputPath);
+                        return 2;
+                    }
+
+                    Console.WriteLine("STEP watermark detection");
+                    Console.WriteLine("Input directory: " + Path.GetFullPath(inputPath));
+                    Console.WriteLine("Files: " + inputFiles.Count.ToString(CultureInfo.InvariantCulture));
+                    string debugDirectory = GetDefaultDetectionDebugOutputPath(inputPath, GetDefaultOutputPath(inputPath));
+                    if (writeDetectionDebug)
+                        Console.WriteLine("Detection debug: " + Path.GetFullPath(debugDirectory));
+
+                    foreach (string inputFile in inputFiles)
+                    {
+                        var report = StepWatermarkCleaner.Detect(File.ReadAllBytes(inputFile));
+                        PrintDetection(Path.GetFileName(inputFile), report);
+                        if (writeDetectionDebug)
+                            WriteDetectionDebug(inputFile, debugDirectory, report);
+                    }
+
+                    return 0;
+                }
+
+                Console.WriteLine("STEP watermark detection");
+                Console.WriteLine("Input: " + Path.GetFullPath(inputPath));
+                string debugDirectoryForFile = GetDefaultDetectionDebugOutputPath(inputPath, GetDefaultOutputPath(inputPath));
+                if (writeDetectionDebug)
+                    Console.WriteLine("Detection debug: " + Path.GetFullPath(debugDirectoryForFile));
+
+                var singleReport = StepWatermarkCleaner.Detect(File.ReadAllBytes(inputPath));
+                PrintDetection(Path.GetFileName(inputPath), singleReport);
+                if (writeDetectionDebug)
+                    WriteDetectionDebug(inputPath, debugDirectoryForFile, singleReport);
+
+                return 0;
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine("STEP watermark detection failed: " + ex.Message);
                 return 3;
             }
         }
@@ -122,7 +194,7 @@ namespace StepCleaner
             }
         }
 
-        private static int CleanDirectory(string inputDirectory, string outputDirectory)
+        private static int CleanDirectory(string inputDirectory, string outputDirectory, bool writeDetectionDebug)
         {
             Directory.CreateDirectory(outputDirectory);
 
@@ -136,10 +208,9 @@ namespace StepCleaner
             Console.WriteLine("STEP watermark batch cleanup");
             Console.WriteLine("Input directory:  " + Path.GetFullPath(inputDirectory));
             Console.WriteLine("Output directory: " + Path.GetFullPath(outputDirectory));
-            string projectionDirectory = GetDefaultProjectionOutputPath(inputDirectory);
-            string markedDirectory = GetDefaultMarkedDirectory(inputDirectory);
-            Console.WriteLine("Projection directory: " + Path.GetFullPath(projectionDirectory));
-            Console.WriteLine("Marked directory:     " + Path.GetFullPath(markedDirectory));
+            string debugDirectory = Path.Combine(outputDirectory, "Detection");
+            if (writeDetectionDebug)
+                Console.WriteLine("Detection debug: " + Path.GetFullPath(debugDirectory));
             Console.WriteLine("Files: " + inputFiles.Count.ToString(CultureInfo.InvariantCulture));
 
             int totalRemovedSolids = 0;
@@ -152,7 +223,9 @@ namespace StepCleaner
                 foreach (string inputFile in inputFiles)
                 {
                     string outputFile = Path.Combine(outputDirectory, Path.GetFileName(inputFile));
-                    var report = CleanFile(inputFile, outputFile, projectionDirectory, markedDirectory);
+                    var report = CleanFile(inputFile, outputFile);
+                    if (writeDetectionDebug)
+                        WriteDetectionDebug(inputFile, debugDirectory, report.DetectionReport);
 
                     totalRemovedSolids += report.RemovedSolidCount;
                     totalFlattenedFaces += report.FlattenedFaceCount;
@@ -183,25 +256,46 @@ namespace StepCleaner
 
         private static StepWatermarkCleanerReport CleanFile(string inputPath, string outputPath)
         {
-            return CleanFile(inputPath, outputPath, GetDefaultProjectionOutputPath(inputPath), GetDefaultMarkedDirectory(inputPath));
-        }
-
-        private static StepWatermarkCleanerReport CleanFile(string inputPath, string outputPath, string projectionDirectory, string markedDirectory)
-        {
             byte[] stepBytes = File.ReadAllBytes(inputPath);
             string stepText = System.Text.Encoding.Latin1.GetString(stepBytes);
 
-            var options = new StepWatermarkCleanerOptions();
-            var markedRegions = StepWatermarkCleaner.LoadMarkedRegionsForStepFile(inputPath, projectionDirectory, markedDirectory);
-            foreach (var region in markedRegions)
-                options.MarkedRegions.Add(region);
-
-            if (Directory.Exists(markedDirectory) || options.MarkedRegions.Count > 0)
-                options.UseMarkedRegionsOnly = true;
-
-            var report = StepWatermarkCleaner.CleanWithReport(stepText, options);
+            var report = StepWatermarkCleaner.CleanWithReport(stepText, new StepWatermarkCleanerOptions());
             File.WriteAllBytes(outputPath, System.Text.Encoding.Latin1.GetBytes(report.CleanedStep));
             return report;
+        }
+
+        private static void WriteDetectionDebug(
+            string inputPath,
+            string outputDirectory,
+            StepWatermarkDetectionReport detectionReport)
+        {
+            var markedRegions = StepWatermarkCleaner.LoadMarkedRegionsForStepFile(
+                inputPath,
+                GetDefaultProjectionOutputPath(inputPath),
+                GetDefaultMarkedDirectory(inputPath));
+
+            StepProjectionRenderer.ProjectDetectionFile(
+                inputPath,
+                outputDirectory,
+                detectionReport,
+                new StepProjectionOptions
+                {
+                    WriteMetadata = false
+                },
+                markedRegions);
+        }
+
+        private static void PrintDetection(string label, StepWatermarkDetectionReport report)
+        {
+            Console.WriteLine(
+                label +
+                ": solids=" + report.SolidCount.ToString(CultureInfo.InvariantCulture) +
+                ", styledFaces=" + report.StyledFaceCount.ToString(CultureInfo.InvariantCulture) +
+                ", removableSolids=" + report.RemovableSolidCount.ToString(CultureInfo.InvariantCulture) +
+                ", embeddedFaces=" + report.EmbeddedFaceCount.ToString(CultureInfo.InvariantCulture) +
+                ", coplanarFaces=" + report.CoplanarFaceCount.ToString(CultureInfo.InvariantCulture) +
+                ", hostLoopCandidates=" + report.HostLoopCandidateCount.ToString(CultureInfo.InvariantCulture) +
+                ", hostLoops=" + report.HostLoopCount.ToString(CultureInfo.InvariantCulture));
         }
 
         private static string GetDefaultOutputPath(string inputPath)
@@ -219,6 +313,21 @@ namespace StepCleaner
             return Path.Combine(
                 Path.GetDirectoryName(Path.GetFullPath(inputPath)) ?? string.Empty,
                 Path.GetFileNameWithoutExtension(inputPath) + ".clean" + Path.GetExtension(inputPath));
+        }
+
+        private static string GetDefaultDetectionDebugOutputPath(string inputPath, string outputPath)
+        {
+            if (Directory.Exists(inputPath))
+                return Path.Combine(outputPath, "Detection");
+
+            string fullInputDirectory = Path.GetDirectoryName(Path.GetFullPath(inputPath)) ?? string.Empty;
+            string inputParent = Path.GetDirectoryName(fullInputDirectory) ?? fullInputDirectory;
+            if (string.Equals(Path.GetFileName(fullInputDirectory), "Original", StringComparison.OrdinalIgnoreCase))
+                return Path.Combine(inputParent, "Clean", "Detection");
+
+            return Path.Combine(
+                Path.GetDirectoryName(Path.GetFullPath(outputPath)) ?? string.Empty,
+                "Detection");
         }
 
         private static string GetDefaultProjectionOutputPath(string inputPath)
@@ -288,15 +397,47 @@ namespace StepCleaner
                 || string.Equals(arg, "projections", StringComparison.OrdinalIgnoreCase);
         }
 
+        private static bool IsDetectionCommand(string arg)
+        {
+            return string.Equals(arg, "detect", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(arg, "detection", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool RemoveDetectionDebugFlag(List<string> args)
+        {
+            bool found = false;
+            for (int i = args.Count - 1; i >= 0; i--)
+            {
+                if (!IsDetectionDebugFlag(args[i]))
+                    continue;
+
+                args.RemoveAt(i);
+                found = true;
+            }
+
+            return found;
+        }
+
+        private static bool IsDetectionDebugFlag(string arg)
+        {
+            return string.Equals(arg, "--debug", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(arg, "-d", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(arg, "--debug-detection", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(arg, "--detection-debug", StringComparison.OrdinalIgnoreCase);
+        }
+
         private static void PrintUsage()
         {
             Console.WriteLine("Usage:");
-            Console.WriteLine("  StepCleaner <input.step> [output.step]");
-            Console.WriteLine("  StepCleaner <input-directory> [output-directory]");
+            Console.WriteLine("  StepCleaner <input.step> [output.step] [--debug]");
+            Console.WriteLine("  StepCleaner <input-directory> [output-directory] [--debug]");
+            Console.WriteLine("  StepCleaner detect <input.step|input-directory> [--debug]");
             Console.WriteLine("  StepCleaner project <input.step|input-directory> [projection-directory]");
             Console.WriteLine();
             Console.WriteLine("When output.step is omitted, the cleaner writes <input>.clean.step next to the input file.");
             Console.WriteLine("When input-directory is named Original and output-directory is omitted, the cleaner writes to sibling Clean.");
+            Console.WriteLine("The detect command runs automatic stage 1 detection only; marked JSON is not loaded.");
+            Console.WriteLine("The --debug option writes detected watermark region projection PNG files to Clean\\Detection.");
             Console.WriteLine("The project command writes six PNG side projections and JSON mapping files; when the input directory is named Original, the projection directory defaults to sibling Projection.");
         }
     }
