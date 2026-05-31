@@ -11,10 +11,10 @@ only rewrites the watermark geometry needed to flatten the surface, which makes
 the result safer for Altium's STEP importer and portable to other EasyEDA/JLCPCB
 models that use the same watermark style.
 
-Embedded watermark topology is preserved by default. Removing those faces from
-the shell can also remove or invalidate the real host face in some STEP
-importers, so the default path flattens and recolors the relief while leaving the
-body face topology in place.
+Embedded watermark topology is merged into the detected host plane by default.
+The cleaner removes only `FACE_BOUND` cut loops from that host face and always
+preserves `FACE_OUTER_BOUND`, because STEP files do not guarantee the outer bound
+is listed first.
 
 ## Usage
 

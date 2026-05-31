@@ -22,7 +22,7 @@ namespace EasyEDA_Loader
         public double HostPlaneProjectionPadding { get; set; } = 0.05;
         public double PlaneTolerance { get; set; } = 0.0002;
         public bool RequireDarkOwner { get; set; } = true;
-        public bool RemoveEmbeddedWatermarkTopology { get; set; } = false;
+        public bool RemoveEmbeddedWatermarkTopology { get; set; } = true;
     }
 
     public sealed class StepWatermarkCleanerReport
@@ -107,7 +107,7 @@ namespace EasyEDA_Loader
             int recoloredCount = RecolorFlattenedFaces(data, flattenResult.FlattenedFaces, faceOwners, solidInfo, styledItems, edits);
             string cleaned = data.ApplyDefinitionEdits(edits);
 
-            diagnostics.Add("Approach: remove thin neutral watermark solids, then flatten embedded neutral relief faces to the detected dark host plane.");
+            diagnostics.Add("Approach: remove thin neutral watermark solids, then flatten embedded neutral relief faces and merge their host-plane cut loops.");
             diagnostics.Add($"Removed thin watermark solids: {removableSolids.Count}");
             diagnostics.Add($"Embedded topology removal enabled: {options.RemoveEmbeddedWatermarkTopology}");
             diagnostics.Add($"Removed embedded watermark faces from shells: {removedEmbeddedFaces}");
@@ -1024,9 +1024,16 @@ namespace EasyEDA_Loader
                     yield break;
 
                 var bounds = GetAdvancedFaceBounds(faceId.Value);
-                for (int i = 1; i < bounds.Count; i++)
+                for (int i = 0; i < bounds.Count; i++)
                 {
                     int boundId = bounds[i];
+                    string boundType = GetTypeName(boundId);
+                    if (boundType == "FACE_OUTER_BOUND")
+                        continue;
+
+                    if (boundType != "FACE_BOUND")
+                        continue;
+
                     var boundBounds = GetBounds(boundId);
                     if (!boundBounds.HasValue)
                         continue;
