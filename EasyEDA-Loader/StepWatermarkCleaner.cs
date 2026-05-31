@@ -294,14 +294,7 @@ namespace EasyEDA_Loader
                 removedHostLoops = RemoveFaceBounds(data, flattenResult.HostFaceBoundsToRemove, edits);
             }
 
-            int recoloredCount = RecolorFlattenedFaces(
-                data,
-                flattenResult.FlattenedFaces,
-                flattenResult.ReplacementFaceByRemovedFace,
-                faceOwners,
-                solidInfo,
-                styledItems,
-                edits);
+            int recoloredCount = 0;
 
             string cleaned = data.ApplyDefinitionEdits(edits);
 
@@ -310,6 +303,7 @@ namespace EasyEDA_Loader
             diagnostics.Add("Marked host loops selected: " + markedHostLoopCount.ToString(CultureInfo.InvariantCulture));
             diagnostics.Add("Removed embedded watermark faces from shells: " + removedEmbeddedFaces.ToString(CultureInfo.InvariantCulture));
             diagnostics.Add("Removed host-face inner loops: " + removedHostLoops.ToString(CultureInfo.InvariantCulture));
+            diagnostics.Add("Preserved original face colors: no marked-mode STYLED_ITEM recolor edits were applied.");
             if (removableSolids.Count > 0)
                 diagnostics.Add("Removed solid ids: " + string.Join(", ", removableSolids.OrderBy(id => id).Select(id => "#" + id.ToString(CultureInfo.InvariantCulture))));
 
