@@ -444,10 +444,7 @@ namespace EasyEDA_Loader
                     .Where(region => string.Equals(highlight.ViewName, region.ViewName, StringComparison.OrdinalIgnoreCase))
                     .ToList();
                 if (viewRegions.Count == 0)
-                {
-                    result.Add(highlight);
                     continue;
-                }
 
                 if (!TryFindContainingMarkedRegion(highlight, viewRegions, out StepWatermarkMarkedRegion matchedRegion))
                     continue;
@@ -594,7 +591,14 @@ namespace EasyEDA_Loader
             var rectangles = new List<DetectionRectangle>();
             foreach (ProjectionHighlight highlight in highlights)
             {
-                Rect2i rectangle = transform.ProjectBounds(highlight.Bounds, 0.0);
+                Rect2i rectangle = highlight.MarkedRegion != null
+                    ? new Rect2i(
+                        highlight.MarkedRegion.RectangleX,
+                        highlight.MarkedRegion.RectangleY,
+                        highlight.MarkedRegion.RectangleX + highlight.MarkedRegion.RectangleWidth - 1,
+                        highlight.MarkedRegion.RectangleY + highlight.MarkedRegion.RectangleHeight - 1)
+                    : transform.ProjectBounds(highlight.Bounds, 0.0);
+
                 if (!rectangle.Intersects(0, 0, image.Width - 1, image.Height - 1))
                     continue;
 

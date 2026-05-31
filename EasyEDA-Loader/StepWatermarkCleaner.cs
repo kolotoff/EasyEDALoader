@@ -1947,6 +1947,19 @@ namespace EasyEDA_Loader
             if (colorCuedKnownPattern)
                 return true;
 
+            bool connectedColorCuedPattern =
+                hasColorCue &&
+                componentCount >= 8 &&
+                pointCount >= 50 &&
+                aspect >= 1.05 &&
+                aspect <= 5.0 &&
+                widthRatio <= 0.45 &&
+                heightRatio <= 0.65 &&
+                areaRatio <= 0.16;
+
+            if (connectedColorCuedPattern)
+                return true;
+
             bool textLike =
                 componentCount >= 5 &&
                 pointCount >= 18 &&
@@ -1956,6 +1969,47 @@ namespace EasyEDA_Loader
                 rowCount <= 3;
 
             if (textLike)
+                return true;
+
+            bool verticalTextLike =
+                componentCount >= 5 &&
+                pointCount >= 18 &&
+                aspect >= 1.05 &&
+                aspect <= 9.0 &&
+                rowCount >= 5 &&
+                columnCount <= 3;
+
+            if (verticalTextLike)
+                return true;
+
+            bool engravedConnectedPattern =
+                !hasColorCue &&
+                componentCount >= 8 &&
+                pointCount >= 100 &&
+                aspect >= 1.05 &&
+                aspect <= 3.6 &&
+                rowCount <= 2 &&
+                columnCount <= 3 &&
+                widthRatio <= 0.35 &&
+                heightRatio <= 0.35 &&
+                areaRatio <= 0.10;
+
+            if (engravedConnectedPattern)
+                return true;
+
+            bool engravedSingleWordPattern =
+                !hasColorCue &&
+                componentCount >= 5 &&
+                pointCount >= 100 &&
+                aspect >= 2.0 &&
+                aspect <= 7.0 &&
+                rowCount <= 2 &&
+                columnCount >= 3 &&
+                widthRatio <= 0.65 &&
+                heightRatio <= 0.22 &&
+                areaRatio <= 0.10;
+
+            if (engravedSingleWordPattern)
                 return true;
 
             bool stackedTextLike =

@@ -17,12 +17,18 @@ namespace StepCleaner.Tests
                 string originalDirectory = Path.Combine(dataRoot, "Original");
                 string cleanDirectory = Path.Combine(dataRoot, "Clean");
                 string validatedDirectory = Path.Combine(dataRoot, "Validated");
+                string markedDirectory = Path.Combine(dataRoot, "Marked");
+                string projectionDirectory = Path.Combine(dataRoot, "Projection");
+                string detectionDirectory = Path.Combine(cleanDirectory, "Detection");
 
                 Directory.CreateDirectory(cleanDirectory);
 
                 var originalFiles = GetStepFiles(originalDirectory);
                 var validatedFiles = GetStepFiles(validatedDirectory);
                 var validatedByName = validatedFiles.ToDictionary(Path.GetFileName, StringComparer.OrdinalIgnoreCase);
+                var originalBaseNames = new HashSet<string>(
+                    originalFiles.Select(file => Path.GetFileNameWithoutExtension(file)),
+                    StringComparer.OrdinalIgnoreCase);
                 var generatedCleanByName = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
                 var failures = new List<string>();
 
@@ -31,6 +37,14 @@ namespace StepCleaner.Tests
 
                 if (validatedFiles.Count == 0)
                     failures.Add("No STEP files were found in Validated.");
+
+                VerifyDetectionDebugImages(
+                    originalFiles,
+                    originalBaseNames,
+                    projectionDirectory,
+                    markedDirectory,
+                    detectionDirectory,
+                    failures);
 
                 foreach (string originalFile in originalFiles)
                 {
@@ -56,6 +70,9 @@ namespace StepCleaner.Tests
                     if (!expected.SequenceEqual(actual))
                         failures.Add(FormatDifference(fileName, expected, actual));
                 }
+
+                foreach (string note in GetCleanupNotes())
+                    Console.WriteLine("Cleanup note: " + note);
 
                 foreach (string validatedFile in validatedFiles)
                 {
@@ -86,6 +103,123 @@ namespace StepCleaner.Tests
                 Console.Error.WriteLine("STEP cleaner regression test failed: " + ex.Message);
                 return 1;
             }
+        }
+
+        private static void VerifyDetectionDebugImages(
+            List<string> originalFiles,
+            HashSet<string> originalBaseNames,
+            string projectionDirectory,
+            string markedDirectory,
+            string detectionDirectory,
+            List<string> failures)
+        {
+            if (!Directory.Exists(markedDirectory))
+            {
+                failures.Add("Marked directory was not found: " + markedDirectory);
+                return;
+            }
+
+            if (!Directory.Exists(projectionDirectory))
+            {
+                failures.Add("Projection directory was not found: " + projectionDirectory);
+                return;
+            }
+
+            Directory.CreateDirectory(detectionDirectory);
+
+            foreach (string staleImage in Directory.GetFiles(detectionDirectory, "*.png"))
+                File.Delete(staleImage);
+
+            foreach (string originalFile in originalFiles)
+            {
+                var detectionReport = StepWatermarkCleaner.Detect(File.ReadAllBytes(originalFile), new StepWatermarkCleanerOptions());
+                var markedRegions = StepWatermarkCleaner.LoadMarkedRegionsForStepFile(
+                    originalFile,
+                    projectionDirectory,
+                    markedDirectory);
+
+                StepProjectionRenderer.ProjectDetectionFile(
+                    originalFile,
+                    detectionDirectory,
+                    detectionReport,
+                    new StepProjectionOptions
+                    {
+                        WriteMetadata = false
+                    },
+                    markedRegions);
+            }
+
+            var expectedNames = GetMarkedDetectionImageNames(markedDirectory, originalBaseNames);
+            var actualNames = Directory.GetFiles(detectionDirectory, "*.png")
+                .Select(Path.GetFileName)
+                .OrderBy(name => name, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            Console.WriteLine(
+                "Detection debug images: marked=" +
+                expectedNames.Count.ToString(CultureInfo.InvariantCulture) +
+                ", generated=" +
+                actualNames.Count.ToString(CultureInfo.InvariantCulture));
+
+            if (actualNames.Count != expectedNames.Count)
+            {
+                failures.Add(
+                    "Detection debug image count differs from Marked sidecars: marked=" +
+                    expectedNames.Count.ToString(CultureInfo.InvariantCulture) +
+                    ", generated=" +
+                    actualNames.Count.ToString(CultureInfo.InvariantCulture) +
+                    ".");
+            }
+
+            var expectedSet = new HashSet<string>(expectedNames, StringComparer.OrdinalIgnoreCase);
+            var actualSet = new HashSet<string>(actualNames, StringComparer.OrdinalIgnoreCase);
+
+            foreach (string expectedName in expectedNames)
+            {
+                if (!actualSet.Contains(expectedName))
+                    failures.Add("Detection debug image is missing for marked side: " + expectedName);
+            }
+
+            foreach (string actualName in actualNames)
+            {
+                if (!expectedSet.Contains(actualName))
+                    failures.Add("Detection debug image has no matching marked side: " + actualName);
+            }
+        }
+
+        private static List<string> GetMarkedDetectionImageNames(string markedDirectory, HashSet<string> originalBaseNames)
+        {
+            var result = new List<string>();
+            foreach (string markerPath in Directory.GetFiles(markedDirectory, "*.json"))
+            {
+                string baseName = Path.GetFileNameWithoutExtension(markerPath);
+                string modelName = GetModelNameFromMarkedBaseName(baseName);
+                if (!originalBaseNames.Contains(modelName))
+                    continue;
+
+                result.Add(baseName + ".png");
+            }
+
+            result.Sort(StringComparer.OrdinalIgnoreCase);
+            return result;
+        }
+
+        private static string GetModelNameFromMarkedBaseName(string baseName)
+        {
+            int separator = baseName.LastIndexOf("__", StringComparison.Ordinal);
+            return separator >= 0
+                ? baseName.Substring(0, separator)
+                : baseName;
+        }
+
+        private static IReadOnlyList<string> GetCleanupNotes()
+        {
+            return new[]
+            {
+                "LED-SMD_XL-3838UV2SA06G3.step is not fully cleaned.",
+                "SOT-89-3_L4.3-W2.5-H1.6-LS4.1-P1.50.step is not fully cleaned.",
+                "USB-A-TH_FUS264-FDSW3K.step cleaned output should be reviewed as cleaned."
+            };
         }
 
         private static string FindDataRoot()
