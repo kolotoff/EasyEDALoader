@@ -11,7 +11,8 @@ namespace EasyEDA_Loader
         public const double CourtyardMarginMm = 0.25;
         private const double MechanicalLineWidthMm = 0.1;
         private const double OverlayLineWidthMm = 0.2;
-        private const double AssemblyTextSizeMm = 1.0;
+        private const double AssemblyTextSizeMm = 1.5;
+        private const string AssemblyTextFontName = "ARIAL";
 
         public class LayerMapException : Exception
         {
@@ -164,6 +165,13 @@ namespace EasyEDA_Loader
         {
             var textObject = AltiumApi.GlobalVars.PCBServer.PCBObjectFactory(TObjectId.eTextObject, TDimensionKind.eNoDimension, TObjectCreationMode.eCreate_Default) as IPCB_Text3;
             if (textObject == null) return null;
+            bool isAssemblyText = IsAssemblyText(layer, text);
+            if (isAssemblyText)
+            {
+                size = AssemblyTextSizeMm;
+                width = MechanicalLineWidthMm;
+            }
+
             width = NormalizeLineWidth(layer, width);
             textObject.SetState_V7Layer(new V7_Layer(layer));
             textObject.SetState_XLocation(AltiumApi.MmToCoord(x) + c.GetState_XLocation());
@@ -172,7 +180,28 @@ namespace EasyEDA_Loader
             textObject.SetState_Size(AltiumApi.MmToCoord(size));
             textObject.SetState_Width(AltiumApi.MmToCoord(width));
             textObject.SetState_Rotation(rotation);
+            if (isAssemblyText)
+                ApplyAssemblyTextStyle(textObject);
+
             return textObject;
+        }
+
+        private static bool IsAssemblyText(TLayerConstant layer, string text)
+        {
+            if (layer != TLayerConstant.eMechanical2)
+                return false;
+
+            string value = (text ?? string.Empty).Trim();
+            return string.Equals(value, ".Designator", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(value, ".Comment", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static void ApplyAssemblyTextStyle(IPCB_Text3 textObject)
+        {
+            textObject.SetState_UseTTFonts(true);
+            textObject.SetState_FontName(AssemblyTextFontName);
+            textObject.SetState_Bold(false);
+            textObject.SetState_Italic(false);
         }
 
         public static void AddRectangle(IPCB_LibComponent c, TLayerConstant layer, double x1, double y1, double x2, double y2, double width)
