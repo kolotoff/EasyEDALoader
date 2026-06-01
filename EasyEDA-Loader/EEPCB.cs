@@ -20,7 +20,7 @@ namespace EasyEDA_Loader
 
             }
         }
-        public static IPCB_LibComponent CreateFootprintInLib(string name, string description)
+        public static IPCB_LibComponent CreateFootprintInLib(string name, string description, double heightMm = 0)
         {
             var pcbLib = AltiumApi.GlobalVars.PCBServer.GetCurrentPCBLibrary();
             if (pcbLib == null) return null;
@@ -28,9 +28,21 @@ namespace EasyEDA_Loader
             pcbLib.SetState_CurrentComponent(footprint);
             var uid = pcbLib.GetUniqueCompName(name);
             footprint.SetState_Pattern(uid);
-            footprint.SetState_Description(description);
+            SetFootprintMetadata(footprint, description, heightMm);
             AltiumApi.GlobalVars.PCBServer.PostProcess();
             return footprint;
+        }
+
+        public static void SetFootprintMetadata(IPCB_LibComponent footprint, string description, double heightMm = 0)
+        {
+            if (footprint == null)
+                return;
+
+            if (!string.IsNullOrWhiteSpace(description))
+                footprint.SetState_Description(description);
+
+            if (heightMm > 0)
+                footprint.SetState_Height(AltiumApi.MmToCoord(heightMm));
         }
 
         public static void AddToPCB(IPCB_LibComponent c, object obj)
@@ -211,7 +223,7 @@ namespace EasyEDA_Loader
                 AddToPCB(c, CreateText(c, TLayerConstant.eMechanical2, ".Comment", 0, -offset, MechanicalLineWidthMm, AssemblyTextSizeMm, 0));
         }
 
-        public static IPCB_ComponentBody CreateComponentBody(IPCB_LibComponent c, string fileName, double rx, double ry, double rz, double x, double y, double z)
+        public static IPCB_ComponentBody CreateComponentBody(IPCB_LibComponent c, string fileName, double rx, double ry, double rz, double x, double y, double z, string identifier = null, double overallHeightMm = 0)
         {
             var stepModel = AltiumApi.GlobalVars.PCBServer.PCBObjectFactory(TObjectId.eComponentBodyObject, TDimensionKind.eNoDimension, TObjectCreationMode.eCreate_Default) as IPCB_ComponentBody;
             if (stepModel == null) return null;
@@ -220,9 +232,12 @@ namespace EasyEDA_Loader
             model.SetState(rx, ry, rz, AltiumApi.MmToCoord(z));
             stepModel.SetModel(model);
             TrySetLayer(stepModel, TLayerConstant.eMechanical1);
-            string identifier = Path.GetFileNameWithoutExtension(fileName);
-            TrySetIdentifier(stepModel, identifier);
-            TrySetIdentifier(model, identifier);
+            string modelIdentifier = !string.IsNullOrWhiteSpace(identifier)
+                ? identifier
+                : Path.GetFileNameWithoutExtension(fileName);
+            TrySetIdentifier(stepModel, modelIdentifier);
+            TrySetIdentifier(model, modelIdentifier);
+            TrySetHeight(stepModel, z, overallHeightMm);
             // Model is created at the bottom-left origin of the board, so we need to offset it
             stepModel.MoveByXY(AltiumApi.MmToCoord(x) + c.GetState_Board().GetState_XOrigin(), AltiumApi.MmToCoord(y) + c.GetState_Board().GetState_YOrigin());
             return stepModel;
@@ -243,6 +258,18 @@ namespace EasyEDA_Loader
             TryInvoke(target, "SetState_Identifier", identifier);
             TryInvoke(target, "SetState_ModelIdentifier", identifier);
             TryInvoke(target, "SetState_Name", identifier);
+        }
+
+        private static void TrySetHeight(object target, double standoffHeightMm, double overallHeightMm)
+        {
+            if (target == null)
+                return;
+
+            if (standoffHeightMm > 0)
+                TryInvoke(target, "SetStandoffHeight", AltiumApi.MmToCoord(standoffHeightMm));
+
+            if (overallHeightMm > 0)
+                TryInvoke(target, "SetOverallHeight", AltiumApi.MmToCoord(overallHeightMm));
         }
 
         private static void TryInvoke(object target, string methodName, params object[] args)

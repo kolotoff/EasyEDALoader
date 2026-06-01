@@ -97,6 +97,7 @@ namespace EasyEDA_Loader
             string designator,
             string partName,
             string description,
+            string footprintName,
             string package,
             string pcbLibraryPath)
         {
@@ -111,11 +112,39 @@ namespace EasyEDA_Loader
             {
                 Manufacturer = manufacturer,
                 ValueType = EESCH.SelectRuleValueType(designator, partName, description, package),
-                Footprint = CleanPropertyValue(package),
+                Footprint = CleanPropertyValue(footprintName),
                 FootprintLibrary = CleanPropertyValue(pcbLibraryPath),
                 Package = CleanPropertyValue(package),
                 Mounting = InferMounting(footprintData)
             };
+        }
+
+        private static string SelectPartNumber(ComponentSelection selection, ComponentInfo component, SymbolData symbolData)
+        {
+            return FirstNonEmpty(
+                selection?.PartInfo?.Name,
+                symbolData?.Head?.Parameters?.ManufacturerPart,
+                symbolData?.Head?.Parameters?.Name,
+                component?.Title,
+                selection?.PartInfo?.Part,
+                component?.Lcsc?.Number,
+                component?.Szlcsc?.Number);
+        }
+
+        private static string SelectFootprintDescription(ComponentInfo component, EasyedaApi.ProductInfo productInfo, string partNumber, string package)
+        {
+            return FirstNonEmpty(
+                productInfo?.Description,
+                component?.Description,
+                component?.PackageDetail?.Title,
+                package,
+                partNumber);
+        }
+
+        private static double SelectFootprintHeightMm(EasyedaApi.ProductInfo productInfo)
+        {
+            double height = productInfo?.Size?.Z ?? 0;
+            return height > 0 ? height : 0;
         }
 
         private static string InferMounting(FootprintData footprintData)
@@ -225,6 +254,8 @@ namespace EasyEDA_Loader
                     var ee_footprint = root.Component.PackageDetail.Footprint;
                     var ee_symbol = root.Component.Symbol;
                     string package = ee_footprint.Head.Parameters.Package;
+                    string partName = ee_symbol.Head.Parameters.Name;
+                    string partNumber = SelectPartNumber(selection, root.Component, ee_symbol);
                     EeFootprint3dModel model = selection.Include3dModel ? ee_footprint.GetModel() : null;
 
                     // Prefetch model if we can
@@ -232,17 +263,20 @@ namespace EasyEDA_Loader
                     Task<byte[]> rawModelTask = model != null ? Task.Run(() => api.LoadRawModelAsync(model.Uuid, ctx.Token)) : null;
 
                     // Get product info (use cached from search if available)
-                    EasyedaApi.ProductInfo productInfo = selection.PartInfo.Info;
+                    EasyedaApi.ProductInfo productInfo = selection.PartInfo?.Info;
+                    string footprintName = FirstNonEmpty(partNumber, package);
+                    string footprintDescription = SelectFootprintDescription(root.Component, productInfo, partNumber, package);
+                    double footprintHeight = SelectFootprintHeightMm(productInfo);
 
                     // Create PCB footprint if requested
                     if (selection.IncludeFootprint)
                     {
                         AltiumApi.GlobalVars.Client.ShowDocument(pcbDocument);
-                        var libComp = pcbLib.GetComponentByName(package);
+                        var libComp = pcbLib.GetComponentByName(footprintName);
                         bool createdFootprint = false;
                         if (libComp == null)
                         {
-                            libComp = EEPCB.CreateFootprintInLib(package, root.Component.PackageDetail.Title);
+                            libComp = EEPCB.CreateFootprintInLib(footprintName, footprintDescription, footprintHeight);
                             createdFootprint = libComp != null;
                         }
 
@@ -262,6 +296,9 @@ namespace EasyEDA_Loader
                                 ModelTask = modelTask,
                                 RawModelTask = rawModelTask,
                                 RemoveWatermark = selection.RemoveWatermark,
+                                PartNumber = partNumber,
+                                Description = footprintDescription,
+                                HeightMm = footprintHeight,
                             };
                             ee_footprint.AddToComponent(libComp, footprintContext);
                             AltiumApi.GlobalVars.PCBServer.PostProcess();
@@ -271,7 +308,6 @@ namespace EasyEDA_Loader
                     }
 
                     // Create schematic symbol
-                    string partName = ee_symbol.Head.Parameters.Name;
                     string description = productInfo?.Description ?? partName;
                     string designator = EESCH.SelectRuleDesignator(ee_symbol.Head.Parameters.Pre, partName, description, package);
 
@@ -282,9 +318,9 @@ namespace EasyEDA_Loader
                         if (schLib != null && component != null)
                         {
                             AltiumApi.GlobalVars.PCBServer.PreProcess();
-                            SymbolDrawing.CreateComponent(schLib, component, pcbLibraryPath, package, ee_symbol);
+                            SymbolDrawing.CreateComponent(schLib, component, pcbLibraryPath, footprintName, ee_symbol);
 
-                            EESCH.ApplyGostPropertySet(component, BuildSchematicPropertySet(ee_symbol, ee_footprint, productInfo, designator, partName, description, package, pcbLibraryPath));
+                            EESCH.ApplyGostPropertySet(component, BuildSchematicPropertySet(ee_symbol, ee_footprint, productInfo, designator, partName, description, footprintName, package, pcbLibraryPath));
                             AltiumApi.GlobalVars.PCBServer.PostProcess();
                             schLib.SetState_Current_SchComponent(component);
                             schLib.GraphicallyInvalidate();

@@ -66,9 +66,10 @@ namespace EasyEDA_Loader
                 }
             };
         }
-        public async Task<double> GetZOffsetFromOrigin(EeFootprintContext ctx)
+        public async Task<ModelZInfo> GetZInfoFromOrigin(EeFootprintContext ctx)
         {
             double? minZ = null;
+            double? maxZ = null;
 
             byte[] model = ctx.RawModelTask != null ? await ctx.RawModelTask : await new EasyedaApi().LoadRawModelAsync(Uuid, ctx.CancelToken);
 
@@ -85,14 +86,20 @@ namespace EasyEDA_Loader
                     {
                         if (!minZ.HasValue || z < minZ)
                             minZ = z;
+                        if (!maxZ.HasValue || z > maxZ)
+                            maxZ = z;
                     }
                 }
             }
 
-            if (!minZ.HasValue)
+            if (!minZ.HasValue || !maxZ.HasValue)
                 throw new InvalidDataException("No vertices found in OBJ file.");
 
-            return Math.Abs(minZ.Value);
+            return new ModelZInfo
+            {
+                OffsetFromOrigin = Math.Abs(minZ.Value),
+                Height = Math.Max(0, maxZ.Value - minZ.Value)
+            };
         }
 
         public override bool AddToComponent(IPCB_LibComponent c, EeFootprintContext ctx)
@@ -100,8 +107,8 @@ namespace EasyEDA_Loader
             try
             {
                 var modelTask = ctx.ModelTask ?? Task.Run(() => new EasyedaApi().LoadModelAsync(Uuid, ctx.CancelToken));
-                var heightTask = Task.Run(() => GetZOffsetFromOrigin(ctx));
-                Task.WhenAll(modelTask, heightTask).Wait();
+                var zInfoTask = Task.Run(() => GetZInfoFromOrigin(ctx));
+                Task.WhenAll(modelTask, zInfoTask).Wait();
 
                 byte[] originalModel = modelTask.Result;
                 CacheOriginalModel(originalModel);
@@ -110,7 +117,8 @@ namespace EasyEDA_Loader
                     ? StepWatermarkCleanVerifier.CleanOrThrow(originalModel, GetSafeCacheFileName(), CreateVerificationDirectory())
                     : originalModel;
 
-                string temp = Path.Combine(Path.GetTempPath(), $"{Uuid}.step");
+                string modelIdentifier = FirstNonEmpty(ctx.PartNumber, Name, Uuid);
+                string temp = Path.Combine(Path.GetTempPath(), $"{GetSafeFileName(modelIdentifier)}.step");
                 File.WriteAllBytes(temp, footprintModel);
 
                 // The translation is not quite right, the values shown in "3D Model Manager" are available from the Search API as "3D Model Transform"
@@ -121,7 +129,24 @@ namespace EasyEDA_Loader
                 // Will leave this for now as it's "close enough" most of the time to only need a nudge by a few 10ths of a millimeter
                 double modelX = ConvertX(Translation.X, ctx);
                 double modelY = ConvertY(Translation.Y, ctx);
-                var body = EEPCB.CreateComponentBody(c, temp, Rotation.X, Rotation.Y, Rotation.Z, modelX, modelY, Translation.Z + heightTask.Result);
+                ModelZInfo zInfo = zInfoTask.Result;
+                double standoffHeight = Translation.Z + zInfo.OffsetFromOrigin;
+                double modelHeight = ctx.HeightMm > 0 ? ctx.HeightMm : zInfo.Height;
+                double overallHeight = modelHeight > 0 ? standoffHeight + modelHeight : 0;
+                if (overallHeight > 0)
+                    EEPCB.SetFootprintMetadata(c, ctx.Description, overallHeight);
+
+                var body = EEPCB.CreateComponentBody(
+                    c,
+                    temp,
+                    Rotation.X,
+                    Rotation.Y,
+                    Rotation.Z,
+                    modelX,
+                    modelY,
+                    standoffHeight,
+                    modelIdentifier,
+                    overallHeight);
                 EEPCB.AddToPCB(c, body);
                 EEPCB.Add3dBodyProjection(c, modelX, modelY, Width, Height);
                 ctx.Has3dBodyProjection = true;
@@ -199,10 +224,35 @@ namespace EasyEDA_Loader
             if (string.IsNullOrWhiteSpace(fileName))
                 fileName = Guid.NewGuid().ToString("N");
 
+            return GetSafeFileName(fileName);
+        }
+
+        private static string FirstNonEmpty(params string[] values)
+        {
+            foreach (string value in values)
+            {
+                if (!string.IsNullOrWhiteSpace(value))
+                    return value.Trim();
+            }
+
+            return Guid.NewGuid().ToString("N");
+        }
+
+        private static string GetSafeFileName(string fileName)
+        {
+            if (string.IsNullOrWhiteSpace(fileName))
+                fileName = Guid.NewGuid().ToString("N");
+
             foreach (char invalidChar in Path.GetInvalidFileNameChars())
                 fileName = fileName.Replace(invalidChar, '_');
 
             return fileName;
+        }
+
+        public class ModelZInfo
+        {
+            public double OffsetFromOrigin { get; set; }
+            public double Height { get; set; }
         }
 
         public string Name { get; set; }
