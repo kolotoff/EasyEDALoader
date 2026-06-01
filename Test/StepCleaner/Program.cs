@@ -38,6 +38,8 @@ namespace StepCleaner.Tests
                 if (validatedFiles.Count == 0)
                     failures.Add("No STEP files were found in Validated.");
 
+                VerifyCleanupIgnoresMarkedOptions(originalFiles, failures);
+
                 VerifyDetectionDebugImages(
                     originalFiles,
                     originalBaseNames,
@@ -103,6 +105,44 @@ namespace StepCleaner.Tests
                 Console.Error.WriteLine("STEP cleaner regression test failed: " + ex.Message);
                 return 1;
             }
+        }
+
+        private static void VerifyCleanupIgnoresMarkedOptions(List<string> originalFiles, List<string> failures)
+        {
+            if (originalFiles.Count == 0)
+                return;
+
+            byte[] originalStep = File.ReadAllBytes(originalFiles[0]);
+            byte[] automaticClean = StepWatermarkCleaner.Clean(originalStep, new StepWatermarkCleanerOptions());
+            var markedOptions = new StepWatermarkCleanerOptions
+            {
+                UseMarkedRegionsOnly = true
+            };
+            markedOptions.MarkedRegions.Add(new StepWatermarkMarkedRegion
+            {
+                ViewName = "z_plus",
+                UAxis = 0,
+                USign = 1,
+                VAxis = 1,
+                VSign = 1,
+                DepthAxis = 2,
+                DepthSign = 1,
+                ModelUMin = -1000.0,
+                ModelUMax = 1000.0,
+                ModelVMin = -1000.0,
+                ModelVMax = 1000.0,
+                ScalePixelsPerModelUnit = 1.0,
+                ImageWidth = 2000,
+                ImageHeight = 2000,
+                RectangleX = 0,
+                RectangleY = 0,
+                RectangleWidth = 2000,
+                RectangleHeight = 2000
+            });
+
+            byte[] markedClean = StepWatermarkCleaner.Clean(originalStep, markedOptions);
+            if (!automaticClean.SequenceEqual(markedClean))
+                failures.Add("Clean output changed when marker-only options were supplied; cleanup must use automatic detection only.");
         }
 
         private static void VerifyDetectionDebugImages(

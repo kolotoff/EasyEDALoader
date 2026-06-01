@@ -189,20 +189,6 @@ namespace EasyEDA_Loader
             options = options ?? new StepWatermarkCleanerOptions();
             var context = BuildCleanupContext(stepText, options);
 
-            if (options.UseMarkedRegionsOnly || options.MarkedRegions.Count > 0)
-            {
-                return CleanWithMarkedRegions(
-                    stepText,
-                    context.Data,
-                    options,
-                    context.SolidIds,
-                    context.StyledItems,
-                    context.StyledByTarget,
-                    context.FaceOwners,
-                    context.SolidInfo,
-                    context.StyledFaceCount);
-            }
-
             var detection = DetectAutomaticWatermarks(context);
             return CleanWithAutomaticDetection(stepText, context, detection);
         }
@@ -1624,6 +1610,9 @@ namespace EasyEDA_Loader
             if (!LooksLikeSmallMark(clusterBounds, referenceBounds, options))
                 return false;
 
+            if (TouchesProjectedBoundary(clusterBounds, referenceBounds, axis, GetAutomaticEdgeMargin(referenceBounds, axis)))
+                return false;
+
             int pointCount = cluster.Sum(candidate => candidate.PointCount);
             return LooksLikeKnownWatermarkPattern(
                 cluster.Select(candidate => candidate.Bounds),
@@ -1845,12 +1834,101 @@ namespace EasyEDA_Loader
                     if (!LooksLikeAutomaticWatermarkCluster(cluster, group.Key.Axis, options))
                         continue;
 
-                    foreach (var candidate in cluster)
+                    foreach (var candidate in SelectWatermarkClusterMembers(cluster, group.Key.Axis))
                         result.Add(candidate.FaceId);
                 }
             }
 
             return result.OrderBy(id => id).ToList();
+        }
+
+        private static IEnumerable<WatermarkFaceCandidate> SelectWatermarkClusterMembers(
+            List<WatermarkFaceCandidate> cluster,
+            int axis)
+        {
+            if (cluster.Count < 8)
+                return cluster;
+
+            Bounds clusterBounds = new Bounds();
+            foreach (var candidate in cluster)
+                clusterBounds.Include(candidate.Bounds);
+
+            int uAxis;
+            int vAxis;
+            GetProjectedAxes(axis, out uAxis, out vAxis);
+
+            double width = Math.Abs(clusterBounds.Size.Get(uAxis));
+            double height = Math.Abs(clusterBounds.Size.Get(vAxis));
+            if (width <= 0.000001 || height <= 0.000001 || height <= width)
+                return cluster;
+
+            var componentBounds = cluster.Select(candidate => candidate.Bounds).ToList();
+            int columnCount = CountProjectedBands(
+                componentBounds,
+                uAxis,
+                Math.Max(width * 0.035, 0.000001));
+            int rowCount = CountProjectedBands(
+                componentBounds,
+                vAxis,
+                Math.Max(height * 0.08, 0.000001));
+            if (columnCount < 2 || rowCount < 5)
+                return cluster;
+
+            double bandGap = Math.Max(width * 0.035, 0.000001);
+            var bands = new List<ProjectedClusterBand>();
+            foreach (var candidate in cluster.OrderBy(candidate => candidate.Bounds.Min.Get(uAxis)))
+            {
+                double min = candidate.Bounds.Min.Get(uAxis);
+                double max = candidate.Bounds.Max.Get(uAxis);
+                ProjectedClusterBand band = bands.FirstOrDefault(existing => min <= existing.Max + bandGap && max >= existing.Min - bandGap);
+                if (band == null)
+                {
+                    band = new ProjectedClusterBand
+                    {
+                        Min = min,
+                        Max = max,
+                        VMin = candidate.Bounds.Min.Get(vAxis),
+                        VMax = candidate.Bounds.Max.Get(vAxis)
+                    };
+                    bands.Add(band);
+                }
+
+                band.Min = Math.Min(band.Min, min);
+                band.Max = Math.Max(band.Max, max);
+                band.VMin = Math.Min(band.VMin, candidate.Bounds.Min.Get(vAxis));
+                band.VMax = Math.Max(band.VMax, candidate.Bounds.Max.Get(vAxis));
+                band.Candidates.Add(candidate);
+                band.Score += Math.Max(candidate.PointCount, 1);
+            }
+
+            if (bands.Count < 2)
+                return cluster;
+
+            foreach (var band in bands)
+            {
+                double bandHeight = Math.Max(band.VMax - band.VMin, 0.000001);
+                band.RowCount = CountProjectedBands(
+                    band.Candidates.Select(candidate => candidate.Bounds).ToList(),
+                    vAxis,
+                    Math.Max(bandHeight * 0.08, 0.000001));
+            }
+
+            var rankedBands = bands.Any(band => band.RowCount >= 4)
+                ? bands.Where(band => band.RowCount >= 4)
+                : bands;
+            var dominantBand = rankedBands
+                .OrderByDescending(band => band.RowCount)
+                .ThenByDescending(band => band.Candidates.Count)
+                .ThenByDescending(band => band.Score)
+                .ThenByDescending(band => band.VMax - band.VMin)
+                .First();
+            double maxDistance = Math.Max(width * 0.08, 0.000001);
+            var selected = dominantBand.Candidates
+                .Where(candidate => candidate.Bounds.Min.Get(uAxis) >= dominantBand.Min - maxDistance &&
+                    candidate.Bounds.Max.Get(uAxis) <= dominantBand.Max + maxDistance)
+                .ToList();
+
+            return selected.Count >= 5 ? selected : cluster;
         }
 
         private static void AddAutomaticRegionAdjacentFacesToFlattenResult(
@@ -1875,7 +1953,8 @@ namespace EasyEDA_Loader
                         hostFaceId,
                         region.Bounds,
                         region.Axis,
-                        options.HostPlaneProjectionPadding));
+                        options.HostPlaneProjectionPadding)
+                        .Where(boundId => EntityInsideDetectedRegion(data, boundId, region.Bounds, region.Axis, options.HostPlaneProjectionPadding)));
                 if (seedBounds.Count == 0)
                     continue;
 
@@ -1890,7 +1969,7 @@ namespace EasyEDA_Loader
                     HostFaceId = hostFaceId
                 };
 
-                foreach (int adjacentFaceId in FindHostLoopAdjacentFaces(data, ownerInfo, host, seedBounds, options))
+                foreach (int adjacentFaceId in FindHostLoopAdjacentFaces(data, ownerInfo, host, seedBounds, options, region.Bounds))
                 {
                     if (adjacentFaceId == hostFaceId)
                         continue;
@@ -1995,7 +2074,7 @@ namespace EasyEDA_Loader
                     HostFaceId = faceId
                 };
 
-                foreach (int adjacentFaceId in FindHostLoopAdjacentFaces(data, ownerInfo, host, matchedBounds, options))
+                foreach (int adjacentFaceId in FindHostLoopAdjacentFaces(data, ownerInfo, host, matchedBounds, options, hostBounds.Value))
                 {
                     if (adjacentFaceId == faceId)
                         continue;
@@ -2151,7 +2230,7 @@ namespace EasyEDA_Loader
                     if (region.OwnerId != ownerId || region.HostFaceId == styledItem.TargetId)
                         continue;
 
-                    if (!ProjectionIntersects(faceBounds.Value, region.Bounds, region.Axis, options.HostPlaneProjectionPadding))
+                    if (!ProjectedBoundsInside(faceBounds.Value, region.Bounds, region.Axis, options.HostPlaneProjectionPadding))
                         continue;
 
                     double minDistance = Math.Abs(faceBounds.Value.Min.Get(region.Axis) - region.HostCoordinate);
@@ -2257,7 +2336,8 @@ namespace EasyEDA_Loader
                     if (!LooksLikeAutomaticWatermarkCluster(cluster, group.Key.Axis, options))
                         continue;
 
-                    foreach (var candidate in cluster)
+                    var selectedCluster = SelectWatermarkClusterMembers(cluster, group.Key.Axis).ToList();
+                    foreach (var candidate in selectedCluster)
                         result.Add(candidate.FaceId);
 
                     AddCoplanarCompanionFaces(
@@ -2266,7 +2346,7 @@ namespace EasyEDA_Loader
                         faceOwners,
                         solidInfo,
                         result,
-                        cluster,
+                        selectedCluster,
                         group.Key.Axis,
                         gap,
                         options);
@@ -2540,10 +2620,26 @@ namespace EasyEDA_Loader
                 cluster.Count >= 3 &&
                 pointCount >= 30 &&
                 LooksLikeCompactEngravedWordPattern(clusterBounds, hostBounds, axis);
+            var componentBounds = cluster.Select(candidate => candidate.Bounds).ToList();
+            int uAxis;
+            int vAxis;
+            GetProjectedAxes(axis, out uAxis, out vAxis);
+            int columnCount = CountProjectedBands(
+                componentBounds,
+                uAxis,
+                Math.Max(Math.Abs(clusterBounds.Size.Get(uAxis)) * 0.08, 0.000001));
+            int rowCount = CountProjectedBands(
+                componentBounds,
+                vAxis,
+                Math.Max(Math.Abs(clusterBounds.Size.Get(vAxis)) * 0.08, 0.000001));
+            if (!compactEngravedCandidate && columnCount <= 2 && rowCount <= 2)
+                return false;
+
             bool denseStandaloneLoop =
                 cluster.Count == 1 &&
                 pointCount >= 30 &&
-                cluster.All(candidate => candidate.AllowStandaloneLoop);
+                cluster.All(candidate => candidate.AllowStandaloneLoop) &&
+                GetProjectedAspect(clusterBounds, axis) >= 1.4;
 
             if (cluster.Count < minLoopCount && !compactEngravedCandidate && !denseStandaloneLoop)
                 return false;
@@ -2641,6 +2737,30 @@ namespace EasyEDA_Loader
                 pointCount >= 30 &&
                 LooksLikeCompactEngravedWordPattern(clusterBounds, hostBounds, axis);
 
+            var componentBounds = cluster.Select(candidate => candidate.Bounds).ToList();
+            int uAxis;
+            int vAxis;
+            GetProjectedAxes(axis, out uAxis, out vAxis);
+            int columnCount = CountProjectedBands(
+                componentBounds,
+                uAxis,
+                Math.Max(Math.Abs(clusterBounds.Size.Get(uAxis)) * 0.08, 0.000001));
+            int rowCount = CountProjectedBands(
+                componentBounds,
+                vAxis,
+                Math.Max(Math.Abs(clusterBounds.Size.Get(vAxis)) * 0.08, 0.000001));
+            if (!compactEngravedCandidate &&
+                columnCount == 1 &&
+                rowCount == 1 &&
+                GetProjectedAspect(clusterBounds, axis) < 2.0)
+                return false;
+
+            if (!compactEngravedCandidate &&
+                columnCount <= 2 &&
+                rowCount <= 2 &&
+                GetProjectedAspect(clusterBounds, axis) < 1.25)
+                return false;
+
             if (!compactEngravedCandidate &&
                 cluster.Count < minFaceCount &&
                 pointCount < minPointCount)
@@ -2689,6 +2809,20 @@ namespace EasyEDA_Loader
                 widthRatio <= 0.45 &&
                 heightRatio <= 0.45 &&
                 areaRatio <= 0.08;
+        }
+
+        private static double GetProjectedAspect(Bounds bounds, int excludedAxis)
+        {
+            int uAxis;
+            int vAxis;
+            GetProjectedAxes(excludedAxis, out uAxis, out vAxis);
+
+            double width = Math.Abs(bounds.Size.Get(uAxis));
+            double height = Math.Abs(bounds.Size.Get(vAxis));
+            if (width <= 0.000001 || height <= 0.000001)
+                return 0.0;
+
+            return width >= height ? width / height : height / width;
         }
 
         private static bool LooksLikeKnownWatermarkPattern(
@@ -2838,8 +2972,10 @@ namespace EasyEDA_Loader
             bool logoLike =
                 componentCount >= 3 &&
                 pointCount >= (hasColorCue ? 20 : 32) &&
-                aspect >= 1.05 &&
+                aspect >= 1.25 &&
                 aspect <= 2.8 &&
+                columnCount >= 2 &&
+                rowCount >= 2 &&
                 widthRatio <= 0.35 &&
                 heightRatio <= 0.35 &&
                 areaRatio <= 0.08;
@@ -3021,7 +3157,8 @@ namespace EasyEDA_Loader
                     }
 
                     var hostBoundsToRemove = new HashSet<int>();
-                    foreach (int boundId in data.GetMatchingInnerFaceBounds(host.HostFaceId, componentBounds.Value, host.Axis, options.HostPlaneProjectionPadding))
+                    foreach (int boundId in data.GetMatchingInnerFaceBounds(host.HostFaceId, componentBounds.Value, host.Axis, options.HostPlaneProjectionPadding)
+                        .Where(boundId => EntityInsideDetectedRegion(data, boundId, componentBounds.Value, host.Axis, options.HostPlaneProjectionPadding)))
                         hostBoundsToRemove.Add(boundId);
 
                     if (hostBoundsToRemove.Count > 0)
@@ -3067,9 +3204,12 @@ namespace EasyEDA_Loader
                         double hostEdgeMargin = hostFaceBounds.HasValue
                             ? GetAutomaticEdgeMargin(hostFaceBounds.Value, host.Axis)
                             : 0.0;
-                        foreach (int adjacentFaceId in FindHostLoopAdjacentFaces(data, ownerInfo, host, hostBoundsToRemove, options))
+                        foreach (int adjacentFaceId in FindHostLoopAdjacentFaces(data, ownerInfo, host, hostBoundsToRemove, options, componentBounds.Value))
                         {
                             if (HasProtectedNonWatermarkColor(adjacentFaceId, styledByTarget, options))
+                                continue;
+
+                            if (!EntityInsideDetectedRegion(data, adjacentFaceId, componentBounds.Value, host.Axis, options.HostPlaneProjectionPadding))
                                 continue;
 
                             if (hostFaceBounds.HasValue)
@@ -3225,7 +3365,8 @@ namespace EasyEDA_Loader
                             host.HostFaceId.Value,
                             faceBounds.Value,
                             host.Axis,
-                            options.HostPlaneProjectionPadding));
+                            options.HostPlaneProjectionPadding)
+                            .Where(boundId => EntityInsideDetectedRegion(data, boundId, faceBounds.Value, host.Axis, options.HostPlaneProjectionPadding)));
                     foreach (int expandedBoundId in ExpandHostFaceBounds(data, host.HostFaceId.Value, hostBoundsToRemove, options))
                         hostBoundsToRemove.Add(expandedBoundId);
 
@@ -3337,7 +3478,8 @@ namespace EasyEDA_Loader
                         continue;
 
                     bool addedAnyBound = false;
-                    foreach (int boundId in data.GetMatchingInnerFaceBounds(hostFaceId, group.Bounds, group.Axis, padding))
+                    foreach (int boundId in data.GetMatchingInnerFaceBounds(hostFaceId, group.Bounds, group.Axis, padding)
+                        .Where(boundId => EntityInsideDetectedRegion(data, boundId, group.Bounds, group.Axis, padding)))
                     {
                         if (!result.HostFaceBoundsToRemove.TryGetValue(hostFaceId, out var boundIds))
                         {
@@ -3499,21 +3641,6 @@ namespace EasyEDA_Loader
             if (!hostFaceId.HasValue || seedBounds.Count == 0)
                 return result;
 
-            var allInnerBounds = data.GetInnerFaceBounds(hostFaceId).ToList();
-            if (allInnerBounds.Count == 0 || allInnerBounds.Count == seedBounds.Count)
-                return result;
-
-            var hostBounds = data.GetBounds(hostFaceId.Value);
-            var innerBounds = UnionBounds(data, allInnerBounds);
-            if (!hostBounds.HasValue || !innerBounds.HasValue)
-                return result;
-
-            if (!LooksLikeSmallMark(innerBounds.Value, hostBounds.Value, options))
-                return result;
-
-            foreach (int boundId in allInnerBounds)
-                result.Add(boundId);
-
             return result;
         }
 
@@ -3522,7 +3649,8 @@ namespace EasyEDA_Loader
             SolidInfo ownerInfo,
             HostPlaneMatch host,
             HashSet<int> hostBoundIds,
-            StepWatermarkCleanerOptions options)
+            StepWatermarkCleanerOptions options,
+            Bounds? detectedRegion = null)
         {
             var result = new HashSet<int>();
             if (!host.HostFaceId.HasValue || hostBoundIds.Count == 0)
@@ -3575,7 +3703,7 @@ namespace EasyEDA_Loader
                     if (result.Contains(faceId))
                         continue;
 
-                    if (!IsShallowFaceInHostLoopRegion(data, faceId, loopBounds.Value, host, options))
+                    if (!IsShallowFaceInHostLoopRegion(data, faceId, loopBounds.Value, host, options, detectedRegion))
                         continue;
 
                     result.Add(faceId);
@@ -3599,7 +3727,7 @@ namespace EasyEDA_Loader
                         if (neighborFaceId == host.HostFaceId.Value || result.Contains(neighborFaceId))
                             continue;
 
-                        if (!IsShallowFaceInHostLoopRegion(data, neighborFaceId, loopBounds.Value, host, options))
+                        if (!IsShallowFaceInHostLoopRegion(data, neighborFaceId, loopBounds.Value, host, options, detectedRegion))
                             continue;
 
                         result.Add(neighborFaceId);
@@ -3616,10 +3744,15 @@ namespace EasyEDA_Loader
             int faceId,
             Bounds loopBounds,
             HostPlaneMatch host,
-            StepWatermarkCleanerOptions options)
+            StepWatermarkCleanerOptions options,
+            Bounds? detectedRegion)
         {
             var faceBounds = data.GetBounds(faceId);
             if (!faceBounds.HasValue)
+                return false;
+
+            if (detectedRegion.HasValue &&
+                !ProjectedBoundsInside(faceBounds.Value, detectedRegion.Value, host.Axis, options.HostPlaneProjectionPadding))
                 return false;
 
             if (!ProjectionIntersects(faceBounds.Value, loopBounds, host.Axis, options.HostPlaneProjectionPadding))
@@ -3628,6 +3761,34 @@ namespace EasyEDA_Loader
             double minDistance = Math.Abs(faceBounds.Value.Min.Get(host.Axis) - host.TargetCoordinate);
             double maxDistance = Math.Abs(faceBounds.Value.Max.Get(host.Axis) - host.TargetCoordinate);
             return Math.Max(minDistance, maxDistance) <= options.HostLoopAdjacentMaxDepth;
+        }
+
+        private static bool EntityInsideDetectedRegion(
+            StepData data,
+            int entityId,
+            Bounds detectedRegion,
+            int axis,
+            double padding)
+        {
+            var bounds = data.GetBounds(entityId);
+            return bounds.HasValue && ProjectedBoundsInside(bounds.Value, detectedRegion, axis, padding);
+        }
+
+        private static bool ProjectedBoundsInside(Bounds inner, Bounds outer, int excludedAxis, double padding)
+        {
+            for (int axis = 0; axis < 3; axis++)
+            {
+                if (axis == excludedAxis)
+                    continue;
+
+                if (inner.Min.Get(axis) < outer.Min.Get(axis) - padding)
+                    return false;
+
+                if (inner.Max.Get(axis) > outer.Max.Get(axis) + padding)
+                    return false;
+            }
+
+            return true;
         }
 
         private static Bounds? UnionBounds(StepData data, IEnumerable<int> entityIds)
@@ -4316,6 +4477,17 @@ namespace EasyEDA_Loader
             public bool AllowStandaloneColorPattern { get; set; }
             public bool RestrictStandaloneColorPattern { get; set; }
             public int ColorClass { get; set; }
+        }
+
+        private sealed class ProjectedClusterBand
+        {
+            public double Min { get; set; }
+            public double Max { get; set; }
+            public double VMin { get; set; }
+            public double VMax { get; set; }
+            public int RowCount { get; set; }
+            public int Score { get; set; }
+            public List<WatermarkFaceCandidate> Candidates { get; } = new List<WatermarkFaceCandidate>();
         }
 
         private sealed class WatermarkSolidCandidate
