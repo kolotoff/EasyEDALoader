@@ -21,8 +21,11 @@ namespace StepCleaner.Tests
         private const double MaxCleanedRegionEdgeRatio = 0.035;
         private const double MaxRetainedRegionEdgeRatio = 0.45;
 
-        private static int Main()
+        private static int Main(string[] args)
         {
+            if (args.Length > 0)
+                return RunCommand(args);
+
             try
             {
                 string dataRoot = FindDataRoot();
@@ -161,6 +164,186 @@ namespace StepCleaner.Tests
                 Console.Error.WriteLine("STEP cleaner regression test failed: " + ex.Message);
                 return 1;
             }
+        }
+
+        private static int RunCommand(string[] args)
+        {
+            if (IsOption(args[0], "--silhouette"))
+                return SaveSilhouetteProjectionImage(args);
+
+            Console.Error.WriteLine("Unknown command: " + args[0]);
+            Console.Error.WriteLine("Usage: StepCleaner.Tests --silhouette <input.step> <output.png> [--rotx deg] [--roty deg] [--rotz deg] [--rotation2d deg] [--size pixels] [--padding pixels] [--no-grid] [--no-axes]");
+            return 2;
+        }
+
+        private static int SaveSilhouetteProjectionImage(string[] args)
+        {
+            if (args.Length < 3)
+            {
+                Console.Error.WriteLine("Usage: StepCleaner.Tests --silhouette <input.step> <output.png> [--rotx deg] [--roty deg] [--rotz deg] [--rotation2d deg] [--size pixels] [--padding pixels] [--no-grid] [--no-axes]");
+                return 2;
+            }
+
+            string inputPath = args[1];
+            string outputPath = args[2];
+            double rotX = 0.0;
+            double rotY = 0.0;
+            double rotZ = 0.0;
+            double rotation2D = 0.0;
+            int imageSizePixels = 1600;
+            int paddingPixels = 90;
+            bool drawGrid = true;
+            bool drawAxes = true;
+
+            for (int index = 3; index < args.Length; index++)
+            {
+                string option = args[index];
+                if (IsOption(option, "--no-grid"))
+                {
+                    drawGrid = false;
+                    continue;
+                }
+
+                if (IsOption(option, "--no-axes"))
+                {
+                    drawAxes = false;
+                    continue;
+                }
+
+                if (IsOption(option, "--rotx"))
+                {
+                    if (!TryReadDoubleOption(args, ref index, option, out rotX))
+                        return 2;
+                    continue;
+                }
+
+                if (IsOption(option, "--roty"))
+                {
+                    if (!TryReadDoubleOption(args, ref index, option, out rotY))
+                        return 2;
+                    continue;
+                }
+
+                if (IsOption(option, "--rotz"))
+                {
+                    if (!TryReadDoubleOption(args, ref index, option, out rotZ))
+                        return 2;
+                    continue;
+                }
+
+                if (IsOption(option, "--rotation2d"))
+                {
+                    if (!TryReadDoubleOption(args, ref index, option, out rotation2D))
+                        return 2;
+                    continue;
+                }
+
+                if (IsOption(option, "--size"))
+                {
+                    if (!TryReadIntOption(args, ref index, option, out imageSizePixels))
+                        return 2;
+                    continue;
+                }
+
+                if (IsOption(option, "--padding"))
+                {
+                    if (!TryReadIntOption(args, ref index, option, out paddingPixels))
+                        return 2;
+                    continue;
+                }
+
+                Console.Error.WriteLine("Unknown silhouette option: " + option);
+                return 2;
+            }
+
+            if (!File.Exists(inputPath))
+            {
+                Console.Error.WriteLine("STEP file does not exist: " + inputPath);
+                return 2;
+            }
+
+            byte[] stepData = File.ReadAllBytes(inputPath);
+            var placement = new StepSilhouettePlacement
+            {
+                TargetBounds = new StepSilhouetteBounds
+                {
+                    Left = -0.5,
+                    Bottom = -0.5,
+                    Right = 0.5,
+                    Top = 0.5
+                },
+                RotX = rotX,
+                RotY = rotY,
+                RotZ = rotZ,
+                Rotation2D = rotation2D
+            };
+
+            IReadOnlyList<StepSilhouettePrimitive> primitives = StepSilhouetteProjection.Generate(stepData, placement);
+            var renderOptions = new StepSilhouetteImageRenderOptions
+            {
+                ImageSizePixels = imageSizePixels,
+                PaddingPixels = paddingPixels,
+                DrawGrid = drawGrid,
+                DrawAxes = drawAxes,
+                Title = Path.GetFileName(inputPath)
+            };
+            StepSilhouetteImageRenderer.SavePng(primitives, outputPath, renderOptions);
+
+            int lineCount = primitives.Count(primitive => primitive.Kind == StepSilhouettePrimitiveKind.Line);
+            int arcCount = primitives.Count - lineCount;
+            Console.WriteLine("Silhouette image written: " + Path.GetFullPath(outputPath));
+            Console.WriteLine(
+                "Primitives: " +
+                lineCount.ToString(CultureInfo.InvariantCulture) +
+                " line(s), " +
+                arcCount.ToString(CultureInfo.InvariantCulture) +
+                " arc(s), " +
+                primitives.Count.ToString(CultureInfo.InvariantCulture) +
+                " total.");
+            return 0;
+        }
+
+        private static bool TryReadDoubleOption(string[] args, ref int index, string option, out double value)
+        {
+            value = 0.0;
+            if (index + 1 >= args.Length)
+            {
+                Console.Error.WriteLine("Missing value for " + option);
+                return false;
+            }
+
+            index++;
+            if (!double.TryParse(args[index], NumberStyles.Float, CultureInfo.InvariantCulture, out value))
+            {
+                Console.Error.WriteLine("Invalid numeric value for " + option + ": " + args[index]);
+                return false;
+            }
+
+            return true;
+        }
+
+        private static bool TryReadIntOption(string[] args, ref int index, string option, out int value)
+        {
+            value = 0;
+            if (index + 1 >= args.Length)
+            {
+                Console.Error.WriteLine("Missing value for " + option);
+                return false;
+            }
+
+            index++;
+            if (!int.TryParse(args[index], NumberStyles.Integer, CultureInfo.InvariantCulture, out value))
+            {
+                Console.Error.WriteLine("Invalid integer value for " + option + ": " + args[index]);
+                return false;
+            }
+
+            return true;
+        }
+
+        private static bool IsOption(string actual, string expected)
+        {
+            return string.Equals(actual, expected, StringComparison.OrdinalIgnoreCase);
         }
 
         private static void VerifyPostCleanProjections(

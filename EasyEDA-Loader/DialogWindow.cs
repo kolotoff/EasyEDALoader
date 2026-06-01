@@ -12,6 +12,7 @@ using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
+using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Threading;
@@ -45,8 +46,20 @@ namespace EasyEDA_Loader
         private const int WmMButtonDown = 0x0207;
         private const int WmMButtonUp = 0x0208;
         private const int WmMouseWheel = 0x020A;
-        private const int WhMouseLl = 14;
-        private const int HcAction = 0;
+        private const int WmInput = 0x00FF;
+        private const int RidInput = 0x10000003;
+        private const int RidevRemove = 0x00000001;
+        private const int RidevInputSink = 0x00000100;
+        private const int RawInputMouse = 0;
+        private const int HidUsagePageGeneric = 0x01;
+        private const int HidUsageGenericMouse = 0x02;
+        private const int RiMouseLeftButtonDown = 0x0001;
+        private const int RiMouseLeftButtonUp = 0x0002;
+        private const int RiMouseRightButtonDown = 0x0004;
+        private const int RiMouseRightButtonUp = 0x0008;
+        private const int RiMouseMiddleButtonDown = 0x0010;
+        private const int RiMouseMiddleButtonUp = 0x0020;
+        private const int RiMouseWheel = 0x0400;
         private const int MkLButton = 0x0001;
         private const int MkRButton = 0x0002;
         private const int MkMButton = 0x0010;
@@ -59,8 +72,8 @@ namespace EasyEDA_Loader
         private bool _f3dInputReady;
         private int _f3dMouseButtonState;
         private F3DPreviewHost _f3dInputSource;
-        private IntPtr _f3dMouseHook;
-        private LowLevelMouseProc _f3dMouseProc;
+        private HwndSource _f3dRawInputSource;
+        private bool _f3dRawInputRegistered;
         private static readonly char[] PartNumberSeparators = { '\r', '\n', '\t', ' ', ',', ';', '|' };
         private static readonly string SessionStateFilePath = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
@@ -84,16 +97,40 @@ namespace EasyEDA_Loader
         }
 
         [StructLayout(LayoutKind.Sequential)]
-        private struct LowLevelMouseHookStruct
+        private struct RawInputDevice
         {
-            public NativePoint Point;
-            public int MouseData;
+            public ushort UsagePage;
+            public ushort Usage;
             public int Flags;
-            public int Time;
-            public IntPtr ExtraInfo;
+            public IntPtr Target;
         }
 
-        private delegate IntPtr LowLevelMouseProc(int nCode, IntPtr wParam, IntPtr lParam);
+        [StructLayout(LayoutKind.Sequential)]
+        private struct RawInputHeader
+        {
+            public int Type;
+            public int Size;
+            public IntPtr Device;
+            public IntPtr WParam;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct RawMouse
+        {
+            public ushort Flags;
+            public uint Buttons;
+            public uint RawButtons;
+            public int LastX;
+            public int LastY;
+            public uint ExtraInformation;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct RawInput
+        {
+            public RawInputHeader Header;
+            public RawMouse Mouse;
+        }
 
         [DllImport("user32.dll")]
         private static extern IntPtr SetParent(IntPtr hWndChild, IntPtr hWndNewParent);
@@ -120,19 +157,27 @@ namespace EasyEDA_Loader
         private static extern bool ScreenToClient(IntPtr hWnd, ref NativePoint point);
 
         [DllImport("user32.dll")]
+        private static extern bool GetCursorPos(out NativePoint point);
+
+        [DllImport("user32.dll")]
         private static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
 
         [DllImport("user32.dll")]
         private static extern bool EnableWindow(IntPtr hWnd, bool bEnable);
 
         [DllImport("user32.dll", SetLastError = true)]
-        private static extern IntPtr SetWindowsHookEx(int idHook, LowLevelMouseProc lpfn, IntPtr hMod, uint dwThreadId);
+        private static extern bool RegisterRawInputDevices(
+            RawInputDevice[] devices,
+            int numDevices,
+            int size);
 
         [DllImport("user32.dll", SetLastError = true)]
-        private static extern bool UnhookWindowsHookEx(IntPtr hhk);
-
-        [DllImport("user32.dll")]
-        private static extern IntPtr CallNextHookEx(IntPtr hhk, int nCode, IntPtr wParam, IntPtr lParam);
+        private static extern int GetRawInputData(
+            IntPtr rawInput,
+            int command,
+            IntPtr data,
+            ref int size,
+            int headerSize);
 
         [DllImport("user32.dll", EntryPoint = "GetWindowLong")]
         private static extern int GetWindowLong32(IntPtr hWnd, int nIndex);
@@ -712,7 +757,7 @@ namespace EasyEDA_Loader
             _f3dInputSource = null;
             UpdateF3DPreviewScreenBounds();
             _f3dInputReady = true;
-            EnsureF3DMouseHook();
+            EnsureF3DRawInput();
         }
 
         private void UninstallF3DPreviewSync()
@@ -720,65 +765,164 @@ namespace EasyEDA_Loader
             _f3dInputReady = false;
             _f3dMouseButtonState = 0;
             _f3dInputSource = null;
-            RemoveF3DMouseHook();
+            RemoveF3DRawInput();
         }
 
-        private void EnsureF3DMouseHook()
+        private void EnsureF3DRawInput()
         {
-            if (_f3dMouseHook != IntPtr.Zero)
+            if (_f3dRawInputRegistered)
                 return;
 
-            _f3dMouseProc = F3DMouseHookProc;
-            _f3dMouseHook = SetWindowsHookEx(WhMouseLl, _f3dMouseProc, IntPtr.Zero, 0);
-            if (_f3dMouseHook == IntPtr.Zero)
-                EasyEDALoaderModule.Trace("Unable to install F3D mouse sync hook. Win32 error: " + Marshal.GetLastWin32Error());
-        }
+            IntPtr handle = new WindowInteropHelper(this).Handle;
+            if (handle == IntPtr.Zero)
+                return;
 
-        private void RemoveF3DMouseHook()
-        {
-            if (_f3dMouseHook != IntPtr.Zero)
+            _f3dRawInputSource = HwndSource.FromHwnd(handle);
+            if (_f3dRawInputSource == null)
+                return;
+
+            var devices = new[]
             {
-                UnhookWindowsHookEx(_f3dMouseHook);
-                _f3dMouseHook = IntPtr.Zero;
+                new RawInputDevice
+                {
+                    UsagePage = HidUsagePageGeneric,
+                    Usage = HidUsageGenericMouse,
+                    Flags = RidevInputSink,
+                    Target = handle
+                }
+            };
+
+            if (!RegisterRawInputDevices(devices, devices.Length, Marshal.SizeOf<RawInputDevice>()))
+            {
+                EasyEDALoaderModule.Trace("Unable to register F3D raw input. Win32 error: " + Marshal.GetLastWin32Error());
+                _f3dRawInputSource = null;
+                return;
             }
 
-            _f3dMouseProc = null;
+            _f3dRawInputSource.AddHook(F3DRawInputWndProc);
+            _f3dRawInputRegistered = true;
         }
 
-        private IntPtr F3DMouseHookProc(int nCode, IntPtr wParam, IntPtr lParam)
+        private void RemoveF3DRawInput()
         {
-            if (nCode == HcAction && CanMirrorF3DInput())
+            if (_f3dRawInputRegistered)
             {
-                var hookData = Marshal.PtrToStructure<LowLevelMouseHookStruct>(lParam);
-                MirrorF3DMouseInput(wParam.ToInt32(), hookData);
+                IntPtr handle = new WindowInteropHelper(this).Handle;
+                if (handle != IntPtr.Zero)
+                {
+                    var devices = new[]
+                    {
+                        new RawInputDevice
+                        {
+                            UsagePage = HidUsagePageGeneric,
+                            Usage = HidUsageGenericMouse,
+                            Flags = RidevRemove,
+                            Target = IntPtr.Zero
+                        }
+                    };
+                    RegisterRawInputDevices(devices, devices.Length, Marshal.SizeOf<RawInputDevice>());
+                }
+
+                _f3dRawInputRegistered = false;
             }
 
-            return CallNextHookEx(_f3dMouseHook, nCode, wParam, lParam);
+            if (_f3dRawInputSource != null)
+            {
+                _f3dRawInputSource.RemoveHook(F3DRawInputWndProc);
+                _f3dRawInputSource = null;
+            }
+        }
+
+        private IntPtr F3DRawInputWndProc(IntPtr hwnd, int message, IntPtr wParam, IntPtr lParam, ref bool handled)
+        {
+            if (message == WmInput && CanMirrorF3DInput() && TryGetRawMouse(lParam, out RawMouse mouse))
+                MirrorF3DRawMouseInput(mouse);
+
+            return IntPtr.Zero;
         }
 
         private bool CanMirrorF3DInput()
         {
             return _f3dInputReady &&
-                   _f3dMouseHook != IntPtr.Zero &&
+                   _f3dRawInputRegistered &&
                    _originalF3DPreview?.WindowHandle != IntPtr.Zero &&
                    _cleanF3DPreview?.WindowHandle != IntPtr.Zero &&
                    _originalF3DPreview.HasScreenBounds &&
                    _cleanF3DPreview.HasScreenBounds;
         }
 
-        private void MirrorF3DMouseInput(int message, LowLevelMouseHookStruct hookData)
+        private static bool TryGetRawMouse(IntPtr rawInputHandle, out RawMouse mouse)
+        {
+            mouse = default;
+            int size = 0;
+            int headerSize = Marshal.SizeOf<RawInputHeader>();
+            int result = GetRawInputData(rawInputHandle, RidInput, IntPtr.Zero, ref size, headerSize);
+            if (result != 0 || size <= 0)
+                return false;
+
+            IntPtr buffer = Marshal.AllocHGlobal(size);
+            try
+            {
+                result = GetRawInputData(rawInputHandle, RidInput, buffer, ref size, headerSize);
+                if (result != size)
+                    return false;
+
+                RawInput input = Marshal.PtrToStructure<RawInput>(buffer);
+                if (input.Header.Type != RawInputMouse)
+                    return false;
+
+                mouse = input.Mouse;
+                return true;
+            }
+            finally
+            {
+                Marshal.FreeHGlobal(buffer);
+            }
+        }
+
+        private void MirrorF3DRawMouseInput(RawMouse mouse)
+        {
+            if (!GetCursorPos(out NativePoint screenPoint))
+                return;
+
+            ushort buttonFlags = (ushort)(mouse.Buttons & 0xffff);
+            if ((buttonFlags & RiMouseLeftButtonDown) != 0)
+                MirrorF3DMouseInput(WmLButtonDown, screenPoint, 0);
+            if ((buttonFlags & RiMouseRightButtonDown) != 0)
+                MirrorF3DMouseInput(WmRButtonDown, screenPoint, 0);
+            if ((buttonFlags & RiMouseMiddleButtonDown) != 0)
+                MirrorF3DMouseInput(WmMButtonDown, screenPoint, 0);
+
+            if (mouse.LastX != 0 || mouse.LastY != 0)
+                MirrorF3DMouseInput(WmMouseMove, screenPoint, 0);
+
+            if ((buttonFlags & RiMouseWheel) != 0)
+            {
+                int delta = unchecked((short)((mouse.Buttons >> 16) & 0xffff));
+                MirrorF3DMouseInput(WmMouseWheel, screenPoint, delta);
+            }
+
+            if ((buttonFlags & RiMouseLeftButtonUp) != 0)
+                MirrorF3DMouseInput(WmLButtonUp, screenPoint, 0);
+            if ((buttonFlags & RiMouseRightButtonUp) != 0)
+                MirrorF3DMouseInput(WmRButtonUp, screenPoint, 0);
+            if ((buttonFlags & RiMouseMiddleButtonUp) != 0)
+                MirrorF3DMouseInput(WmMButtonUp, screenPoint, 0);
+        }
+
+        private void MirrorF3DMouseInput(int message, NativePoint screenPoint, int wheelDelta)
         {
             if (_f3dInputSource != null &&
                 message == WmMouseMove &&
-                !PreviewContainsScreenPoint(_f3dInputSource, hookData.Point))
+                !PreviewContainsScreenPoint(_f3dInputSource, screenPoint))
             {
-                ReleaseF3DDrag(_f3dInputSource, hookData.Point);
+                ReleaseF3DDrag(_f3dInputSource, screenPoint);
                 return;
             }
 
-            F3DPreviewHost source = _f3dInputSource ?? GetPreviewUnderPoint(hookData.Point);
+            F3DPreviewHost source = _f3dInputSource ?? GetPreviewUnderPoint(screenPoint);
             if (message == WmLButtonDown || message == WmRButtonDown || message == WmMButtonDown)
-                source = GetPreviewUnderPoint(hookData.Point);
+                source = GetPreviewUnderPoint(screenPoint);
 
             if (source == null)
                 return;
@@ -810,8 +954,7 @@ namespace EasyEDA_Loader
 
             if (message == WmMouseWheel)
             {
-                int delta = unchecked((short)((hookData.MouseData >> 16) & 0xffff));
-                SendMirroredF3DWheel(source, target, hookData.Point, delta);
+                SendMirroredF3DWheel(source, target, screenPoint, wheelDelta);
             }
             else if (message == WmMouseMove ||
                      message == WmLButtonDown ||
@@ -821,7 +964,7 @@ namespace EasyEDA_Loader
                      message == WmMButtonDown ||
                      message == WmMButtonUp)
             {
-                SendMirroredF3DMouseMessage(source, target, message, hookData.Point);
+                SendMirroredF3DMouseMessage(source, target, message, screenPoint);
             }
 
             if (_f3dMouseButtonState == 0 &&
