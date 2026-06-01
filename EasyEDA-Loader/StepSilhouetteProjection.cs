@@ -77,7 +77,7 @@ namespace EasyEDA_Loader
     internal static class StepSilhouetteProjection
     {
         private const double AltiumTopProjectionZBaselineDeg = 180.0;
-        private const double AltiumTopProjectionRotationCorrectionDeg = 90.0;
+        private const double AltiumTopProjectionRotationCorrectionDeg = 0.0;
 
         private static double Hypot(double x, double y)
         {
@@ -99,13 +99,19 @@ namespace EasyEDA_Loader
         private const double ArcMaxSweepDeg = 355.0;
         private const double ArcMergeAngleToleranceDeg = 0.5;
         private const double ArcBboxToleranceMm = 0.05;
-        private const double MinVisibleLineLengthFactor = 0.5;
+        private const double MinVisibleLineLengthFactor = 1.5;
         private const double MinVisibleArcLengthFactor = 1.0;
         private const double MinVisibleArcRadiusFactor = 1.0;
         private const double StrokeCoverageDistanceFactor = 0.5;
-        private const double StrokeCoverageMaxLengthFactor = 4.0;
+        private const double StrokeCoverageMaxLengthFactor = 8.0;
         private const double StrokeCoverageSampleStepFactor = 0.33;
         private const double LineGapBridgeMaxFactor = 2.5;
+        private const double ClosedPathEndpointToleranceMm = 0.02;
+        private const double ClosedCircleSweepToleranceDeg = 20.0;
+        private const double CircularPathRadialToleranceMm = 0.04;
+        private const int SegmentedArcMinPointCount = 5;
+        private const double ShortDisconnectedLineLengthMm = 0.25;
+        private const double PrimitiveConnectionToleranceMm = 0.08;
         private const string NumPattern = @"[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[Ee][+-]?\d+)?";
 
         private static readonly Regex NumberRegex = new Regex(NumPattern, RegexOptions.Compiled);
@@ -795,6 +801,7 @@ namespace EasyEDA_Loader
             primitives = RemoveSmallVisiblePrimitives(primitives);
             primitives = RemoveStrokeCoveredPrimitives(primitives);
             primitives = AddLineGapBridges(primitives);
+            primitives = RemoveShortDisconnectedLines(primitives);
 
             var result = new List<StepSilhouettePrimitive>();
             var lineKeys = new HashSet<SegmentKey>();
@@ -915,6 +922,9 @@ namespace EasyEDA_Loader
             if (path.Count < 2)
                 return new List<StepSilhouettePrimitive>();
 
+            if (TryFitClosedCircularPath(path, out List<StepSilhouettePrimitive> circularArcs))
+                return circularArcs;
+
             if (PointsAreCollinear(path))
             {
                 StepSilhouettePrimitive line = LinePrimitive(path[0], path[path.Count - 1]);
@@ -925,6 +935,20 @@ namespace EasyEDA_Loader
             if (arc != null)
                 return new List<StepSilhouettePrimitive> { arc };
 
+            List<StepSilhouettePrimitive> simplifiedLines = SimplifiedLinePrimitives(path);
+            List<StepSilhouettePrimitive> segmented = SegmentedPrimitivesFromPath(path);
+            int maxSegmentedPrimitiveCount = Math.Max(
+                simplifiedLines.Count + 4,
+                (int)Math.Ceiling(simplifiedLines.Count * 1.5));
+            if (segmented.Any(primitive => primitive.Kind == StepSilhouettePrimitiveKind.Arc) &&
+                segmented.Count <= maxSegmentedPrimitiveCount)
+                return segmented;
+
+            return simplifiedLines;
+        }
+
+        private static List<StepSilhouettePrimitive> SimplifiedLinePrimitives(List<Point2d> path)
+        {
             List<Point2d> simplified = RdpSimplify(path, CollinearDistanceToleranceMm);
             var result = new List<StepSilhouettePrimitive>();
             for (int index = 0; index < simplified.Count - 1; index++)
@@ -935,6 +959,217 @@ namespace EasyEDA_Loader
             }
 
             return result;
+        }
+
+        private static List<StepSilhouettePrimitive> RemoveShortDisconnectedLines(List<StepSilhouettePrimitive> primitives)
+        {
+            if (primitives.Count == 0)
+                return primitives;
+
+            var result = new List<StepSilhouettePrimitive>(primitives.Count);
+            for (int index = 0; index < primitives.Count; index++)
+            {
+                StepSilhouettePrimitive primitive = primitives[index];
+                if (primitive.Kind != StepSilhouettePrimitiveKind.Line ||
+                    PrimitiveLength(primitive) >= ShortDisconnectedLineLengthMm)
+                {
+                    result.Add(primitive);
+                    continue;
+                }
+
+                var start = new Point2d(primitive.X1, primitive.Y1);
+                var end = new Point2d(primitive.X2, primitive.Y2);
+                bool startConnected = PrimitiveEndpointTouchesAny(primitives, index, start);
+                bool endConnected = PrimitiveEndpointTouchesAny(primitives, index, end);
+                if (startConnected && endConnected)
+                    result.Add(primitive);
+            }
+
+            return result;
+        }
+
+        private static bool TryFitClosedCircularPath(List<Point2d> path, out List<StepSilhouettePrimitive> circularArcs)
+        {
+            circularArcs = null;
+            if (path.Count < SegmentedArcMinPointCount + 1)
+                return false;
+            if (Distance(path[0], path[path.Count - 1]) > ClosedPathEndpointToleranceMm)
+                return false;
+
+            List<Point2d> points = CompactPathPoints(path, dropClosingPoint: true);
+            if (points.Count < SegmentedArcMinPointCount)
+                return false;
+
+            Circle2d? circle = CircleFromClosedPathPoints(points);
+            if (!circle.HasValue)
+                return false;
+
+            Circle2d value = circle.Value;
+            double maxRadialError = points.Max(point => Math.Abs(Distance(point, new Point2d(value.CenterX, value.CenterY)) - value.Radius));
+            if (maxRadialError > CircularPathRadialToleranceMm)
+                return false;
+
+            List<double> angles = points
+                .Select(point => Math.Atan2(point.Y - value.CenterY, point.X - value.CenterX))
+                .ToList();
+            var deltas = new List<double>();
+            for (int index = 0; index < angles.Count; index++)
+                deltas.Add(SignedAngleDelta(angles[index], angles[(index + 1) % angles.Count]));
+
+            List<double> nonzeroDeltas = deltas.Where(delta => Math.Abs(RadiansToDegrees(delta)) > 0.05).ToList();
+            if (nonzeroDeltas.Count == 0)
+                return false;
+            bool hasPositive = nonzeroDeltas.Any(delta => delta > 0);
+            bool hasNegative = nonzeroDeltas.Any(delta => delta < 0);
+            if (hasPositive && hasNegative)
+                return false;
+
+            double sweepDeg = Math.Abs(RadiansToDegrees(nonzeroDeltas.Sum()));
+            if (Math.Abs(sweepDeg - 360.0) > ClosedCircleSweepToleranceDeg)
+                return false;
+
+            double startAngle = NormalizeRotationDegrees(RadiansToDegrees(angles[0]));
+            circularArcs = new List<StepSilhouettePrimitive>
+            {
+                StepSilhouettePrimitive.Arc(
+                    RoundCoord(value.CenterX),
+                    RoundCoord(value.CenterY),
+                    RoundCoord(value.Radius),
+                    RoundCoord(startAngle),
+                    RoundCoord(startAngle + 180.0)),
+                StepSilhouettePrimitive.Arc(
+                    RoundCoord(value.CenterX),
+                    RoundCoord(value.CenterY),
+                    RoundCoord(value.Radius),
+                    RoundCoord(startAngle + 180.0),
+                    RoundCoord(startAngle + 360.0))
+            };
+            return true;
+        }
+
+        private static List<StepSilhouettePrimitive> SegmentedPrimitivesFromPath(List<Point2d> path)
+        {
+            var result = new List<StepSilhouettePrimitive>();
+            int index = 0;
+            int lastIndex = path.Count - 1;
+            while (index < lastIndex)
+            {
+                int arcEnd;
+                StepSilhouettePrimitive arc = LongestArcFromPath(path, index, lastIndex, out arcEnd);
+                if (arc != null)
+                {
+                    result.Add(arc);
+                    index = arcEnd;
+                    continue;
+                }
+
+                int lineEnd = LongestCollinearEnd(path, index, lastIndex);
+                StepSilhouettePrimitive line = LinePrimitive(path[index], path[lineEnd]);
+                if (line != null)
+                    result.Add(line);
+                index = Math.Max(index + 1, lineEnd);
+            }
+
+            return result;
+        }
+
+        private static StepSilhouettePrimitive LongestArcFromPath(List<Point2d> path, int startIndex, int lastIndex, out int arcEnd)
+        {
+            StepSilhouettePrimitive bestArc = null;
+            arcEnd = -1;
+            int failedAfterBest = 0;
+            for (int endIndex = startIndex + SegmentedArcMinPointCount - 1; endIndex <= lastIndex; endIndex++)
+            {
+                List<Point2d> candidate = path.GetRange(startIndex, endIndex - startIndex + 1);
+                StepSilhouettePrimitive arc = FitArcToPoints(candidate);
+                if (arc != null)
+                {
+                    bestArc = arc;
+                    arcEnd = endIndex;
+                    failedAfterBest = 0;
+                    continue;
+                }
+
+                if (bestArc != null && ++failedAfterBest >= 3)
+                    break;
+            }
+
+            return bestArc;
+        }
+
+        private static int LongestCollinearEnd(List<Point2d> path, int startIndex, int lastIndex)
+        {
+            int lineEnd = Math.Min(startIndex + 1, lastIndex);
+            for (int endIndex = startIndex + 2; endIndex <= lastIndex; endIndex++)
+            {
+                List<Point2d> candidate = path.GetRange(startIndex, endIndex - startIndex + 1);
+                if (!PointsAreCollinear(candidate))
+                    break;
+                lineEnd = endIndex;
+            }
+
+            return lineEnd;
+        }
+
+        private static List<Point2d> CompactPathPoints(List<Point2d> path, bool dropClosingPoint)
+        {
+            int limit = path.Count;
+            if (dropClosingPoint && path.Count > 1)
+                limit--;
+
+            var result = new List<Point2d>();
+            for (int index = 0; index < limit; index++)
+            {
+                Point2d point = path[index];
+                if (result.Count == 0 || Distance(result[result.Count - 1], point) > PointEpsilonMm)
+                    result.Add(point);
+            }
+
+            if (result.Count > 1 && Distance(result[0], result[result.Count - 1]) <= ClosedPathEndpointToleranceMm)
+                result.RemoveAt(result.Count - 1);
+
+            return result;
+        }
+
+        private static Circle2d? CircleFromClosedPathPoints(List<Point2d> points)
+        {
+            int count = points.Count;
+            for (int offset = 0; offset < count; offset++)
+            {
+                Point2d a = points[offset % count];
+                Point2d b = points[(offset + count / 3) % count];
+                Point2d c = points[(offset + 2 * count / 3) % count];
+                Circle2d? circle = CircleFromPoints(a, b, c);
+                if (circle.HasValue)
+                    return circle;
+            }
+
+            return null;
+        }
+
+        private static bool PrimitiveEndpointTouchesAny(List<StepSilhouettePrimitive> primitives, int skipIndex, Point2d point)
+        {
+            for (int index = 0; index < primitives.Count; index++)
+            {
+                if (index == skipIndex)
+                    continue;
+                if (PrimitiveEndpointTouchesPoint(primitives[index], point))
+                    return true;
+            }
+
+            return false;
+        }
+
+        private static bool PrimitiveEndpointTouchesPoint(StepSilhouettePrimitive primitive, Point2d point)
+        {
+            if (primitive.Kind == StepSilhouettePrimitiveKind.Line)
+            {
+                return Distance(point, new Point2d(primitive.X1, primitive.Y1)) <= PrimitiveConnectionToleranceMm ||
+                    Distance(point, new Point2d(primitive.X2, primitive.Y2)) <= PrimitiveConnectionToleranceMm;
+            }
+
+            return Distance(point, ArcEndpoint(primitive, primitive.StartAngle)) <= PrimitiveConnectionToleranceMm ||
+                Distance(point, ArcEndpoint(primitive, primitive.EndAngle)) <= PrimitiveConnectionToleranceMm;
         }
 
         private static StepSilhouettePrimitive LinePrimitive(Point2d start, Point2d end)
@@ -1068,7 +1303,8 @@ namespace EasyEDA_Loader
                 for (int index = 1; index < intervals.Count; index++)
                 {
                     ArcInterval next = intervals[index];
-                    if (next.Start <= current.End + ArcMergeAngleToleranceDeg)
+                    if (next.Start <= current.End + ArcMergeAngleToleranceDeg &&
+                        next.End - current.Start <= ArcMaxSweepDeg)
                     {
                         current.End = Math.Max(current.End, next.End);
                         continue;

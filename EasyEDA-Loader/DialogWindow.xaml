@@ -7,9 +7,9 @@
     mc:Ignorable="d"
     Title="EasyEDA Component Loader"
     Height="650"
-    Width="1480"
+    Width="1860"
     MinHeight="500"
-    MinWidth="1180"
+    MinWidth="1500"
     WindowStartupLocation="CenterScreen"
     ShowInTaskbar="False"
     ResizeMode="CanResize"
@@ -157,6 +157,7 @@
         <Grid.ColumnDefinitions>
             <ColumnDefinition Width="*"/>
             <ColumnDefinition Width="350"/>
+            <ColumnDefinition Width="380"/>
             <ColumnDefinition Width="380"/>
         </Grid.ColumnDefinitions>
         <Grid.RowDefinitions>
@@ -407,13 +408,35 @@
                 </Grid.RowDefinitions>
 
                 <TextBlock Grid.Row="0"
-                           Text="STEP Model"
+                           Text="Original STEP"
                            FontSize="14"
                            FontWeight="SemiBold"
                            Margin="0,0,0,10"/>
 
                 <Border Grid.Row="1" Background="White">
-                    <wfi:WindowsFormsHost x:Name="f3dModelHost"/>
+                    <wfi:WindowsFormsHost x:Name="f3dOriginalModelHost"/>
+                </Border>
+            </Grid>
+        </Border>
+
+        <Border Grid.Row="0" Grid.RowSpan="3" Grid.Column="3"
+                BorderBrush="{DynamicResource {x:Static SystemColors.ControlDarkBrushKey}}"
+                BorderThickness="1,0,0,0"
+                Padding="10">
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="*"/>
+                </Grid.RowDefinitions>
+
+                <TextBlock Grid.Row="0"
+                           Text="Clean STEP"
+                           FontSize="14"
+                           FontWeight="SemiBold"
+                           Margin="0,0,0,10"/>
+
+                <Border Grid.Row="1" Background="White">
+                    <wfi:WindowsFormsHost x:Name="f3dCleanModelHost"/>
                 </Border>
             </Grid>
         </Border>
