@@ -90,19 +90,6 @@ namespace EasyEDA_Loader
             yield return Path.Combine(Path.GetTempPath(), "EasyEDA-Loader.log");
         }
 
-        private static void PlaceComponent(string schLibraryPath, string partName)
-        {
-            var currentSheet = AltiumApi.GlobalVars.SCHServer.GetCurrentSchDocument();
-            if (currentSheet == null)
-                throw new InvalidOperationException("Must be in a schematic document before placing a component.");
-
-            var newComponent = AltiumApi.GlobalVars.SCHServer.LoadComponentFromLibrary(partName, schLibraryPath);
-            currentSheet.AddSchObject(newComponent);
-            newComponent.MoveToXY(0, 0);
-            newComponent.SetState_Orientation(TRotationBy90.eRotate0);
-            currentSheet.GraphicallyInvalidate();
-        }
-
         private static EESCH.SchematicPropertySet BuildSchematicPropertySet(
             SymbolData symbolData,
             FootprintData footprintData,
@@ -209,12 +196,7 @@ namespace EasyEDA_Loader
             if (result != DialogResult.OK || dialog.SelectedComponents.Count == 0)
                 return;
 
-            var currentDoc = AltiumApi.GlobalVars.Client.GetCurrentView().GetOwnerDocument();
-            if (currentDoc == null)
-            {
-                MessageBox.Show("Must be in a schematic document before running", "EasyEDA Loader Error", MessageBoxButtons.OK, MessageBoxIcon.Hand);
-                return;
-            }
+            var currentDoc = GetCurrentDocument();
 
             var ctx = new CancellationTokenSource();
             var api = new EasyedaApi();
@@ -309,14 +291,6 @@ namespace EasyEDA_Loader
                                 schDocument.DoFileSave("SchLib");
                         }
                     }
-
-                    // Place component in schematic if requested (only the last one)
-                    if (dialog.PlaceInSchematic && selection == dialog.SelectedComponents[dialog.SelectedComponents.Count - 1])
-                    {
-                        // Return to the original document before placing
-                        AltiumApi.GlobalVars.Client.ShowDocument(currentDoc);
-                        PlaceComponent(schLibraryPath, partName);
-                    }
                 }
                 catch (Exception ex)
                 {
@@ -325,13 +299,26 @@ namespace EasyEDA_Loader
             }
 
             // Return to the original document we started in
-            AltiumApi.GlobalVars.Client.ShowDocument(currentDoc);
+            if (currentDoc != null)
+                AltiumApi.GlobalVars.Client.ShowDocument(currentDoc);
 
             // Close the library documents if requested
             if (dialog.CloseDocuments)
             {
                 AltiumApi.GlobalVars.Client.CloseDocument(pcbDocument);
                 AltiumApi.GlobalVars.Client.CloseDocument(schDocument);
+            }
+        }
+
+        private static IServerDocument GetCurrentDocument()
+        {
+            try
+            {
+                return AltiumApi.GlobalVars.Client.GetCurrentView()?.GetOwnerDocument();
+            }
+            catch
+            {
+                return null;
             }
         }
     }

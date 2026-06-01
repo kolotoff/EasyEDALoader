@@ -38,7 +38,6 @@ namespace EasyEDA_Loader
         public List<ComponentSelection> SelectedComponents { get; private set; }
         public bool SaveLibraryDocuments => saveLibraryDocumentsCheckBox?.IsChecked == true;
         public bool CloseDocuments => closeDocumentsCheckBox?.IsChecked == true;
-        public bool PlaceInSchematic => placeInSchematicCheckBox?.IsChecked == true;
 
         public DialogWindow()
         {
@@ -285,7 +284,6 @@ namespace EasyEDA_Loader
                 searchTextBox.Text = state.SearchText ?? string.Empty;
                 saveLibraryDocumentsCheckBox.IsChecked = state.SaveLibraryDocuments;
                 closeDocumentsCheckBox.IsChecked = state.CloseDocuments;
-                placeInSchematicCheckBox.IsChecked = state.PlaceInSchematic;
 
                 searchResults.Clear();
                 if (state.Results != null)
@@ -342,7 +340,6 @@ namespace EasyEDA_Loader
                     SearchText = searchTextBox.Text,
                     SaveLibraryDocuments = SaveLibraryDocuments,
                     CloseDocuments = CloseDocuments,
-                    PlaceInSchematic = PlaceInSchematic,
                     SelectedPart = (resultsGrid.SelectedItem as PartInfoViewModel)?.PartInfo?.Part,
                     Results = searchResults.Select(result => new DialogSessionResult
                     {
@@ -529,21 +526,10 @@ namespace EasyEDA_Loader
             cancelButton.IsEnabled = isEnabled;
             saveLibraryDocumentsCheckBox.IsEnabled = isEnabled;
             closeDocumentsCheckBox.IsEnabled = isEnabled;
-            placeInSchematicCheckBox.IsEnabled = isEnabled;
         }
 
         private bool ValidateImportOptions()
         {
-            if (PlaceInSchematic && !SaveLibraryDocuments)
-            {
-                MessageBox.Show(
-                    "Placing in schematic requires saving the library documents. Enable saving or clear Place in schematic.",
-                    "Import Options",
-                    MessageBoxButton.OK,
-                    MessageBoxImage.Information);
-                return false;
-            }
-
             return true;
         }
 
@@ -782,7 +768,6 @@ namespace EasyEDA_Loader
         public string SearchText { get; set; }
         public bool SaveLibraryDocuments { get; set; }
         public bool CloseDocuments { get; set; }
-        public bool PlaceInSchematic { get; set; }
         public string SelectedPart { get; set; }
         public List<DialogSessionResult> Results { get; set; }
     }

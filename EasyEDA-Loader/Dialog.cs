@@ -17,7 +17,6 @@ namespace EasyEDA_Loader
         public List<ComponentSelection> SelectedComponents => wpfDialog?.SelectedComponents;
         public bool SaveLibraryDocuments => wpfDialog?.SaveLibraryDocuments ?? false;
         public bool CloseDocuments => wpfDialog?.CloseDocuments ?? false;
-        public bool PlaceInSchematic => wpfDialog?.PlaceInSchematic ?? false;
 
         public Dialog()
         {

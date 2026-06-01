@@ -3,3 +3,23 @@ PL PLEasyEDALoader:EasyEDARun Command='EasyEDA-Loader:EasyEDARun' Caption='EasyE
 Insertion MNSchematic_EasyEDALoader TargetID='MNSchematic_Tools10' InsertType='After' RefID0='MNSchematic_Tools30'
     Link MNSchematic_EasyEDALoader10 PLID='PLEasyEDALoader:EasyEDARun' End
 End
+
+Insertion MNPCB_EasyEDALoader TargetID='MNPCB_Tools10' InsertType='Before' RefID0='MNPCB_Tools150'
+    Link MNPCB_EasyEDALoader10 PLID='PLEasyEDALoader:EasyEDARun' End
+End
+
+Insertion MNPCBLib_EasyEDALoader TargetID='MNPCBLib_Tools10' InsertType='After' RefID0='MNPCBLib_Tools15'
+    Link MNPCBLib_EasyEDALoader10 PLID='PLEasyEDALoader:EasyEDARun' End
+End
+
+Insertion MNSchLib_EasyEDALoader TargetID='MNSchematic_SchLibMenuTools10' InsertType='After' RefID0='MNSchematic_SchLibMenuTools20'
+    Link MNSchLib_EasyEDALoader10 PLID='PLEasyEDALoader:EasyEDARun' End
+End
+
+Insertion MNText_EasyEDALoader TargetID='MNTextEditMenu' InsertType='After' RefID0='MNTextEditMenu_Tools'
+    Link MNText_EasyEDALoader10 PLID='PLEasyEDALoader:EasyEDARun' End
+End
+
+Insertion MNNoDocument_EasyEDALoader TargetID='MNNoDocument' InsertType='After' RefID0='MNNoDocument_Project'
+    Link MNNoDocument_EasyEDALoader10 PLID='PLEasyEDALoader:EasyEDARun' End
+End

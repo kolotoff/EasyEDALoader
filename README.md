@@ -10,7 +10,7 @@ I used easyeda2kicad as a reference for this project as well as AtliumLibraryLoa
 
 # Usage
 
-Using the extension is pretty straight forward once it is installed, there will be a new Menu option `EasyEDA Loader` while a SchDoc is active, this will open a Modal Dialog which prompts the LCSC Part number e.g. "C2040". Tick which part you want to add after searching and press Add to Library
+Using the extension is pretty straight forward once it is installed, there will be a new Menu option `EasyEDA Loader` in Altium's menus, this will open a Modal Dialog which prompts the LCSC Part number e.g. "C2040". Tick which part you want to add after searching and press Add to Library
 
 ![Dialog](/Assets/Loader.PNG)
 

@@ -297,10 +297,6 @@
                           Margin="0,0,20,0"/>
                 <CheckBox x:Name="closeDocumentsCheckBox"
                           Content="Close library documents after adding"
-                          VerticalAlignment="Center"
-                          Margin="0,0,20,0"/>
-                <CheckBox x:Name="placeInSchematicCheckBox"
-                          Content="Place in schematic"
                           IsChecked="False"
                           VerticalAlignment="Center"/>
             </StackPanel>
