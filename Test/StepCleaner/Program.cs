@@ -4,12 +4,21 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Text;
 using SkiaSharp;
 
 namespace StepCleaner.Tests
 {
     internal static class Program
     {
+        private const int ProjectionDifferenceTolerance = 6;
+        private const int AllowedDetectionRegionPaddingPixels = 10;
+        private const int VerificationProjectionImageSizePixels = 1000;
+        private const int VerificationProjectionPaddingPixels = 50;
+        private const int FlatnessEdgeThreshold = 28;
+        private const double MaxCleanedRegionEdgeRatio = 0.035;
+        private const double MaxRetainedRegionEdgeRatio = 0.45;
+
         private static int Main()
         {
             try
@@ -20,8 +29,11 @@ namespace StepCleaner.Tests
                 string validatedDirectory = Path.Combine(dataRoot, "Validated");
                 string markedDirectory = Path.Combine(dataRoot, "Marked");
                 string projectionDirectory = Path.Combine(dataRoot, "Projection");
+                string originalCleanCompareProjectionDirectory = Path.Combine(dataRoot, "OriginalCleanCompareProjection");
                 string cleanProjectionDirectory = Path.Combine(dataRoot, "CleanProjection");
                 string validatedProjectionDirectory = Path.Combine(dataRoot, "ValidatedProjection");
+                string failedProjectionReportPath = Path.Combine(dataRoot, "FailedProjectionReport.md");
+                string failedProjectionReportDirectory = Path.Combine(dataRoot, "FailedProjectionReport");
                 string detectionDirectory = Path.Combine(cleanDirectory, "Detection");
 
                 Directory.CreateDirectory(cleanDirectory);
@@ -33,7 +45,9 @@ namespace StepCleaner.Tests
                     originalFiles.Select(file => Path.GetFileNameWithoutExtension(file)),
                     StringComparer.OrdinalIgnoreCase);
                 var generatedCleanByName = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                var detectionViewNamesByFileName = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
                 var failures = new List<string>();
+                var visualFailures = new List<ProjectionVisualFailure>();
 
                 if (originalFiles.Count == 0)
                     failures.Add("No STEP files were found in Original.");
@@ -80,14 +94,37 @@ namespace StepCleaner.Tests
                         failures.Add("Validated file has no matching Original model or generated Clean output: " + fileName);
                 }
 
+                var verificationProjectionOptions = CreateVerificationProjectionOptions();
+                ClearProjectionFiles(cleanProjectionDirectory, generatedCleanByName.Keys);
+                StepProjectionRenderer.ProjectDirectory(cleanDirectory, cleanProjectionDirectory, verificationProjectionOptions);
+
+                VerifyPostCleanProjections(
+                    originalFiles,
+                    generatedCleanByName,
+                    originalCleanCompareProjectionDirectory,
+                    cleanProjectionDirectory,
+                    verificationProjectionOptions,
+                    detectionViewNamesByFileName,
+                    failures,
+                    visualFailures);
+
                 CompareCleanAndValidatedProjections(
                     generatedCleanByName,
                     validatedByName,
-                    cleanDirectory,
                     validatedDirectory,
                     cleanProjectionDirectory,
                     validatedProjectionDirectory,
-                    failures);
+                    verificationProjectionOptions,
+                    detectionViewNamesByFileName,
+                    failures,
+                    visualFailures);
+
+                WriteFailedProjectionReport(
+                    failedProjectionReportPath,
+                    failedProjectionReportDirectory,
+                    visualFailures);
+                if (visualFailures.Count > 0)
+                    Console.WriteLine("Failed projection report: " + failedProjectionReportPath);
 
                 if (failures.Count > 0)
                 {
@@ -111,6 +148,345 @@ namespace StepCleaner.Tests
                 Console.Error.WriteLine("STEP cleaner regression test failed: " + ex.Message);
                 return 1;
             }
+        }
+
+        private static void VerifyPostCleanProjections(
+            List<string> originalFiles,
+            Dictionary<string, string> generatedCleanByName,
+            string originalProjectionDirectory,
+            string cleanProjectionDirectory,
+            StepProjectionOptions projectionOptions,
+            Dictionary<string, List<string>> detectionViewNamesByFileName,
+            List<string> failures,
+            List<ProjectionVisualFailure> visualFailures)
+        {
+            var matchedFileNames = generatedCleanByName.Keys
+                .OrderBy(fileName => fileName, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            if (matchedFileNames.Count == 0)
+                return;
+
+            ClearProjectionFiles(originalProjectionDirectory, matchedFileNames);
+
+            var originalByName = originalFiles.ToDictionary(Path.GetFileName, StringComparer.OrdinalIgnoreCase);
+            int comparedImages = 0;
+            int checkedRegions = 0;
+
+            foreach (string fileName in matchedFileNames)
+            {
+                if (!originalByName.TryGetValue(fileName, out string originalFile))
+                {
+                    failures.Add("Generated clean file has no matching Original model: " + fileName);
+                    continue;
+                }
+
+                var detectionReport = StepWatermarkCleaner.Detect(File.ReadAllBytes(originalFile), new StepWatermarkCleanerOptions());
+                var detectionRegions = StepProjectionRenderer.ProjectDetectionRegions(
+                        originalFile,
+                        detectionReport,
+                        projectionOptions)
+                    .ToList();
+
+                string modelName = Path.GetFileNameWithoutExtension(fileName);
+                var detectedViewNames = detectionRegions
+                    .Select(region => region.ViewName)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .OrderBy(viewName => viewName, StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+                detectionViewNamesByFileName[fileName] = detectedViewNames;
+                if (detectedViewNames.Count == 0)
+                    continue;
+
+                var renderOptions = CreateProjectionOptionsForViews(detectedViewNames, projectionOptions);
+                StepProjectionRenderer.ProjectFile(originalFile, originalProjectionDirectory, renderOptions);
+
+                foreach (string viewName in detectedViewNames)
+                {
+                    string originalProjectionPath = Path.Combine(originalProjectionDirectory, modelName + "__" + viewName + ".png");
+                    string cleanProjectionPath = Path.Combine(cleanProjectionDirectory, modelName + "__" + viewName + ".png");
+
+                    if (!File.Exists(originalProjectionPath))
+                    {
+                        failures.Add("Original projection is missing: " + originalProjectionPath);
+                        continue;
+                    }
+
+                    if (!File.Exists(cleanProjectionPath))
+                    {
+                        failures.Add("Clean projection is missing: " + cleanProjectionPath);
+                        continue;
+                    }
+
+                    var viewRegions = detectionRegions
+                        .Where(region => string.Equals(region.ViewName, viewName, StringComparison.OrdinalIgnoreCase))
+                        .ToList();
+
+                    VerifyPostCleanProjectionImage(
+                        fileName,
+                        viewName,
+                        originalProjectionPath,
+                        cleanProjectionPath,
+                        viewRegions,
+                        failures,
+                        visualFailures);
+
+                    comparedImages++;
+                    checkedRegions += viewRegions.Count;
+                }
+            }
+
+            Console.WriteLine(
+                "Post-clean projection verification: models=" +
+                matchedFileNames.Count.ToString(CultureInfo.InvariantCulture) +
+                ", images=" +
+                comparedImages.ToString(CultureInfo.InvariantCulture) +
+                ", detected regions=" +
+                checkedRegions.ToString(CultureInfo.InvariantCulture));
+        }
+
+        private static StepProjectionOptions CreateVerificationProjectionOptions()
+        {
+            return new StepProjectionOptions
+            {
+                ImageSizePixels = VerificationProjectionImageSizePixels,
+                PaddingPixels = VerificationProjectionPaddingPixels,
+                WriteMetadata = false
+            };
+        }
+
+        private static StepProjectionOptions CreateProjectionOptionsForViews(
+            IReadOnlyList<string> viewNames,
+            StepProjectionOptions template)
+        {
+            var options = new StepProjectionOptions
+            {
+                ImageSizePixels = template.ImageSizePixels,
+                PaddingPixels = template.PaddingPixels,
+                WriteMetadata = template.WriteMetadata
+            };
+
+            foreach (string viewName in viewNames)
+                options.ViewNames.Add(viewName);
+
+            return options;
+        }
+
+        private static void VerifyPostCleanProjectionImage(
+            string fileName,
+            string viewName,
+            string originalProjectionPath,
+            string cleanProjectionPath,
+            IReadOnlyList<StepProjectionDetectionRegion> detectionRegions,
+            List<string> failures,
+            List<ProjectionVisualFailure> visualFailures)
+        {
+            using (var originalImage = SKBitmap.Decode(originalProjectionPath))
+            using (var cleanImage = SKBitmap.Decode(cleanProjectionPath))
+            {
+                if (originalImage == null || cleanImage == null)
+                {
+                    failures.Add(fileName + " has an unreadable original or clean projection on " + viewName + ".");
+                    return;
+                }
+
+                if (originalImage.Width != cleanImage.Width || originalImage.Height != cleanImage.Height)
+                {
+                    failures.Add(fileName + " original and clean projections have different sizes on " + viewName + ".");
+                    return;
+                }
+
+                bool[] allowedMask = BuildAllowedChangeMask(
+                    originalImage.Width,
+                    originalImage.Height,
+                    detectionRegions,
+                    AllowedDetectionRegionPaddingPixels);
+
+                int changedOutsideRegion = 0;
+                int firstOutsideX = -1;
+                int firstOutsideY = -1;
+
+                for (int y = 0; y < originalImage.Height; y++)
+                {
+                    int row = y * originalImage.Width;
+                    for (int x = 0; x < originalImage.Width; x++)
+                    {
+                        if (!PixelsDifferent(originalImage.GetPixel(x, y), cleanImage.GetPixel(x, y), ProjectionDifferenceTolerance))
+                            continue;
+
+                        if (allowedMask[row + x])
+                            continue;
+
+                        changedOutsideRegion++;
+                        if (firstOutsideX < 0)
+                        {
+                            firstOutsideX = x;
+                            firstOutsideY = y;
+                        }
+                    }
+                }
+
+                if (changedOutsideRegion > 0)
+                {
+                    string message =
+                        fileName +
+                        " changed outside detected cleanup region on " +
+                        viewName +
+                        ": pixels=" +
+                        changedOutsideRegion.ToString(CultureInfo.InvariantCulture) +
+                        ", first=(" +
+                        firstOutsideX.ToString(CultureInfo.InvariantCulture) +
+                        "," +
+                        firstOutsideY.ToString(CultureInfo.InvariantCulture) +
+                        ").";
+                    failures.Add(
+                        message);
+                    visualFailures.Add(new ProjectionVisualFailure
+                    {
+                        Category = "Original vs Clean: outside detected region",
+                        FileName = fileName,
+                        ViewName = viewName,
+                        Message = message,
+                        LeftLabel = "Original",
+                        LeftImagePath = originalProjectionPath,
+                        RightLabel = "Clean",
+                        RightImagePath = cleanProjectionPath
+                    });
+                }
+
+                foreach (StepProjectionDetectionRegion region in detectionRegions)
+                    VerifyCleanedRegionFlatness(fileName, viewName, originalImage, cleanImage, region, failures);
+            }
+        }
+
+        private static bool[] BuildAllowedChangeMask(
+            int imageWidth,
+            int imageHeight,
+            IReadOnlyList<StepProjectionDetectionRegion> detectionRegions,
+            int paddingPixels)
+        {
+            var mask = new bool[imageWidth * imageHeight];
+            foreach (StepProjectionDetectionRegion region in detectionRegions)
+            {
+                int left = Math.Max(0, region.RectangleX - paddingPixels);
+                int top = Math.Max(0, region.RectangleY - paddingPixels);
+                int right = Math.Min(imageWidth - 1, region.RectangleX + region.RectangleWidth - 1 + paddingPixels);
+                int bottom = Math.Min(imageHeight - 1, region.RectangleY + region.RectangleHeight - 1 + paddingPixels);
+                if (right < left || bottom < top)
+                    continue;
+
+                for (int y = top; y <= bottom; y++)
+                {
+                    int row = y * imageWidth;
+                    for (int x = left; x <= right; x++)
+                        mask[row + x] = true;
+                }
+            }
+
+            return mask;
+        }
+
+        private static void VerifyCleanedRegionFlatness(
+            string fileName,
+            string viewName,
+            SKBitmap originalImage,
+            SKBitmap cleanImage,
+            StepProjectionDetectionRegion region,
+            List<string> failures)
+        {
+            int left = Math.Max(0, region.RectangleX);
+            int top = Math.Max(0, region.RectangleY);
+            int right = Math.Min(cleanImage.Width - 1, region.RectangleX + region.RectangleWidth - 1);
+            int bottom = Math.Min(cleanImage.Height - 1, region.RectangleY + region.RectangleHeight - 1);
+            int width = right - left + 1;
+            int height = bottom - top + 1;
+            if (width < 16 || height < 16 || width * height < 500)
+                return;
+
+            double originalEdgeRatio = MeasureRegionEdgeRatio(originalImage, left, top, right, bottom);
+            double cleanEdgeRatio = MeasureRegionEdgeRatio(cleanImage, left, top, right, bottom);
+            if (cleanEdgeRatio <= MaxCleanedRegionEdgeRatio ||
+                cleanEdgeRatio <= originalEdgeRatio * MaxRetainedRegionEdgeRatio)
+                return;
+
+            failures.Add(
+                fileName +
+                " cleaned region still has non-flat visual detail on " +
+                viewName +
+                " at [" +
+                left.ToString(CultureInfo.InvariantCulture) +
+                "," +
+                top.ToString(CultureInfo.InvariantCulture) +
+                " " +
+                width.ToString(CultureInfo.InvariantCulture) +
+                "x" +
+                height.ToString(CultureInfo.InvariantCulture) +
+                "]: clean edge ratio=" +
+                cleanEdgeRatio.ToString("0.0000", CultureInfo.InvariantCulture) +
+                ", original edge ratio=" +
+                originalEdgeRatio.ToString("0.0000", CultureInfo.InvariantCulture) +
+                ".");
+        }
+
+        private static double MeasureRegionEdgeRatio(SKBitmap image, int left, int top, int right, int bottom)
+        {
+            int highContrastEdges = 0;
+            int sampledEdges = 0;
+
+            for (int y = top; y <= bottom; y++)
+            {
+                for (int x = left; x <= right; x++)
+                {
+                    SKColor current = image.GetPixel(x, y);
+                    if (IsBackgroundLike(current))
+                        continue;
+
+                    if (x < right)
+                    {
+                        SKColor next = image.GetPixel(x + 1, y);
+                        if (!IsBackgroundLike(next))
+                        {
+                            sampledEdges++;
+                            if (ColorDistance(current, next) > FlatnessEdgeThreshold)
+                                highContrastEdges++;
+                        }
+                    }
+
+                    if (y < bottom)
+                    {
+                        SKColor next = image.GetPixel(x, y + 1);
+                        if (!IsBackgroundLike(next))
+                        {
+                            sampledEdges++;
+                            if (ColorDistance(current, next) > FlatnessEdgeThreshold)
+                                highContrastEdges++;
+                        }
+                    }
+                }
+            }
+
+            if (sampledEdges == 0)
+                return 0.0;
+
+            return (double)highContrastEdges / sampledEdges;
+        }
+
+        private static bool PixelsDifferent(SKColor left, SKColor right, int tolerance)
+        {
+            return ColorDistance(left, right) > tolerance ||
+                Math.Abs(left.Alpha - right.Alpha) > tolerance;
+        }
+
+        private static int ColorDistance(SKColor left, SKColor right)
+        {
+            int red = Math.Abs(left.Red - right.Red);
+            int green = Math.Abs(left.Green - right.Green);
+            int blue = Math.Abs(left.Blue - right.Blue);
+            return Math.Max(red, Math.Max(green, blue));
+        }
+
+        private static bool IsBackgroundLike(SKColor color)
+        {
+            return color.Red >= 245 && color.Green >= 245 && color.Blue >= 245;
         }
 
         private static void VerifyCleanupIgnoresMarkedOptions(List<string> originalFiles, List<string> failures)
@@ -264,11 +640,13 @@ namespace StepCleaner.Tests
         private static void CompareCleanAndValidatedProjections(
             Dictionary<string, string> generatedCleanByName,
             Dictionary<string, string> validatedByName,
-            string cleanDirectory,
             string validatedDirectory,
             string cleanProjectionDirectory,
             string validatedProjectionDirectory,
-            List<string> failures)
+            StepProjectionOptions projectionOptions,
+            Dictionary<string, List<string>> detectionViewNamesByFileName,
+            List<string> failures,
+            List<ProjectionVisualFailure> visualFailures)
         {
             var matchedFileNames = generatedCleanByName.Keys
                 .Where(fileName => validatedByName.ContainsKey(fileName))
@@ -277,17 +655,19 @@ namespace StepCleaner.Tests
             if (matchedFileNames.Count == 0)
                 return;
 
-            ClearProjectionFiles(cleanProjectionDirectory, matchedFileNames);
             ClearProjectionFiles(validatedProjectionDirectory, matchedFileNames);
 
-            StepProjectionRenderer.ProjectDirectory(cleanDirectory, cleanProjectionDirectory);
-            StepProjectionRenderer.ProjectDirectory(validatedDirectory, validatedProjectionDirectory);
+            StepProjectionRenderer.ProjectDirectory(validatedDirectory, validatedProjectionDirectory, projectionOptions);
 
             int comparedImages = 0;
             foreach (string fileName in matchedFileNames)
             {
                 string modelName = Path.GetFileNameWithoutExtension(fileName);
-                foreach (string viewName in StepProjectionRenderer.ViewNames)
+                if (!detectionViewNamesByFileName.TryGetValue(fileName, out List<string> detectionViewNames) ||
+                    detectionViewNames.Count == 0)
+                    continue;
+
+                foreach (string viewName in detectionViewNames)
                 {
                     string cleanProjectionPath = Path.Combine(cleanProjectionDirectory, modelName + "__" + viewName + ".png");
                     string validatedProjectionPath = Path.Combine(validatedProjectionDirectory, modelName + "__" + viewName + ".png");
@@ -306,14 +686,26 @@ namespace StepCleaner.Tests
 
                     if (!ProjectionPixelsEqual(cleanProjectionPath, validatedProjectionPath))
                     {
-                        failures.Add(
+                        string message =
                             fileName +
                             " differs from Validated projection on " +
                             viewName +
                             ": " +
                             cleanProjectionPath +
                             " vs " +
-                            validatedProjectionPath);
+                            validatedProjectionPath;
+                        failures.Add(message);
+                        visualFailures.Add(new ProjectionVisualFailure
+                        {
+                            Category = "Clean vs Validated",
+                            FileName = fileName,
+                            ViewName = viewName,
+                            Message = message,
+                            LeftLabel = "Clean",
+                            LeftImagePath = cleanProjectionPath,
+                            RightLabel = "Validated",
+                            RightImagePath = validatedProjectionPath
+                        });
                     }
 
                     comparedImages++;
@@ -349,6 +741,161 @@ namespace StepCleaner.Tests
 
                 return true;
             }
+        }
+
+        private static void WriteFailedProjectionReport(
+            string reportPath,
+            string reportDirectory,
+            List<ProjectionVisualFailure> visualFailures)
+        {
+            Directory.CreateDirectory(reportDirectory);
+            foreach (string staleImage in Directory.GetFiles(reportDirectory, "*.png"))
+                File.Delete(staleImage);
+
+            var lines = new List<string>
+            {
+                "# StepCleaner Failed Projection Report",
+                string.Empty,
+                "Generated: " + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture),
+                string.Empty
+            };
+
+            if (visualFailures.Count == 0)
+            {
+                lines.Add("No failed projections.");
+                File.WriteAllLines(reportPath, lines, Encoding.UTF8);
+                return;
+            }
+
+            lines.Add("Failed projections: " + visualFailures.Count.ToString(CultureInfo.InvariantCulture));
+            lines.Add(string.Empty);
+
+            int index = 1;
+            foreach (ProjectionVisualFailure failure in visualFailures)
+            {
+                string imageName = BuildReportImageName(index, failure);
+                string outputPath = Path.Combine(reportDirectory, imageName);
+                bool wroteImage = TryWriteSideBySideProjectionImage(failure, outputPath);
+
+                lines.Add("## " + failure.Category);
+                lines.Add(string.Empty);
+                lines.Add("- Model: `" + failure.FileName + "`");
+                lines.Add("- View: `" + failure.ViewName + "`");
+                lines.Add("- Detail: " + failure.Message);
+                lines.Add(string.Empty);
+
+                if (wroteImage)
+                    lines.Add("![" + failure.FileName + " " + failure.ViewName + "](" + Path.GetFullPath(outputPath).Replace('\\', '/') + ")");
+                else
+                    lines.Add("Could not create side-by-side image for this projection.");
+
+                lines.Add(string.Empty);
+                index++;
+            }
+
+            File.WriteAllLines(reportPath, lines, Encoding.UTF8);
+        }
+
+        private static bool TryWriteSideBySideProjectionImage(ProjectionVisualFailure failure, string outputPath)
+        {
+            using (var leftImage = SKBitmap.Decode(failure.LeftImagePath))
+            using (var rightImage = SKBitmap.Decode(failure.RightImagePath))
+            {
+                if (leftImage == null || rightImage == null)
+                    return false;
+
+                const int panelSize = 720;
+                const int labelHeight = 46;
+                const int gutter = 18;
+                const int margin = 18;
+
+                int outputWidth = panelSize * 2 + gutter + margin * 2;
+                int outputHeight = panelSize + labelHeight + margin * 2;
+
+                using (var output = new SKBitmap(outputWidth, outputHeight, SKColorType.Rgba8888, SKAlphaType.Premul))
+                using (var canvas = new SKCanvas(output))
+                using (var textPaint = new SKPaint())
+                using (var labelFont = new SKFont())
+                using (var backgroundPaint = new SKPaint())
+                using (var framePaint = new SKPaint())
+                {
+                    canvas.Clear(new SKColor(250, 250, 250));
+
+                    backgroundPaint.Color = SKColors.White;
+                    backgroundPaint.Style = SKPaintStyle.Fill;
+                    framePaint.Color = new SKColor(205, 205, 205);
+                    framePaint.Style = SKPaintStyle.Stroke;
+                    framePaint.StrokeWidth = 2;
+                    textPaint.Color = new SKColor(35, 35, 35);
+                    textPaint.IsAntialias = true;
+                    labelFont.Size = 24;
+
+                    var leftRect = new SKRect(margin, margin + labelHeight, margin + panelSize, margin + labelHeight + panelSize);
+                    var rightRect = new SKRect(leftRect.Right + gutter, leftRect.Top, leftRect.Right + gutter + panelSize, leftRect.Bottom);
+
+                    DrawProjectionPanel(canvas, leftImage, leftRect, backgroundPaint, framePaint);
+                    DrawProjectionPanel(canvas, rightImage, rightRect, backgroundPaint, framePaint);
+
+                    canvas.DrawText(failure.LeftLabel, leftRect.Left, margin + 30, SKTextAlign.Left, labelFont, textPaint);
+                    canvas.DrawText(failure.RightLabel, rightRect.Left, margin + 30, SKTextAlign.Left, labelFont, textPaint);
+
+                    using (SKImage image = SKImage.FromBitmap(output))
+                    using (SKData data = image.Encode(SKEncodedImageFormat.Png, 95))
+                    using (Stream stream = File.Create(outputPath))
+                        data.SaveTo(stream);
+                }
+            }
+
+            return true;
+        }
+
+        private static void DrawProjectionPanel(
+            SKCanvas canvas,
+            SKBitmap image,
+            SKRect target,
+            SKPaint backgroundPaint,
+            SKPaint framePaint)
+        {
+            canvas.DrawRect(target, backgroundPaint);
+
+            float scale = Math.Min(target.Width / image.Width, target.Height / image.Height);
+            float width = image.Width * scale;
+            float height = image.Height * scale;
+            var imageRect = new SKRect(
+                target.Left + (target.Width - width) / 2.0f,
+                target.Top + (target.Height - height) / 2.0f,
+                target.Left + (target.Width + width) / 2.0f,
+                target.Top + (target.Height + height) / 2.0f);
+
+            canvas.DrawBitmap(image, imageRect);
+            canvas.DrawRect(target, framePaint);
+        }
+
+        private static string BuildReportImageName(int index, ProjectionVisualFailure failure)
+        {
+            return index.ToString("000", CultureInfo.InvariantCulture) +
+                "_" +
+                SanitizeFileName(Path.GetFileNameWithoutExtension(failure.FileName)) +
+                "__" +
+                SanitizeFileName(failure.ViewName) +
+                "__" +
+                SanitizeFileName(failure.Category) +
+                ".png";
+        }
+
+        private static string SanitizeFileName(string value)
+        {
+            var invalidCharacters = new HashSet<char>(Path.GetInvalidFileNameChars());
+            var builder = new StringBuilder(value.Length);
+            foreach (char character in value)
+            {
+                if (invalidCharacters.Contains(character) || char.IsWhiteSpace(character) || character == ':')
+                    builder.Append('_');
+                else
+                    builder.Append(character);
+            }
+
+            return builder.ToString();
         }
 
         private static void ClearProjectionFiles(string projectionDirectory, IEnumerable<string> stepFileNames)
@@ -411,6 +958,18 @@ namespace StepCleaner.Tests
         {
             return Directory.Exists(Path.Combine(path, "Original"))
                 && Directory.Exists(Path.Combine(path, "Validated"));
+        }
+
+        private sealed class ProjectionVisualFailure
+        {
+            public string Category { get; set; }
+            public string FileName { get; set; }
+            public string ViewName { get; set; }
+            public string Message { get; set; }
+            public string LeftLabel { get; set; }
+            public string LeftImagePath { get; set; }
+            public string RightLabel { get; set; }
+            public string RightImagePath { get; set; }
         }
 
         private static List<string> GetStepFiles(string directory)

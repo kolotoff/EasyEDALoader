@@ -15,6 +15,7 @@ namespace EasyEDA_Loader
         public int ImageSizePixels { get; set; } = 1600;
         public int PaddingPixels { get; set; } = 80;
         public bool WriteMetadata { get; set; } = true;
+        public List<string> ViewNames { get; } = new List<string>();
     }
 
     public sealed class StepProjectionReport
@@ -23,6 +24,19 @@ namespace EasyEDA_Loader
         public int FaceCount { get; internal set; }
         public int EdgeCount { get; internal set; }
         public IReadOnlyList<string> OutputFiles { get; internal set; }
+    }
+
+    public sealed class StepProjectionDetectionRegion
+    {
+        public string InputPath { get; internal set; }
+        public string ModelName { get; internal set; }
+        public string ViewName { get; internal set; }
+        public int RectangleX { get; internal set; }
+        public int RectangleY { get; internal set; }
+        public int RectangleWidth { get; internal set; }
+        public int RectangleHeight { get; internal set; }
+        public int EntityId { get; internal set; }
+        public string Kind { get; internal set; }
     }
 
     public static class StepProjectionRenderer
@@ -83,7 +97,7 @@ namespace EasyEDA_Loader
             var outputFiles = new List<string>();
             string modelName = Path.GetFileNameWithoutExtension(inputPath);
 
-            foreach (ViewSpec view in Views)
+            foreach (ViewSpec view in GetSelectedViews(options))
             {
                 ProjectionTransform transform = ProjectionTransform.Create(drawingModel.Bounds, view, options);
                 string outputPath = Path.Combine(outputDirectory, modelName + "__" + view.Name + ".png");
@@ -139,7 +153,7 @@ namespace EasyEDA_Loader
             string modelName = Path.GetFileNameWithoutExtension(inputPath);
             DeleteExistingDetectionProjectionFiles(outputDirectory, modelName);
 
-            foreach (ViewSpec view in Views)
+            foreach (ViewSpec view in GetSelectedViews(options))
             {
                 var viewHighlights = highlights
                     .Where(highlight => string.Equals(highlight.ViewName, view.Name, StringComparison.OrdinalIgnoreCase))
@@ -179,6 +193,66 @@ namespace EasyEDA_Loader
         }
 
         public static IReadOnlyList<string> ViewNames => Views.Select(v => v.Name).ToList();
+
+        public static IReadOnlyList<StepProjectionDetectionRegion> ProjectDetectionRegions(
+            string inputPath,
+            StepWatermarkDetectionReport detectionReport,
+            StepProjectionOptions options = null,
+            IReadOnlyList<StepWatermarkMarkedRegion> markedRegions = null)
+        {
+            if (inputPath == null)
+                throw new ArgumentNullException(nameof(inputPath));
+
+            if (detectionReport == null)
+                throw new ArgumentNullException(nameof(detectionReport));
+
+            options = NormalizeOptions(options);
+
+            string stepText = Encoding.Latin1.GetString(File.ReadAllBytes(inputPath));
+            StepModel model = StepModel.Parse(stepText);
+            model.BuildIndexes();
+            var drawingModel = ProjectionModel.Build(model);
+            var highlights = BuildDetectionHighlights(model, detectionReport, drawingModel.Bounds);
+            var compatibleMarkedRegions = GetCompatibleMarkedRegions(markedRegions);
+            if (compatibleMarkedRegions.Count > 0)
+                highlights = FilterHighlightsByMarkedRegions(highlights, compatibleMarkedRegions);
+
+            var result = new List<StepProjectionDetectionRegion>();
+            string modelName = Path.GetFileNameWithoutExtension(inputPath);
+
+            foreach (ViewSpec view in GetSelectedViews(options))
+            {
+                var viewHighlights = highlights
+                    .Where(highlight => string.Equals(highlight.ViewName, view.Name, StringComparison.OrdinalIgnoreCase))
+                    .ToList();
+                if (viewHighlights.Count == 0)
+                    continue;
+
+                ProjectionTransform transform = ProjectionTransform.Create(drawingModel.Bounds, view, options);
+                foreach (DetectionRectangle detectionRectangle in BuildDetectionRectangles(
+                    options.ImageSizePixels,
+                    options.ImageSizePixels,
+                    transform,
+                    viewHighlights))
+                {
+                    Rect2i rectangle = detectionRectangle.Rectangle;
+                    result.Add(new StepProjectionDetectionRegion
+                    {
+                        InputPath = inputPath,
+                        ModelName = modelName,
+                        ViewName = view.Name,
+                        RectangleX = rectangle.Left,
+                        RectangleY = rectangle.Top,
+                        RectangleWidth = rectangle.Width,
+                        RectangleHeight = rectangle.Height,
+                        EntityId = detectionRectangle.EntityId,
+                        Kind = detectionRectangle.Kind
+                    });
+                }
+            }
+
+            return result;
+        }
 
         private static void RenderProjection(
             string inputPath,
@@ -600,10 +674,28 @@ namespace EasyEDA_Loader
             ProjectionTransform transform,
             IReadOnlyList<ProjectionHighlight> highlights)
         {
-            if (highlights == null || highlights.Count == 0)
-                return;
+            foreach (DetectionRectangle detectionRectangle in BuildDetectionRectangles(
+                image.Width,
+                image.Height,
+                transform,
+                highlights))
+            {
+                Rect2i rectangle = detectionRectangle.Rectangle;
+                image.FillRectangle(rectangle.Left, rectangle.Top, rectangle.Right, rectangle.Bottom, new Rgba(255, 0, 0, 35));
+                image.DrawRectangle(rectangle.Left, rectangle.Top, rectangle.Right, rectangle.Bottom, new Rgba(255, 0, 0, 255), 4);
+            }
+        }
 
+        private static List<DetectionRectangle> BuildDetectionRectangles(
+            int imageWidth,
+            int imageHeight,
+            ProjectionTransform transform,
+            IReadOnlyList<ProjectionHighlight> highlights)
+        {
             var rectangles = new List<DetectionRectangle>();
+            if (highlights == null || highlights.Count == 0)
+                return rectangles;
+
             foreach (ProjectionHighlight highlight in highlights)
             {
                 Rect2i rectangle = highlight.MarkedRegion != null
@@ -614,7 +706,7 @@ namespace EasyEDA_Loader
                         highlight.MarkedRegion.RectangleY + highlight.MarkedRegion.RectangleHeight - 1)
                     : transform.ProjectBounds(highlight.Bounds, 0.0);
 
-                if (!rectangle.Intersects(0, 0, image.Width - 1, image.Height - 1))
+                if (!rectangle.Intersects(0, 0, imageWidth - 1, imageHeight - 1))
                     continue;
 
                 if (rectangle.Width < 4)
@@ -624,10 +716,13 @@ namespace EasyEDA_Loader
                     rectangle = rectangle.Expand(0, (4 - rectangle.Height) / 2 + 1);
 
                 rectangles.Add(new DetectionRectangle(
-                    rectangle.Clamp(0, 0, image.Width - 1, image.Height - 1),
-                    highlight.MarkedRegion));
+                    rectangle.Clamp(0, 0, imageWidth - 1, imageHeight - 1),
+                    highlight.MarkedRegion,
+                    highlight.EntityId,
+                    highlight.Kind));
             }
 
+            var result = new List<DetectionRectangle>();
             foreach (DetectionRectangle detectionRectangle in ClusterRectangles(rectangles, 10))
             {
                 Rect2i rectangle = detectionRectangle.Rectangle;
@@ -643,10 +738,14 @@ namespace EasyEDA_Loader
                             detectionRectangle.MarkedRegion.RectangleY + detectionRectangle.MarkedRegion.RectangleHeight - 1);
                 }
 
-                rectangle = rectangle.Clamp(0, 0, image.Width - 1, image.Height - 1);
-                image.FillRectangle(rectangle.Left, rectangle.Top, rectangle.Right, rectangle.Bottom, new Rgba(255, 0, 0, 35));
-                image.DrawRectangle(rectangle.Left, rectangle.Top, rectangle.Right, rectangle.Bottom, new Rgba(255, 0, 0, 255), 4);
+                result.Add(new DetectionRectangle(
+                    rectangle.Clamp(0, 0, imageWidth - 1, imageHeight - 1),
+                    detectionRectangle.MarkedRegion,
+                    detectionRectangle.EntityId,
+                    detectionRectangle.Kind));
             }
+
+            return result;
         }
 
         private static int GetMarkedDetectionRegionPaddingPixels(StepWatermarkMarkedRegion region)
@@ -691,7 +790,9 @@ namespace EasyEDA_Loader
 
                         cluster = new DetectionRectangle(
                             cluster.Rectangle.Union(rectangles[j].Rectangle),
-                            cluster.MarkedRegion);
+                            cluster.MarkedRegion,
+                            cluster.EntityId,
+                            cluster.Kind);
                         visited[j] = true;
                         changed = true;
                     }
@@ -1110,7 +1211,31 @@ namespace EasyEDA_Loader
             if (options.PaddingPixels < 0 || options.PaddingPixels * 2 >= options.ImageSizePixels)
                 throw new ArgumentOutOfRangeException(nameof(options.PaddingPixels), "Projection padding must fit inside the image.");
 
+            GetSelectedViews(options);
             return options;
+        }
+
+        private static IReadOnlyList<ViewSpec> GetSelectedViews(StepProjectionOptions options)
+        {
+            if (options == null || options.ViewNames.Count == 0)
+                return Views;
+
+            var selected = new List<ViewSpec>();
+            foreach (string viewName in options.ViewNames)
+            {
+                if (string.IsNullOrWhiteSpace(viewName))
+                    continue;
+
+                ViewSpec view = Views.FirstOrDefault(candidate =>
+                    string.Equals(candidate.Name, viewName, StringComparison.OrdinalIgnoreCase));
+                if (view.Name == null)
+                    throw new ArgumentException("Unknown projection view name: " + viewName, nameof(options.ViewNames));
+
+                if (!selected.Any(candidate => string.Equals(candidate.Name, view.Name, StringComparison.OrdinalIgnoreCase)))
+                    selected.Add(view);
+            }
+
+            return selected.Count == 0 ? Views : selected;
         }
 
         private sealed class ProjectionModel
@@ -2815,11 +2940,15 @@ namespace EasyEDA_Loader
         {
             public readonly Rect2i Rectangle;
             public readonly StepWatermarkMarkedRegion MarkedRegion;
+            public readonly int EntityId;
+            public readonly string Kind;
 
-            public DetectionRectangle(Rect2i rectangle, StepWatermarkMarkedRegion markedRegion)
+            public DetectionRectangle(Rect2i rectangle, StepWatermarkMarkedRegion markedRegion, int entityId, string kind)
             {
                 Rectangle = rectangle;
                 MarkedRegion = markedRegion;
+                EntityId = entityId;
+                Kind = kind;
             }
         }
 
