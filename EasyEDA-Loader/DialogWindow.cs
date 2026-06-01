@@ -13,6 +13,7 @@ using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 using Microsoft.Win32;
+using Newtonsoft.Json;
 
 namespace EasyEDA_Loader
 {
@@ -27,7 +28,12 @@ namespace EasyEDA_Loader
         private ComponentInfo _currentComponent;
         private EeFootprint3dModel _currentModel;
         private Root _currentRoot;
+        private bool _isRestoringSession;
         private static readonly char[] PartNumberSeparators = { '\r', '\n', '\t', ' ', ',', ';', '|' };
+        private static readonly string SessionStateFilePath = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "EasyEDA-Loader",
+            "dialog-session.json");
 
         public List<ComponentSelection> SelectedComponents { get; private set; }
         public bool SaveLibraryDocuments => saveLibraryDocumentsCheckBox?.IsChecked == true;
@@ -67,7 +73,9 @@ namespace EasyEDA_Loader
             ApplyAltiumTheme();
             SetSearchProgress(false);
             SetPreviewProgress(false);
+            RestoreLastSession();
             searchTextBox.Focus();
+            searchTextBox.CaretIndex = searchTextBox.Text?.Length ?? 0;
         }
 
         private void ApplyAltiumTheme()
@@ -258,6 +266,101 @@ namespace EasyEDA_Loader
         public void UpdateAddButtonState()
         {
             addToLibraryButton.IsEnabled = searchResults.Any(p => p.AddToLibrary);
+        }
+
+        private void RestoreLastSession()
+        {
+            if (!File.Exists(SessionStateFilePath))
+                return;
+
+            try
+            {
+                var json = File.ReadAllText(SessionStateFilePath);
+                var state = JsonConvert.DeserializeObject<DialogSessionState>(json);
+                if (state == null)
+                    return;
+
+                _isRestoringSession = true;
+
+                searchTextBox.Text = state.SearchText ?? string.Empty;
+                saveLibraryDocumentsCheckBox.IsChecked = state.SaveLibraryDocuments;
+                closeDocumentsCheckBox.IsChecked = state.CloseDocuments;
+                placeInSchematicCheckBox.IsChecked = state.PlaceInSchematic;
+
+                searchResults.Clear();
+                if (state.Results != null)
+                {
+                    foreach (var result in state.Results)
+                    {
+                        if (result?.PartInfo == null)
+                            continue;
+
+                        var viewModel = new PartInfoViewModel(result.PartInfo, this)
+                        {
+                            AddToLibrary = result.AddToLibrary,
+                            HasFootprint = result.PartInfo.HasFootprint,
+                            Has3d = result.PartInfo.Has3d
+                        };
+                        searchResults.Add(viewModel);
+                    }
+                }
+
+                if (searchResults.Count > 0)
+                {
+                    PartInfoViewModel selected = null;
+                    if (!string.IsNullOrWhiteSpace(state.SelectedPart))
+                    {
+                        selected = searchResults.FirstOrDefault(result =>
+                            string.Equals(result.PartInfo.Part, state.SelectedPart, StringComparison.OrdinalIgnoreCase));
+                    }
+
+                    resultsGrid.SelectedItem = selected ?? searchResults[0];
+                    resultsGrid.ScrollIntoView(resultsGrid.SelectedItem);
+                }
+
+                UpdateAddButtonState();
+            }
+            catch (Exception ex)
+            {
+                EasyEDALoaderModule.Trace($"Failed to restore dialog session: {ex}");
+            }
+            finally
+            {
+                _isRestoringSession = false;
+            }
+        }
+
+        private void SaveLastSession()
+        {
+            if (_isRestoringSession)
+                return;
+
+            try
+            {
+                var state = new DialogSessionState
+                {
+                    SearchText = searchTextBox.Text,
+                    SaveLibraryDocuments = SaveLibraryDocuments,
+                    CloseDocuments = CloseDocuments,
+                    PlaceInSchematic = PlaceInSchematic,
+                    SelectedPart = (resultsGrid.SelectedItem as PartInfoViewModel)?.PartInfo?.Part,
+                    Results = searchResults.Select(result => new DialogSessionResult
+                    {
+                        PartInfo = result.PartInfo,
+                        AddToLibrary = result.AddToLibrary
+                    }).ToList()
+                };
+
+                var directory = Path.GetDirectoryName(SessionStateFilePath);
+                if (!string.IsNullOrEmpty(directory))
+                    Directory.CreateDirectory(directory);
+
+                File.WriteAllText(SessionStateFilePath, JsonConvert.SerializeObject(state, Formatting.Indented));
+            }
+            catch (Exception ex)
+            {
+                EasyEDALoaderModule.Trace($"Failed to save dialog session: {ex}");
+            }
         }
 
         private static List<string> ParsePartNumbers(string searchText)
@@ -591,6 +694,7 @@ namespace EasyEDA_Loader
 
         protected override void OnClosing(CancelEventArgs e)
         {
+            SaveLastSession();
             cts?.Cancel();
             previewCts?.Cancel();
             base.OnClosing(e);
@@ -671,5 +775,21 @@ namespace EasyEDA_Loader
         {
             PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
         }
+    }
+
+    internal sealed class DialogSessionState
+    {
+        public string SearchText { get; set; }
+        public bool SaveLibraryDocuments { get; set; }
+        public bool CloseDocuments { get; set; }
+        public bool PlaceInSchematic { get; set; }
+        public string SelectedPart { get; set; }
+        public List<DialogSessionResult> Results { get; set; }
+    }
+
+    internal sealed class DialogSessionResult
+    {
+        public EasyedaApi.PartInfo PartInfo { get; set; }
+        public bool AddToLibrary { get; set; }
     }
 }
