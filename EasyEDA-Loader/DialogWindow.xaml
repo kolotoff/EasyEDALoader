@@ -336,6 +336,7 @@
                     <RowDefinition Height="*"/>
                     <RowDefinition Height="*"/>
                     <RowDefinition Height="*"/>
+                    <RowDefinition Height="*"/>
                 </Grid.RowDefinitions>
 
                 <TextBlock Grid.Row="0"
@@ -380,12 +381,21 @@
                               Grid.Row="4"
                               VerticalAlignment="Stretch"
                               HorizontalAlignment="Stretch"
+                              Margin="0,0,0,10"
                               HorizontalScrollBarVisibility="Hidden"
                               VerticalScrollBarVisibility="Hidden"
                               Background="Black">
                     <Canvas x:Name="footprintCanvas" Height="100" Width="100"
                             HorizontalAlignment="Left" VerticalAlignment="Top"/>
                 </ScrollViewer>
+
+                <Border Grid.Row="5"
+                        Background="Black">
+                    <Image x:Name="modelProjectionImage"
+                           Stretch="Uniform"
+                           HorizontalAlignment="Stretch"
+                           VerticalAlignment="Stretch"/>
+                </Border>
             </Grid>
         </Border>
     </Grid>

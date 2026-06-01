@@ -64,6 +64,7 @@ namespace EasyEDA_Loader
                 if (e.ViewportWidthChange != 0 || e.ViewportHeightChange != 0)
                     _symbolHelper.FitToBoundingBox();
             };
+
         }
 
         private void Window_Loaded(object sender, RoutedEventArgs e)
@@ -157,6 +158,7 @@ namespace EasyEDA_Loader
                 thumbnailImage.Source = null;
                 symbolCanvas.Children.Clear();
                 footprintCanvas.Children.Clear();
+                ClearModelPreview();
                 _currentComponent = null;
                 _currentModel = null;
                 _currentRoot = null;
@@ -208,6 +210,22 @@ namespace EasyEDA_Loader
                         {
                             _footprintHelper.FitToBoundingBox();
                         }, DispatcherPriority.Loaded);
+
+                        if (_currentModel != null)
+                        {
+                            try
+                            {
+                                UpdatePreviewProgress("Rendering 3D projection...", 75);
+                                await ShowModelProjectionPreviewAsync(_currentModel, cancellationToken);
+                            }
+                            catch (OperationCanceledException)
+                            {
+                            }
+                            catch (Exception ex)
+                            {
+                                EasyEDALoaderModule.Trace($"3D preview failed: {ex}");
+                            }
+                        }
                     }
 
                     if (!string.IsNullOrEmpty(_currentComponent.Thumb))
@@ -255,11 +273,103 @@ namespace EasyEDA_Loader
             thumbnailImage.Source = null;
             symbolCanvas.Children.Clear();
             footprintCanvas.Children.Clear();
+            ClearModelPreview();
             _currentComponent = null;
             _currentModel = null;
             _currentRoot = null;
             saveModelButton.IsEnabled = false;
             SetPreviewProgress(false);
+        }
+
+        private void ClearModelPreview()
+        {
+            modelProjectionImage.Source = null;
+        }
+
+        private async Task ShowModelProjectionPreviewAsync(EeFootprint3dModel modelInfo, CancellationToken cancellationToken)
+        {
+            ClearModelPreview();
+
+            if (modelInfo == null)
+                return;
+
+            string tempDirectory = Path.Combine(
+                Path.GetTempPath(),
+                "EasyEDA-Loader",
+                "Preview",
+                Guid.NewGuid().ToString("N"));
+
+            try
+            {
+                Directory.CreateDirectory(tempDirectory);
+
+                byte[] stepData = await Task.Run(() => Api.LoadModelAsync(modelInfo.Uuid, cancellationToken));
+                cancellationToken.ThrowIfCancellationRequested();
+
+                if (stepData == null || stepData.Length == 0)
+                    return;
+
+                string safeModelName = SanitizePreviewFileName(string.IsNullOrWhiteSpace(modelInfo.Name) ? modelInfo.Uuid : modelInfo.Name);
+                string stepPath = Path.Combine(tempDirectory, safeModelName + ".step");
+                File.WriteAllBytes(stepPath, stepData);
+
+                var options = new StepProjectionOptions
+                {
+                    ImageSizePixels = 512,
+                    PaddingPixels = 32,
+                    WriteMetadata = false
+                };
+                options.ViewNames.Add("z_plus");
+
+                StepProjectionReport report = await Task.Run(() => StepProjectionRenderer.ProjectFile(stepPath, tempDirectory, options));
+                cancellationToken.ThrowIfCancellationRequested();
+
+                string projectionPath = report?.OutputFiles?.FirstOrDefault(file =>
+                    string.Equals(Path.GetExtension(file), ".png", StringComparison.OrdinalIgnoreCase));
+                if (string.IsNullOrEmpty(projectionPath) || !File.Exists(projectionPath))
+                    return;
+
+                modelProjectionImage.Source = LoadBitmapImage(projectionPath);
+            }
+            finally
+            {
+                TryDeleteDirectory(tempDirectory);
+            }
+        }
+
+        private static BitmapImage LoadBitmapImage(string imagePath)
+        {
+            var bitmap = new BitmapImage();
+            using (var stream = new MemoryStream(File.ReadAllBytes(imagePath)))
+            {
+                bitmap.BeginInit();
+                bitmap.CacheOption = BitmapCacheOption.OnLoad;
+                bitmap.StreamSource = stream;
+                bitmap.EndInit();
+                bitmap.Freeze();
+            }
+
+            return bitmap;
+        }
+
+        private static string SanitizePreviewFileName(string value)
+        {
+            var invalidCharacters = Path.GetInvalidFileNameChars();
+            var characters = (value ?? "model").Select(character =>
+                invalidCharacters.Contains(character) ? '_' : character).ToArray();
+            return new string(characters);
+        }
+
+        private static void TryDeleteDirectory(string directory)
+        {
+            try
+            {
+                if (Directory.Exists(directory))
+                    Directory.Delete(directory, true);
+            }
+            catch
+            {
+            }
         }
 
         public void UpdateAddButtonState()
