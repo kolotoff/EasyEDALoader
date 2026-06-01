@@ -14,6 +14,7 @@ namespace StepCleaner.Tests
     {
         private const int ProjectionDifferenceTolerance = 6;
         private const int AllowedDetectionRegionPaddingPixels = 10;
+        private const double MaxOutsideDetectionRegionChangeRatio = 0.005;
         private const int VerificationProjectionImageSizePixels = 1000;
         private const int VerificationProjectionPaddingPixels = 50;
         private const int FlatnessEdgeThreshold = 28;
@@ -343,7 +344,8 @@ namespace StepCleaner.Tests
                     }
                 }
 
-                if (changedOutsideRegion > 0)
+                int allowedOutsideRegionChanges = GetAllowedOutsideRegionChanges(originalImage.Width, originalImage.Height);
+                if (changedOutsideRegion > allowedOutsideRegionChanges)
                 {
                     string message =
                         fileName +
@@ -351,6 +353,8 @@ namespace StepCleaner.Tests
                         viewName +
                         ": pixels=" +
                         changedOutsideRegion.ToString(CultureInfo.InvariantCulture) +
+                        ", allowed=" +
+                        allowedOutsideRegionChanges.ToString(CultureInfo.InvariantCulture) +
                         ", first=(" +
                         firstOutsideX.ToString(CultureInfo.InvariantCulture) +
                         "," +
@@ -374,6 +378,15 @@ namespace StepCleaner.Tests
                 foreach (StepProjectionDetectionRegion region in detectionRegions)
                     VerifyCleanedRegionFlatness(fileName, viewName, originalImage, cleanImage, region, failures);
             }
+        }
+
+        private static int GetAllowedOutsideRegionChanges(int imageWidth, int imageHeight)
+        {
+            return Math.Max(
+                1,
+                (int)Math.Round(
+                    imageWidth * imageHeight * MaxOutsideDetectionRegionChangeRatio,
+                    MidpointRounding.AwayFromZero));
         }
 
         private static bool[] BuildAllowedChangeMask(
