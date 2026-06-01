@@ -261,6 +261,7 @@ namespace EasyEDA_Loader
                                 },
                                 ModelTask = modelTask,
                                 RawModelTask = rawModelTask,
+                                RemoveWatermark = selection.RemoveWatermark,
                             };
                             ee_footprint.AddToComponent(libComp, footprintContext);
                             AltiumApi.GlobalVars.PCBServer.PostProcess();

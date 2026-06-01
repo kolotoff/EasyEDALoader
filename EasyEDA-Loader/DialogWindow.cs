@@ -38,6 +38,7 @@ namespace EasyEDA_Loader
         public List<ComponentSelection> SelectedComponents { get; private set; }
         public bool SaveLibraryDocuments => saveLibraryDocumentsCheckBox?.IsChecked == true;
         public bool CloseDocuments => closeDocumentsCheckBox?.IsChecked == true;
+        public bool RemoveWatermark => removeWatermarkCheckBox?.IsChecked == true;
 
         public DialogWindow()
         {
@@ -352,6 +353,7 @@ namespace EasyEDA_Loader
                 searchTextBox.Text = state.SearchText ?? string.Empty;
                 saveLibraryDocumentsCheckBox.IsChecked = state.SaveLibraryDocuments;
                 closeDocumentsCheckBox.IsChecked = state.CloseDocuments;
+                removeWatermarkCheckBox.IsChecked = state.RemoveWatermark ?? true;
 
                 searchResults.Clear();
                 if (state.Results != null)
@@ -408,6 +410,7 @@ namespace EasyEDA_Loader
                     SearchText = searchTextBox.Text,
                     SaveLibraryDocuments = SaveLibraryDocuments,
                     CloseDocuments = CloseDocuments,
+                    RemoveWatermark = RemoveWatermark,
                     SelectedPart = (resultsGrid.SelectedItem as PartInfoViewModel)?.PartInfo?.Part,
                     Results = searchResults.Select(result => new DialogSessionResult
                     {
@@ -575,7 +578,8 @@ namespace EasyEDA_Loader
                         PartInfo = partInfo,
                         Root = root,
                         Include3dModel = has3dModel,
-                        IncludeFootprint = hasFootprint
+                        IncludeFootprint = hasFootprint,
+                        RemoveWatermark = RemoveWatermark
                     });
                 }
             }
@@ -594,6 +598,7 @@ namespace EasyEDA_Loader
             cancelButton.IsEnabled = isEnabled;
             saveLibraryDocumentsCheckBox.IsEnabled = isEnabled;
             closeDocumentsCheckBox.IsEnabled = isEnabled;
+            removeWatermarkCheckBox.IsEnabled = isEnabled;
         }
 
         private bool ValidateImportOptions()
@@ -836,6 +841,7 @@ namespace EasyEDA_Loader
         public string SearchText { get; set; }
         public bool SaveLibraryDocuments { get; set; }
         public bool CloseDocuments { get; set; }
+        public bool? RemoveWatermark { get; set; }
         public string SelectedPart { get; set; }
         public List<DialogSessionResult> Results { get; set; }
     }

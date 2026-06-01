@@ -17,6 +17,7 @@ namespace EasyEDA_Loader
         public List<ComponentSelection> SelectedComponents => wpfDialog?.SelectedComponents;
         public bool SaveLibraryDocuments => wpfDialog?.SaveLibraryDocuments ?? false;
         public bool CloseDocuments => wpfDialog?.CloseDocuments ?? false;
+        public bool RemoveWatermark => wpfDialog?.RemoveWatermark ?? true;
 
         public Dialog()
         {
@@ -57,5 +58,6 @@ namespace EasyEDA_Loader
         public Root Root { get; set; }
         public bool Include3dModel { get; set; }
         public bool IncludeFootprint { get; set; }
+        public bool RemoveWatermark { get; set; }
     }
 }

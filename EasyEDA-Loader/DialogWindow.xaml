@@ -298,6 +298,11 @@
                 <CheckBox x:Name="closeDocumentsCheckBox"
                           Content="Close library documents after adding"
                           IsChecked="False"
+                          VerticalAlignment="Center"
+                          Margin="0,0,20,0"/>
+                <CheckBox x:Name="removeWatermarkCheckBox"
+                          Content="Remove Watermark"
+                          IsChecked="True"
                           VerticalAlignment="Center"/>
             </StackPanel>
 

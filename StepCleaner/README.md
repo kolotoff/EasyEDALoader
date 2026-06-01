@@ -121,7 +121,7 @@ rectangles.
 ## Integration
 
 The reusable implementation lives in
-`EasyEDA-Loader\StepWatermarkCleaner.cs`. Later, the model import path can clean
+`EasyEDA-Loader\StepWatermarkCleaner.cs`. The model import path can clean
 downloaded STEP bytes before writing the temporary file:
 
 ```csharp
@@ -132,3 +132,7 @@ File.WriteAllBytes(temp, step);
 Use the byte-based API for integration. It parses STEP syntax through a
 byte-preserving Latin-1 view so non-ASCII metadata from CAD exporters is not
 corrupted while ASCII STEP entities are edited.
+
+The EasyEDA loader dialog enables this by default with the `Remove Watermark`
+checkbox. When enabled, the downloaded original STEP is kept in the local model
+cache and the cleaned STEP bytes are used for the footprint 3D body.

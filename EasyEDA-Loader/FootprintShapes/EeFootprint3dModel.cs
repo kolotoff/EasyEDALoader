@@ -102,8 +102,15 @@ namespace EasyEDA_Loader
                 var heightTask = Task.Run(() => GetZOffsetFromOrigin(ctx));
                 Task.WhenAll(modelTask, heightTask).Wait();
 
+                byte[] originalModel = modelTask.Result;
+                CacheOriginalModel(originalModel);
+
+                byte[] footprintModel = ctx.RemoveWatermark
+                    ? StepWatermarkCleaner.Clean(originalModel)
+                    : originalModel;
+
                 string temp = Path.Combine(Path.GetTempPath(), $"{Uuid}.step");
-                File.WriteAllBytes(temp, modelTask.Result);
+                File.WriteAllBytes(temp, footprintModel);
 
                 // The translation is not quite right, the values shown in "3D Model Manager" are available from the Search API as "3D Model Transform"
                 // The Y axis is slightly off and I cannot figure out the missing piece maybe combination of rotation/y-flip/re-center causing this to be wrong
@@ -127,6 +134,35 @@ namespace EasyEDA_Loader
             }
 
             return true;
+        }
+
+        private void CacheOriginalModel(byte[] modelData)
+        {
+            if (modelData == null || modelData.Length == 0)
+                return;
+
+            string localApplicationData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+            string cacheRoot = string.IsNullOrWhiteSpace(localApplicationData)
+                ? Path.Combine(Path.GetTempPath(), "EasyEDA-Loader")
+                : Path.Combine(localApplicationData, "EasyEDA-Loader");
+
+            string cacheDirectory = Path.Combine(cacheRoot, "ModelCache", "Original");
+            Directory.CreateDirectory(cacheDirectory);
+
+            string cachePath = Path.Combine(cacheDirectory, GetSafeCacheFileName() + ".step");
+            File.WriteAllBytes(cachePath, modelData);
+        }
+
+        private string GetSafeCacheFileName()
+        {
+            string fileName = !string.IsNullOrWhiteSpace(Uuid) ? Uuid : Name;
+            if (string.IsNullOrWhiteSpace(fileName))
+                fileName = Guid.NewGuid().ToString("N");
+
+            foreach (char invalidChar in Path.GetInvalidFileNameChars())
+                fileName = fileName.Replace(invalidChar, '_');
+
+            return fileName;
         }
 
         public string Name { get; set; }
