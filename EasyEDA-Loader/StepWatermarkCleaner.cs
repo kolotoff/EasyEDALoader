@@ -1677,8 +1677,7 @@ namespace EasyEDA_Loader
                     continue;
 
                 bool hasEmbeddedColorCue = IsEmbeddedWatermarkColor(styledItem.Color.Value, options);
-                bool hasNeutralContrastCue = IsNeutralContrastWatermarkColor(styledItem.Color.Value, options);
-                if (!hasEmbeddedColorCue && !hasNeutralContrastCue)
+                if (!hasEmbeddedColorCue)
                     continue;
 
                 if (!faceOwners.TryGetValue(styledItem.TargetId, out int ownerSolidId))
@@ -1731,9 +1730,7 @@ namespace EasyEDA_Loader
                     Host = host,
                     HostBounds = hostBounds.Value,
                     HasColorCue = true,
-                    ColorClass = IsDarkWatermarkColor(styledItem.Color.Value, options)
-                        ? -1
-                        : hasNeutralContrastCue ? 0 : 1
+                    ColorClass = IsDarkWatermarkColor(styledItem.Color.Value, options) ? -1 : 1
                 });
             }
 
@@ -2195,16 +2192,6 @@ namespace EasyEDA_Loader
                 if (!solidInfo.TryGetValue(ownerId, out var ownerInfo) || !ownerInfo.Bounds.HasValue)
                     continue;
 
-                bool hasNeutralCoplanarColor = LooksLikeNeutralCoplanarWatermarkColor(styledItem.Color, options);
-                bool ownerHasProtectedColor = ownerInfo.FaceIds.Any(faceId =>
-                    HasProtectedNonWatermarkColor(faceId, styledByTarget, options));
-                bool hasDarkCoplanarColorOnColoredHost =
-                    styledItem.Color.HasValue &&
-                    IsDarkWatermarkColor(styledItem.Color.Value, options) &&
-                    ownerHasProtectedColor;
-                if (!hasNeutralCoplanarColor && !hasDarkCoplanarColorOnColoredHost)
-                    continue;
-
                 var faceBounds = data.GetBounds(styledItem.TargetId);
                 if (!faceBounds.HasValue)
                     continue;
@@ -2216,6 +2203,22 @@ namespace EasyEDA_Loader
                 if (planarAxis < 0)
                     continue;
 
+                bool hasNeutralCoplanarColor = LooksLikeNeutralCoplanarWatermarkColor(styledItem.Color, options);
+                bool hasProtectedCoplanarHost = HasProtectedCoplanarHostFace(
+                    data,
+                    styledItem.TargetId,
+                    faceBounds.Value,
+                    planarAxis,
+                    ownerInfo,
+                    styledByTarget,
+                    options);
+                bool hasDarkCoplanarColorOnColoredHost =
+                    styledItem.Color.HasValue &&
+                    IsDarkWatermarkColor(styledItem.Color.Value, options) &&
+                    hasProtectedCoplanarHost;
+                if (!hasNeutralCoplanarColor && !hasDarkCoplanarColorOnColoredHost)
+                    continue;
+
                 candidates.Add(new WatermarkFaceCandidate
                 {
                     FaceId = styledItem.TargetId,
@@ -2224,7 +2227,8 @@ namespace EasyEDA_Loader
                     PointCount = data.GetPointIds(styledItem.TargetId, includeSurface: false).Count,
                     HostBounds = ownerInfo.Bounds.Value,
                     HasColorCue = true,
-                    AllowStandaloneColorPattern = ownerHasProtectedColor,
+                    AllowStandaloneColorPattern = hasProtectedCoplanarHost,
+                    RestrictStandaloneColorPattern = hasProtectedCoplanarHost,
                     ColorClass = styledItem.Color.HasValue && IsDarkWatermarkColor(styledItem.Color.Value, options)
                         ? -1
                         : styledItem.Color.HasValue && IsEmbeddedWatermarkColor(styledItem.Color.Value, options) ? 1 : 0,
@@ -2363,6 +2367,47 @@ namespace EasyEDA_Loader
 
                 if (color.ChannelSpread > options.NeutralMaxChannelSpread)
                     return true;
+            }
+
+            return false;
+        }
+
+        private static bool HasProtectedCoplanarHostFace(
+            StepData data,
+            int candidateFaceId,
+            Bounds candidateBounds,
+            int planarAxis,
+            SolidInfo ownerInfo,
+            Dictionary<int, List<StyledItemInfo>> styledByTarget,
+            StepWatermarkCleanerOptions options)
+        {
+            double tolerance = Math.Max(options.PlaneTolerance, 0.000001);
+            double candidateCoordinate = (candidateBounds.Min.Get(planarAxis) + candidateBounds.Max.Get(planarAxis)) / 2.0;
+
+            foreach (int faceId in ownerInfo.FaceIds)
+            {
+                if (faceId == candidateFaceId)
+                    continue;
+
+                if (!HasProtectedNonWatermarkColor(faceId, styledByTarget, options))
+                    continue;
+
+                var faceBounds = data.GetBounds(faceId);
+                if (!faceBounds.HasValue)
+                    continue;
+
+                int faceAxis = FindPlanarAxis(faceBounds.Value, options);
+                if (faceAxis != planarAxis)
+                    continue;
+
+                double faceCoordinate = (faceBounds.Value.Min.Get(planarAxis) + faceBounds.Value.Max.Get(planarAxis)) / 2.0;
+                if (Math.Abs(faceCoordinate - candidateCoordinate) > tolerance)
+                    continue;
+
+                if (!ProjectionIntersects(faceBounds.Value, candidateBounds, planarAxis, options.HostPlaneProjectionPadding))
+                    continue;
+
+                return true;
             }
 
             return false;
@@ -2614,7 +2659,8 @@ namespace EasyEDA_Loader
                     cluster.Count,
                     pointCount,
                     hasColorCue,
-                    allowStandaloneColorPattern: cluster.Any(candidate => candidate.AllowStandaloneColorPattern));
+                    allowStandaloneColorPattern: cluster.Any(candidate => candidate.AllowStandaloneColorPattern),
+                    restrictStandaloneColorPattern: cluster.Any(candidate => candidate.RestrictStandaloneColorPattern));
         }
 
         private static bool LooksLikeCompactEngravedWordPattern(
@@ -2653,7 +2699,8 @@ namespace EasyEDA_Loader
             int componentCount,
             int pointCount,
             bool hasColorCue,
-            bool allowStandaloneColorPattern = false)
+            bool allowStandaloneColorPattern = false,
+            bool restrictStandaloneColorPattern = false)
         {
             var components = componentBounds.ToList();
             if (components.Count == 0 || componentCount <= 0)
@@ -2690,7 +2737,10 @@ namespace EasyEDA_Loader
                 pointCount >= 20 &&
                 aspect <= 18.0 &&
                 rowCount <= 4 &&
-                (componentCount >= 5 || (aspect >= 1.05 && aspect <= 2.8));
+                (!restrictStandaloneColorPattern ||
+                    componentCount >= 5 ||
+                    columnCount >= 4 ||
+                    rowCount >= 2);
 
             if (colorCuedKnownPattern)
                 return true;
@@ -4264,6 +4314,7 @@ namespace EasyEDA_Loader
             public Bounds HostBounds { get; set; }
             public bool HasColorCue { get; set; }
             public bool AllowStandaloneColorPattern { get; set; }
+            public bool RestrictStandaloneColorPattern { get; set; }
             public int ColorClass { get; set; }
         }
 

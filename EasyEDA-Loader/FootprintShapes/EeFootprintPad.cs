@@ -160,8 +160,27 @@ namespace EasyEDA_Loader
                 try
                 {
                     targetLayer = EEPCB.EELayerToAltium(layer.Name);
-                    var pad = EEPCB.CreatePTH(c, targetLayer, holeType, padShape, ConvertX(CenterX, ctx), ConvertY(CenterY, ctx), Height, Width, HoleRadius * 2, Number, IsPlated, Rotation);
-                    if (padShape == TShape.eRounded)
+                    string padName = Number;
+                    if (string.IsNullOrWhiteSpace(padName))
+                    {
+                        padName = HoleRadius > 0 || targetLayer == TLayerConstant.eMultiLayer
+                            ? "MH" + (++ctx.MountingHoleCount).ToString()
+                            : "MP" + (++ctx.MountingPadCount).ToString();
+                    }
+
+                    bool isSmdCopperPad = targetLayer == TLayerConstant.eTopLayer || targetLayer == TLayerConstant.eBottomLayer;
+                    bool isRoundBall = isSmdCopperPad && padShape == TShape.eRounded && Math.Abs(Width - Height) < 0.001 && HoleRadius <= 0;
+                    bool useRoundedRectangle =
+                        (isSmdCopperPad && !isRoundBall && (padShape == TShape.eRectangular || padShape == TShape.eRounded)) ||
+                        (targetLayer == TLayerConstant.eMultiLayer && padName == "1" && padShape == TShape.eRectangular);
+                    TShape altiumPadShape = useRoundedRectangle ? TShape.eRoundedRectangular : padShape;
+
+                    var pad = EEPCB.CreatePTH(c, targetLayer, holeType, altiumPadShape, ConvertX(CenterX, ctx), ConvertY(CenterY, ctx), Height, Width, HoleRadius * 2, padName, IsPlated, Rotation);
+                    if (altiumPadShape == TShape.eRoundedRectangular)
+                    {
+                        pad.SetState_StackCRPctOnLayer(new V7_Layer(targetLayer), 25);
+                    }
+                    else if (padShape == TShape.eRounded)
                     {
                         pad.SetState_StackCRPctOnLayer(new V7_Layer(targetLayer), 100);
                     }

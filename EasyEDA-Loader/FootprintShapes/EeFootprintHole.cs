@@ -38,7 +38,8 @@ namespace EasyEDA_Loader
         }
         public override bool AddToComponent(IPCB_LibComponent c, EeFootprintContext ctx)
         {
-            var pth = EEPCB.CreatePTH(c, TLayerConstant.eMultiLayer, TExtendedHoleType.eRoundHole, TShape.eRounded, ConvertX(CenterX, ctx), ConvertY(CenterY, ctx), Radius * 2, Radius * 2, Radius * 2, "", false, 0);
+            string name = "MH" + (++ctx.MountingHoleCount).ToString();
+            var pth = EEPCB.CreatePTH(c, TLayerConstant.eMultiLayer, TExtendedHoleType.eRoundHole, TShape.eRounded, ConvertX(CenterX, ctx), ConvertY(CenterY, ctx), Radius * 2, Radius * 2, Radius * 2, name, false, 0);
             if (pth != null)
             {
                 // Zero out the expansion on plain holes

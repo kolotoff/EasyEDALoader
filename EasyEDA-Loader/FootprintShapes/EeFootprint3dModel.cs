@@ -111,8 +111,12 @@ namespace EasyEDA_Loader
                 // The Z is the lowest Z of the mesh plus the Z offset (hence why we download the Raw mesh and search for the lowest vert.z as this offset is not part of the info)
 
                 // Will leave this for now as it's "close enough" most of the time to only need a nudge by a few 10ths of a millimeter
-                var body = EEPCB.CreateComponentBody(c, temp, Rotation.X, Rotation.Y, Rotation.Z, ConvertX(Translation.X, ctx), ConvertY(Translation.Y, ctx), Translation.Z + heightTask.Result);
+                double modelX = ConvertX(Translation.X, ctx);
+                double modelY = ConvertY(Translation.Y, ctx);
+                var body = EEPCB.CreateComponentBody(c, temp, Rotation.X, Rotation.Y, Rotation.Z, modelX, modelY, Translation.Z + heightTask.Result);
                 EEPCB.AddToPCB(c, body);
+                EEPCB.Add3dBodyProjection(c, modelX, modelY, Width, Height);
+                ctx.Has3dBodyProjection = true;
 
                 File.Delete(temp);
             }

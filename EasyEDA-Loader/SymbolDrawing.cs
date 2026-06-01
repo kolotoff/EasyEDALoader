@@ -83,6 +83,11 @@ namespace EasyEDA_Loader
 
     public class SymbolDrawing
     {
+        private const double MilPerMm = 1000.0 / 25.4;
+        private const double GostGridMil = 2.5 * MilPerMm;
+        private const double GostPinLengthMil = 5.0 * MilPerMm;
+        private const double GostPinPitchMil = 5.0 * MilPerMm;
+
         static void DistributeEvenly<T>(List<T> source, List<List<T>> targets)
         {
             // Keep track of how many items are in each target list
@@ -211,111 +216,62 @@ namespace EasyEDA_Loader
             c.Children.Add(line);
         }
 
-        static public (AltiumSymbolRectangle, List<AltiumSymbolPin>) LayoutPins(List<EeSymbolShape> Shapes, int widthMargin = 8, int heightMargin = 8, int gridSize = 100)
+        static public (AltiumSymbolRectangle, List<AltiumSymbolPin>) LayoutPins(List<EeSymbolShape> Shapes, int widthMargin = 8, int heightMargin = 2, double gridSize = GostGridMil, double pinPitch = GostPinPitchMil)
         {
-            List<List<EeSymbolPin>> items = new()
-            {
-                // Top
-                Shapes.OfType<EeSymbolPin>().Where(shape => shape.Name.Rotation == 270 && shape.Name.TextAnchor == "end").OrderBy(s => s.Settings.PosX).ToList(),
-                // Left
-                Shapes.OfType<EeSymbolPin>().Where(shape => shape.Name.Rotation == 0 && shape.Name.TextAnchor == "start").OrderBy(s => s.Settings.PosY).ToList(),
-                // Right
-                Shapes.OfType<EeSymbolPin>().Where(shape => shape.Name.Rotation == 0 && shape.Name.TextAnchor == "end").OrderBy(s => s.Settings.PosY).ToList(),
-                // Bottom
-                Shapes.OfType<EeSymbolPin>().Where(shape => shape.Name.Rotation == 270 && shape.Name.TextAnchor == "start").OrderBy(s => s.Settings.PosX).ToList()
-            };
+            var leftPins = Shapes.OfType<EeSymbolPin>()
+                .Where(shape => shape.Name.Rotation == 0 && shape.Name.TextAnchor == "start")
+                .OrderBy(s => s.Settings.PosY)
+                .ThenBy(s => s.Settings.PosX)
+                .ToList();
+            var rightPins = Shapes.OfType<EeSymbolPin>()
+                .Where(shape => shape.Name.Rotation == 0 && shape.Name.TextAnchor == "end")
+                .OrderBy(s => s.Settings.PosY)
+                .ThenBy(s => s.Settings.PosX)
+                .ToList();
 
-            // If there were uncategorized pins, put them somewhere
-            var uncategorized = Shapes.OfType<EeSymbolPin>().Except(items[0].Union(items[1]).Union(items[2]).Union(items[3])).ToList();
+            var items = new List<List<EeSymbolPin>> { leftPins, rightPins };
+            var uncategorized = Shapes.OfType<EeSymbolPin>()
+                .Except(leftPins.Union(rightPins))
+                .OrderBy(s => s.Settings.PosY)
+                .ThenBy(s => s.Settings.PosX)
+                .ToList();
 
-            var populated = items.Where(item => item.Count != 0).OrderBy(item => item.Count).ToList();
-            if (populated.Count == 0) // Everything was uncategorized? Weird, add everything to the left
-            {
-                items[1].AddRange(uncategorized);
-            }
-            else if (populated.Count == 1) // If there's only one direction, just add everything to it
-            {
-                populated.FirstOrDefault().AddRange(uncategorized);
-            }
-            else // There are multiple available directions, distribute them starting with the least populated
-            {
+            if (leftPins.Count == 0 && rightPins.Count == 0)
+                leftPins.AddRange(uncategorized);
+            else
                 DistributeEvenly(uncategorized, items);
-            }
 
-            // Select the largest of the two sides, these will determine the dimensions of the encompassing rect
-            var widthPins = items[0].Count > items[3].Count ? items[0] : items[3];
-            var heightPins = items[1].Count > items[2].Count ? items[1] : items[2];
-
-            var halfWidthMargin = widthMargin / 2;
-            var halfHeightMargin = heightMargin / 2;
-
-            if (items[0].Count == 0 && items[3].Count == 0) // Only Left/Right
-            {
-                heightMargin = 0;
-                halfHeightMargin = heightMargin / 2;
-            }
-            else if (items[1].Count == 0 && items[2].Count == 0) // Only Top/Bottom
-            {
-                widthMargin = 0;
-                halfWidthMargin = widthMargin / 2;
-            }
-
+            int pinRows = Math.Max(1, Math.Max(leftPins.Count, rightPins.Count));
             var altiumRect = new AltiumSymbolRectangle
             {
                 X1 = 0,
                 Y1 = 0,
-                X2 = (widthPins.Count + widthMargin) * gridSize + gridSize,
-                Y2 = (heightPins.Count + heightMargin) * gridSize + gridSize,
-            };
-
-            List<(double x, double y)> offsets = new()
-            {
-                (halfWidthMargin * gridSize, 0),
-                (0, halfHeightMargin * gridSize + gridSize),
-                (altiumRect.Width, halfHeightMargin * gridSize + gridSize),
-                (halfWidthMargin * gridSize, altiumRect.Height)
+                X2 = (widthMargin + 1) * gridSize,
+                Y2 = gridSize + (pinRows - 1) * pinPitch + heightMargin * gridSize,
             };
 
             List<AltiumSymbolPin> pins = new();
-            for (var i = 0; i < items.Count; ++i)
-            {
-                double offset_x = offsets[i].x, offset_y = offsets[i].y;
-                for (var p = 0; p < items[i].Count; ++p)
-                {
-                    var x = offset_x;
-                    var y = offset_y;
-                    switch ((PinOrientation)i)
-                    {
-                        case PinOrientation.Top:
-                            x += p * gridSize;
-                            break;
-                        case PinOrientation.Left:
-                            y += p * gridSize;
-                            break;
-                        case PinOrientation.Right:
-                            y += p * gridSize;
-                            break;
-                        case PinOrientation.Bottom:
-                            x += p * gridSize;
-                            break;
-                        default:
-                            break;
-                    }
-
-                    pins.Add(new AltiumSymbolPin
-                    {
-                        X = x,
-                        Y = y,
-                        Orientation = AltiumSymbolPin.FromOrientation((PinOrientation)i),
-                        Designator = items[i][p].Settings.SpicePinNumber,
-                        Name = items[i][p].Name.Text,
-                        Length = 200,
-                        ShowName = items[i][p].Name.IsDisplayed,
-                        PinType = AltiumSymbolPin.FromEEPinType(items[i][p].Settings.Type)
-                    });
-                }
-            }
+            AddSidePins(pins, leftPins, 0, gridSize, TRotationBy90.eRotate180, pinPitch);
+            AddSidePins(pins, rightPins, altiumRect.Width, gridSize, TRotationBy90.eRotate0, pinPitch);
             return (altiumRect, pins);
+        }
+
+        private static void AddSidePins(List<AltiumSymbolPin> pins, List<EeSymbolPin> sourcePins, double x, double firstY, TRotationBy90 orientation, double pinPitch)
+        {
+            for (var p = 0; p < sourcePins.Count; ++p)
+            {
+                pins.Add(new AltiumSymbolPin
+                {
+                    X = x,
+                    Y = firstY + p * pinPitch,
+                    Orientation = orientation,
+                    Designator = sourcePins[p].Settings.SpicePinNumber,
+                    Name = sourcePins[p].Name.Text,
+                    Length = GostPinLengthMil,
+                    ShowName = sourcePins[p].Name.IsDisplayed,
+                    PinType = AltiumSymbolPin.FromEEPinType(sourcePins[p].Settings.Type)
+                });
+            }
         }
 
         static public void DrawComponent(Canvas c, List<EeSymbolShape> Shapes)
@@ -329,7 +285,7 @@ namespace EasyEDA_Loader
                 DrawAltiumRectangle(c, rect);
                 foreach (var pin in pins)
                 {
-                    DrawAltiumPin(c, pin, 200);
+                    DrawAltiumPin(c, pin, pin.Length);
                 }
 
             }
@@ -338,10 +294,12 @@ namespace EasyEDA_Loader
         static public void CreateComponent(ISch_Lib schLib, ISch_Component component, string pcbLibraryPath, string package, SymbolData ee_symbol)
         {
             (var rect, var pins) = SymbolDrawing.LayoutPins(ee_symbol.Shapes);
+            var gostFont = EESCH.CreateGostFontInfo();
             EESCH.CreateRectangle(schLib, component, rect.X1, rect.Height - rect.Y1, rect.X2, rect.Height - rect.Y2);
+            EESCH.SetComponentDesignatorLocation(component, rect.X1, rect.Height + GostGridMil);
             foreach (var pin in pins)
             {
-                EESCH.CreatePin(schLib, component, pin.X, rect.Height - pin.Y, pin.Designator, pin.Name, pin.Orientation, pin.Length, pin.PinType, pin.ShowName, null);
+                EESCH.CreatePin(schLib, component, pin.X, rect.Height - pin.Y, pin.Designator, pin.Name, pin.Orientation, pin.Length, pin.PinType, pin.ShowName, gostFont);
             }
             EESCH.AssignFootprint(component, pcbLibraryPath, package, "");
             schLib.AddSchComponent(component);

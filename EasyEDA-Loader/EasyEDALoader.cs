@@ -103,6 +103,102 @@ namespace EasyEDA_Loader
             currentSheet.GraphicallyInvalidate();
         }
 
+        private static EESCH.SchematicPropertySet BuildSchematicPropertySet(
+            SymbolData symbolData,
+            FootprintData footprintData,
+            EasyedaApi.ProductInfo productInfo,
+            string designator,
+            string partName,
+            string description,
+            string package,
+            string pcbLibraryPath)
+        {
+            SymbolParameters symbolParameters = symbolData?.Head?.Parameters;
+            string manufacturer = FirstNonEmpty(
+                symbolParameters?.Manufacturer,
+                GetProductParameter(productInfo, "Manufacturer"),
+                GetProductParameter(productInfo, "MFR"),
+                GetProductParameter(productInfo, "Mfr."));
+
+            return new EESCH.SchematicPropertySet
+            {
+                Manufacturer = manufacturer,
+                ValueType = EESCH.SelectRuleValueType(designator, partName, description, package),
+                Footprint = CleanPropertyValue(package),
+                FootprintLibrary = CleanPropertyValue(pcbLibraryPath),
+                Package = CleanPropertyValue(package),
+                Mounting = InferMounting(footprintData)
+            };
+        }
+
+        private static string InferMounting(FootprintData footprintData)
+        {
+            if (footprintData?.Shapes == null || footprintData.Layers == null)
+                return "";
+
+            bool hasSmd = false;
+            bool hasThroughHole = false;
+            foreach (var shape in footprintData.Shapes)
+            {
+                if (shape is EeFootprintPad pad)
+                {
+                    string layerName = footprintData.Layers.GetLayer(pad.Layer)?.Name;
+                    if (string.Equals(layerName, "TopLayer", StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(layerName, "BottomLayer", StringComparison.OrdinalIgnoreCase))
+                        hasSmd = true;
+                    else if (string.Equals(layerName, "Multi-Layer", StringComparison.OrdinalIgnoreCase))
+                        hasThroughHole = true;
+                }
+                else if (shape is EeFootprintHole)
+                {
+                    hasThroughHole = true;
+                }
+            }
+
+            if (hasSmd && hasThroughHole)
+                return "hybrid";
+            if (hasSmd)
+                return "SMT";
+            if (hasThroughHole)
+                return "through-hole";
+
+            return "";
+        }
+
+        private static string GetProductParameter(EasyedaApi.ProductInfo productInfo, string parameterName)
+        {
+            if (productInfo?.Parameters == null)
+                return "";
+
+            foreach (var kvp in productInfo.Parameters)
+            {
+                if (string.Equals(kvp.Key, parameterName, StringComparison.OrdinalIgnoreCase))
+                    return CleanPropertyValue(kvp.Value);
+            }
+
+            return "";
+        }
+
+        private static string FirstNonEmpty(params string[] values)
+        {
+            foreach (string value in values)
+            {
+                string cleaned = CleanPropertyValue(value);
+                if (!string.IsNullOrWhiteSpace(cleaned))
+                    return cleaned;
+            }
+
+            return "";
+        }
+
+        private static string CleanPropertyValue(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value) || value == "-")
+                return "";
+
+            return value.Trim();
+        }
+
         private void Run(
           IServerDocumentView argContext,
           ref string argParameters)
@@ -186,35 +282,31 @@ namespace EasyEDA_Loader
                             };
                             ee_footprint.AddToComponent(libComp, footprintContext);
                             AltiumApi.GlobalVars.PCBServer.PostProcess();
-                            pcbDocument.DoFileSave("PcbLib");
+                            if (dialog.SaveLibraryDocuments)
+                                pcbDocument.DoFileSave("PcbLib");
                         }
                     }
 
                     // Create schematic symbol
                     string partName = ee_symbol.Head.Parameters.Name;
                     string description = productInfo?.Description ?? partName;
+                    string designator = EESCH.SelectRuleDesignator(ee_symbol.Head.Parameters.Pre, partName, description, package);
 
                     var existingComponent = schLib.GetState_SchComponentByLibRef(partName);
                     if (existingComponent == null)
                     {
-                        var component = EESCH.CreateComponent(partName, description, ee_symbol.Head.Parameters.Pre);
+                        var component = EESCH.CreateComponent(partName, description, designator);
                         if (schLib != null && component != null)
                         {
                             AltiumApi.GlobalVars.PCBServer.PreProcess();
                             SymbolDrawing.CreateComponent(schLib, component, pcbLibraryPath, package, ee_symbol);
 
-                            if (productInfo?.Parameters != null)
-                            {
-                                foreach (var kvp in productInfo.Parameters)
-                                {
-                                    EESCH.AddParameter(component, kvp.Key, kvp.Value);
-                                }
-                            }
-
+                            EESCH.ApplyGostPropertySet(component, BuildSchematicPropertySet(ee_symbol, ee_footprint, productInfo, designator, partName, description, package, pcbLibraryPath));
                             AltiumApi.GlobalVars.PCBServer.PostProcess();
                             schLib.SetState_Current_SchComponent(component);
                             schLib.GraphicallyInvalidate();
-                            schDocument.DoFileSave("SchLib");
+                            if (dialog.SaveLibraryDocuments)
+                                schDocument.DoFileSave("SchLib");
                         }
                     }
 

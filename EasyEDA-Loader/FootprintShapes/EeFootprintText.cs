@@ -37,6 +37,13 @@ namespace EasyEDA_Loader
                 try
                 {
                     targetLayer = EEPCB.EELayerToAltium(layer.Name);
+                    if (targetLayer == TLayerConstant.eMechanical2)
+                    {
+                        if (string.Equals(Text, ".Designator", StringComparison.OrdinalIgnoreCase))
+                            ctx.HasAssemblyDesignatorText = true;
+                        if (string.Equals(Text, ".Comment", StringComparison.OrdinalIgnoreCase))
+                            ctx.HasAssemblyCommentText = true;
+                    }
 
                     var track = EEPCB.CreateText(c, targetLayer, Text, ConvertX(CenterX, ctx), ConvertY(CenterY, ctx), StrokeWidth, FontSize, Rotation);
                     if (track != null)

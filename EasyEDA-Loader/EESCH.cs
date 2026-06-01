@@ -1,5 +1,7 @@
 ﻿using EDP;
 using SCH;
+using System;
+using System.Reflection;
 using System.Windows.Forms;
 
 namespace EasyEDA_Loader
@@ -31,19 +33,81 @@ namespace EasyEDA_Loader
             schComponent.SetState_CurrentPartID(1);
             schComponent.SetState_DisplayMode(0);
             schComponent.SetState_LibReference(name);
-            schComponent.GetState_SchDesignator().SetState_Text(designator);
             schComponent.SetState_ComponentDescription(desc);
+            SetComponentComment(schComponent, name);
+            SetComponentDesignator(schComponent, designator, CreateGostFontInfo());
             return schComponent;
         }
 
 
         public static void AddParameter(ISch_Component c, string name, string value)
         {
-            ISch_Parameter param = c.AddSchParameter();
-            param.SetState_Text(value);
+            AddOrUpdateParameter(c, name, value);
+        }
+
+        public static ISch_Parameter AddOrUpdateParameter(ISch_Component c, string name, string value)
+        {
+            if (c == null || string.IsNullOrWhiteSpace(name))
+                return null;
+
+            ISch_Parameter param = FindParameter(c, name);
+            if (param == null)
+                param = c.AddSchParameter();
+
+            if (param == null)
+                return null;
+
             param.SetState_Name(name);
+            param.SetState_Text(value ?? "");
             param.SetState_ShowName(false);
             param.SetState_IsHidden(true);
+            SetTextObjectStyle(param, CreateGostFontInfo());
+            return param;
+        }
+
+        public static void ApplyRequiredSymbolParameters(ISch_Component c, string footprintName)
+        {
+            ApplyGostPropertySet(c, new SchematicPropertySet { Footprint = footprintName, Package = footprintName });
+        }
+
+        public static void ApplyGostPropertySet(ISch_Component c, SchematicPropertySet properties)
+        {
+            if (properties == null)
+                properties = new SchematicPropertySet();
+
+            AddOrUpdateParameter(c, "Manufacturer", properties.Manufacturer);
+            AddOrUpdateParameter(c, "PartNumber", "=Comment");
+            AddOrUpdateParameter(c, "ValueType", properties.ValueType);
+            AddOrUpdateParameter(c, "PartDenotation", properties.PartDenotation);
+            AddOrUpdateParameter(c, "PartNote", properties.PartNote);
+            AddOrUpdateParameter(c, "TU", properties.TU);
+            AddOrUpdateParameter(c, "AlternateManufacturer", properties.AlternateManufacturer);
+            AddOrUpdateParameter(c, "AlternatePartNumber", properties.AlternatePartNumber);
+            AddOrUpdateParameter(c, "Footprint", properties.Footprint);
+            AddOrUpdateParameter(c, "FootprintLibrary", properties.FootprintLibrary);
+            AddOrUpdateParameter(c, "Package", properties.Package);
+
+            if (!string.IsNullOrWhiteSpace(properties.Mounting))
+                AddOrUpdateParameter(c, "Mounting", properties.Mounting);
+        }
+
+        public static bool IsRuleManagedParameter(string name)
+        {
+            return string.Equals(name, "Comment", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(name, "Description", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(name, "Designator", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(name, "Footprint", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(name, "FootprintLibrary", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(name, "Package", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(name, "Manufacturer", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(name, "PartNumber", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(name, "ValueType", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(name, "PartDenotation", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(name, "PartNote", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(name, "TU", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(name, "AlternateManufacturer", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(name, "AlternatePartNumber", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(name, "Mounting", StringComparison.OrdinalIgnoreCase);
         }
 
         public static int RGB(int r, int g, int b)
@@ -61,6 +125,199 @@ namespace EasyEDA_Loader
             public bool Strikout { get; set; } = false;
             public string Name { get; set; }
             public int Color { get; set; } = 0;
+        }
+
+        public class SchematicPropertySet
+        {
+            public string Manufacturer { get; set; } = "";
+            public string ValueType { get; set; } = "";
+            public string PartDenotation { get; set; } = "";
+            public string PartNote { get; set; } = "";
+            public string TU { get; set; } = "";
+            public string AlternateManufacturer { get; set; } = "";
+            public string AlternatePartNumber { get; set; } = "";
+            public string Footprint { get; set; } = "";
+            public string FootprintLibrary { get; set; } = "";
+            public string Package { get; set; } = "";
+            public string Mounting { get; set; } = "";
+        }
+
+        public static FontInfo CreateGostFontInfo()
+        {
+            return new FontInfo
+            {
+                Name = "GOST type B",
+                Size = 12,
+                Color = 0
+            };
+        }
+
+        private static int GetFontId(FontInfo fontInfo)
+        {
+            return AltiumApi.GlobalVars.SCHServer.GetState_FontManager().GetFontID(fontInfo.Size, fontInfo.Rotation, fontInfo.Underline, fontInfo.Italic, fontInfo.Bold, fontInfo.Strikout, fontInfo.Name);
+        }
+
+        private static bool StartsWithMP(string value)
+        {
+            return !string.IsNullOrWhiteSpace(value) && value.StartsWith("MP", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static ISch_Parameter FindParameter(ISch_Component c, string name)
+        {
+            return TryInvokeResult(c, "GetState_SchParameterByName", name) as ISch_Parameter
+                ?? TryInvokeResult(c, "Internal_GetState_SchParameterByName", name) as ISch_Parameter;
+        }
+
+        private static object GetComponentDesignator(ISch_Component c)
+        {
+            try
+            {
+                return c.GetState_SchDesignator();
+            }
+            catch
+            {
+                return TryInvokeResult(c, "GetState_SchDesignator")
+                    ?? TryInvokeResult(c, "Internal_GetState_SchDesignator");
+            }
+        }
+
+        private static object GetComponentComment(ISch_Component c)
+        {
+            try
+            {
+                return c.GetState_SchComment();
+            }
+            catch
+            {
+                return TryInvokeResult(c, "GetState_SchComment")
+                    ?? TryInvokeResult(c, "Internal_GetState_SchComment");
+            }
+        }
+
+        private static void SetTextObjectStyle(object textObject, FontInfo fontInfo)
+        {
+            if (textObject == null || fontInfo == null)
+                return;
+
+            int fontId = GetFontId(fontInfo);
+            TryInvoke(textObject, "SetState_FontId", fontId);
+            TryInvoke(textObject, "SetState_Color", fontInfo.Color);
+            TryInvoke(textObject, "SetState_TextColor", fontInfo.Color);
+            try
+            {
+                dynamic dynamicText = textObject;
+                dynamicText.SetState_FontId(fontId);
+            }
+            catch
+            {
+            }
+            try
+            {
+                dynamic dynamicText = textObject;
+                dynamicText.SetState_Color(fontInfo.Color);
+            }
+            catch
+            {
+            }
+            try
+            {
+                dynamic dynamicText = textObject;
+                dynamicText.SetState_TextColor(fontInfo.Color);
+            }
+            catch
+            {
+            }
+        }
+
+        private static void SetTextObjectLocation(object textObject, double xMils, double yMils)
+        {
+            DXP.Point location = new DXP.Point
+            {
+                X = AltiumApi.MilsToCoord(xMils),
+                Y = AltiumApi.MilsToCoord(yMils)
+            };
+            TryInvoke(textObject, "SetState_Location", location);
+            try
+            {
+                dynamic dynamicText = textObject;
+                dynamicText.SetState_Location(location);
+            }
+            catch
+            {
+            }
+        }
+
+        private static void SetTextObjectText(object textObject, string text)
+        {
+            TryInvoke(textObject, "SetState_Text", text ?? "");
+            try
+            {
+                dynamic dynamicText = textObject;
+                dynamicText.SetState_Text(text ?? "");
+            }
+            catch
+            {
+            }
+            try
+            {
+                dynamic dynamicText = textObject;
+                dynamicText.Text = text ?? "";
+            }
+            catch
+            {
+            }
+        }
+
+        private static void SetComponentComment(ISch_Component c, string comment)
+        {
+            object schComment = GetComponentComment(c);
+            if (schComment == null)
+                return;
+
+            SetTextObjectText(schComment, comment);
+            SetTextObjectStyle(schComment, CreateGostFontInfo());
+        }
+
+        private static void SetComponentDesignator(ISch_Component c, string designator, FontInfo fontInfo)
+        {
+            object schDesignator = GetComponentDesignator(c);
+            if (schDesignator == null)
+                return;
+
+            SetTextObjectText(schDesignator, designator);
+            SetTextObjectStyle(schDesignator, fontInfo);
+        }
+
+        public static void SetComponentDesignatorLocation(ISch_Component c, double xMils, double yMils)
+        {
+            object schDesignator = GetComponentDesignator(c);
+            if (schDesignator == null)
+                return;
+
+            SetTextObjectLocation(schDesignator, xMils, yMils);
+            SetTextObjectStyle(schDesignator, CreateGostFontInfo());
+        }
+
+        private static void SetPinTextSettings(ISch_Pin schPin, int fontId, int color)
+        {
+            int zeroMargin = AltiumApi.MmToCoord(0);
+            int designatorXMargin = AltiumApi.MmToCoord(1);
+
+            schPin.SetState_Name_FontMode(TPinItemMode.ePinItemMode_Custom);
+            schPin.SetState_Name_CustomFontID(fontId);
+            schPin.SetState_Name_CustomColor(color);
+            schPin.SetState_Name_PositionMode(TPinItemMode.ePinItemMode_Custom);
+            schPin.SetState_Name_CustomPosition_Margin(zeroMargin);
+            schPin.SetState_Name_CustomPosition_HorizontalMargin(zeroMargin);
+            schPin.SetState_Name_CustomPosition_VerticalMargin(zeroMargin);
+
+            schPin.SetState_Designator_FontMode(TPinItemMode.ePinItemMode_Custom);
+            schPin.SetState_Designator_CustomFontID(fontId);
+            schPin.SetState_Designator_CustomColor(color);
+            schPin.SetState_Designator_PositionMode(TPinItemMode.ePinItemMode_Custom);
+            schPin.SetState_Designator_CustomPosition_Margin(designatorXMargin);
+            schPin.SetState_Designator_CustomPosition_HorizontalMargin(designatorXMargin);
+            schPin.SetState_Designator_CustomPosition_VerticalMargin(zeroMargin);
         }
 
         public static ISch_Pin CreatePin(ISch_Lib schLib, ISch_Component c, double x, double y, string designator, string name, TRotationBy90 orientation, double length, TPinElectrical pinType, bool showName, FontInfo fontInfo)
@@ -81,15 +338,18 @@ namespace EasyEDA_Loader
             schPin.SetState_Name(name);
             schPin.SetState_Electrical(pinType);
             schPin.SetState_ShowName(showName);
+            if (StartsWithMP(designator) || StartsWithMP(name))
+            {
+                schPin.SetState_ShowDesignator(false);
+                schPin.SetState_ShowName(true);
+            }
             schPin.SetState_OwnerPartId(schLib.GetState_CurrentSchComponentPartId());
             schPin.SetState_OwnerPartDisplayMode(schLib.GetState_CurrentSchComponentDisplayMode());
 
             if (fontInfo != null)
             {
-                int fontId = AltiumApi.GlobalVars.SCHServer.GetState_FontManager().GetFontID(fontInfo.Size, fontInfo.Rotation, fontInfo.Underline, fontInfo.Italic, fontInfo.Bold, fontInfo.Strikout, fontInfo.Name);
-                schPin.SetState_Designator_FontMode(TPinItemMode.ePinItemMode_Custom);
-                schPin.SetState_Designator_CustomFontID(fontId);
-                schPin.SetState_Designator_CustomColor(fontInfo.Color);
+                int fontId = GetFontId(fontInfo);
+                SetPinTextSettings(schPin, fontId, fontInfo.Color);
             }
 
             c.AddSchObject(schPin);
@@ -130,8 +390,8 @@ namespace EasyEDA_Loader
                 Y = AltiumApi.MilsToCoord(y2)
             });
 
-            rect.SetState_Color(RGB(128, 0, 0));
-            rect.SetState_AreaColor(RGB(255, 255, 176));
+            rect.SetState_Color(0);
+            rect.SetState_AreaColor(RGB(248, 248, 248));
             rect.SetState_IsSolid(true);
             rect.SetState_OwnerPartId(schLib.GetState_CurrentSchComponentPartId());
             rect.SetState_OwnerPartDisplayMode(schLib.GetState_CurrentSchComponentDisplayMode());
@@ -171,6 +431,94 @@ namespace EasyEDA_Loader
             model.SetState_ModelType(modelType);
             model.AddDataFileLink(modelName, libraryPath, modelType);
             model.SetState_IsCurrent(true);
+        }
+
+        public static string SelectRuleDesignator(string sourceDesignator, string partName, string description, string package)
+        {
+            string text = $"{partName} {description} {package}".ToLowerInvariant();
+
+            if (ContainsAny(text, "usb", "type-c", "type c", "receptacle", "socket", "jack", "female"))
+                return "XS?";
+            if (ContainsAny(text, "header", "plug", "pin header", "male"))
+                return "XP?";
+            if (ContainsAny(text, "connector", "conn", "terminal", "ffc", "fpc"))
+                return "X?";
+            if (ContainsAny(text, "op amp", "opamp", "operational amplifier", "rf amplifier", "low noise amplifier"))
+                return "DA?";
+
+            if (string.IsNullOrWhiteSpace(sourceDesignator))
+                return "DD?";
+            if (string.Equals(sourceDesignator, "U?", StringComparison.OrdinalIgnoreCase))
+                return "DD?";
+            if (string.Equals(sourceDesignator, "J?", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(sourceDesignator, "P?", StringComparison.OrdinalIgnoreCase))
+                return "X?";
+
+            return sourceDesignator;
+        }
+
+        public static string SelectRuleValueType(string designator, string partName, string description, string package)
+        {
+            string text = $"{partName} {description} {package}".ToLowerInvariant();
+
+            if (ContainsAny(text, "usb", "type-c", "type c"))
+                return "Разъём USB";
+
+            if ((designator != null && designator.StartsWith("X", StringComparison.OrdinalIgnoreCase))
+                || ContainsAny(text, "connector", "conn", "terminal", "header", "plug", "receptacle", "socket", "jack", "female", "ffc", "fpc", "jst"))
+                return "Разъём";
+
+            return "Микросхема";
+        }
+
+        private static bool ContainsAny(string text, params string[] needles)
+        {
+            foreach (string needle in needles)
+            {
+                if (text.Contains(needle))
+                    return true;
+            }
+
+            return false;
+        }
+
+        private static void TryInvoke(object target, string methodName, params object[] args)
+        {
+            TryInvokeResult(target, methodName, args);
+        }
+
+        private static object TryInvokeResult(object target, string methodName, params object[] args)
+        {
+            if (target == null)
+                return null;
+
+            foreach (var method in target.GetType().GetMethods(BindingFlags.Instance | BindingFlags.Public))
+            {
+                var parameters = method.GetParameters();
+                if (method.Name != methodName || parameters.Length != args.Length)
+                    continue;
+
+                try
+                {
+                    object[] convertedArgs = new object[args.Length];
+                    for (int i = 0; i < args.Length; i++)
+                    {
+                        object arg = args[i];
+                        Type parameterType = parameters[i].ParameterType;
+                        if (arg != null && parameterType == typeof(int) && arg.GetType().IsEnum)
+                            convertedArgs[i] = Convert.ToInt32(arg);
+                        else
+                            convertedArgs[i] = arg;
+                    }
+
+                    return method.Invoke(target, convertedArgs);
+                }
+                catch
+                {
+                }
+            }
+
+            return null;
         }
 
     }

@@ -30,6 +30,7 @@ namespace EasyEDA_Loader
         private static readonly char[] PartNumberSeparators = { '\r', '\n', '\t', ' ', ',', ';', '|' };
 
         public List<ComponentSelection> SelectedComponents { get; private set; }
+        public bool SaveLibraryDocuments => saveLibraryDocumentsCheckBox?.IsChecked == true;
         public bool CloseDocuments => closeDocumentsCheckBox?.IsChecked == true;
         public bool PlaceInSchematic => placeInSchematicCheckBox?.IsChecked == true;
 
@@ -423,12 +424,32 @@ namespace EasyEDA_Loader
             importButton.IsEnabled = isEnabled;
             addToLibraryButton.IsEnabled = isEnabled && searchResults.Any(p => p.AddToLibrary);
             cancelButton.IsEnabled = isEnabled;
+            saveLibraryDocumentsCheckBox.IsEnabled = isEnabled;
+            closeDocumentsCheckBox.IsEnabled = isEnabled;
+            placeInSchematicCheckBox.IsEnabled = isEnabled;
+        }
+
+        private bool ValidateImportOptions()
+        {
+            if (PlaceInSchematic && !SaveLibraryDocuments)
+            {
+                MessageBox.Show(
+                    "Placing in schematic requires saving the library documents. Enable saving or clear Place in schematic.",
+                    "Import Options",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Information);
+                return false;
+            }
+
+            return true;
         }
 
         private async void ImportButton_Click(object sender, RoutedEventArgs e)
         {
             var partNumbers = GetPartNumbersOrShowMessage();
             if (partNumbers.Count == 0)
+                return;
+            if (!ValidateImportOptions())
                 return;
 
             var closeDialog = false;
@@ -487,6 +508,8 @@ namespace EasyEDA_Loader
                 MessageBox.Show("Please select at least one component to add.", "No Selection", MessageBoxButton.OK, MessageBoxImage.Information);
                 return;
             }
+            if (!ValidateImportOptions())
+                return;
 
             var closeDialog = false;
             SetImportControlsEnabled(false);

@@ -17,6 +17,11 @@ namespace EasyEDA_Loader
         public CancellationToken CancelToken { get; set; }
         public Task<byte[]> ModelTask { get; set; }
         public Task<byte[]> RawModelTask { get; set; }
+        public bool Has3dBodyProjection { get; set; }
+        public bool HasAssemblyDesignatorText { get; set; }
+        public bool HasAssemblyCommentText { get; set; }
+        public int MountingHoleCount { get; set; }
+        public int MountingPadCount { get; set; }
     }
     [JsonConverter(typeof(EeFootprintShapeConverter))]
     public class EeFootprintShape : EeShape

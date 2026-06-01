@@ -290,6 +290,11 @@
             </Grid.ColumnDefinitions>
 
             <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
+                <CheckBox x:Name="saveLibraryDocumentsCheckBox"
+                          Content="Save library documents after adding"
+                          IsChecked="False"
+                          VerticalAlignment="Center"
+                          Margin="0,0,20,0"/>
                 <CheckBox x:Name="closeDocumentsCheckBox"
                           Content="Close library documents after adding"
                           VerticalAlignment="Center"
