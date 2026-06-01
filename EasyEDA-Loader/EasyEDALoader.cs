@@ -279,6 +279,11 @@ namespace EasyEDA_Loader
                             libComp = EEPCB.CreateFootprintInLib(footprintName, footprintDescription, footprintHeight);
                             createdFootprint = libComp != null;
                         }
+                        else
+                        {
+                            EEPCB.SetFootprintMetadata(libComp, footprintDescription, footprintHeight);
+                            EEPCB.SetComponentBodyIdentifiers(libComp, partNumber);
+                        }
 
                         if (createdFootprint)
                         {

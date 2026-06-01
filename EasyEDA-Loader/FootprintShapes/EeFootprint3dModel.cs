@@ -149,6 +149,8 @@ namespace EasyEDA_Loader
                     modelIdentifier,
                     overallHeight);
                 EEPCB.AddToPCB(c, body);
+                EEPCB.SetComponentBodyIdentifier(body, modelIdentifier);
+                EEPCB.SetComponentBodyHeights(body, standoffHeight, overallHeight);
                 EEPCB.Add3dBodyProjection(c, modelX, modelY, Width, Height);
                 ctx.Has3dBodyProjection = true;
 

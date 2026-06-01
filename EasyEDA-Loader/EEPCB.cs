@@ -231,16 +231,70 @@ namespace EasyEDA_Loader
             if (model == null) return null;
             model.SetState(rx, ry, rz, AltiumApi.MmToCoord(z));
             stepModel.SetModel(model);
+            stepModel.SetState_FromModel();
+            model.SetState(rx, ry, rz, AltiumApi.MmToCoord(z));
+            stepModel.SetModel(model);
             TrySetLayer(stepModel, TLayerConstant.eMechanical1);
             string modelIdentifier = !string.IsNullOrWhiteSpace(identifier)
                 ? identifier
                 : Path.GetFileNameWithoutExtension(fileName);
-            TrySetIdentifier(stepModel, modelIdentifier);
-            TrySetIdentifier(model, modelIdentifier);
-            TrySetHeight(stepModel, z, overallHeightMm);
+            SetComponentBodyIdentifier(stepModel, modelIdentifier);
+            SetComponentBodyHeights(stepModel, z, overallHeightMm);
             // Model is created at the bottom-left origin of the board, so we need to offset it
             stepModel.MoveByXY(AltiumApi.MmToCoord(x) + c.GetState_Board().GetState_XOrigin(), AltiumApi.MmToCoord(y) + c.GetState_Board().GetState_YOrigin());
             return stepModel;
+        }
+
+        public static void SetComponentBodyIdentifier(IPCB_ComponentBody body, string identifier)
+        {
+            if (body == null || string.IsNullOrWhiteSpace(identifier))
+                return;
+
+            body.SetState_Identifier(identifier);
+            body.GraphicallyInvalidate();
+        }
+
+        public static void SetComponentBodyIdentifiers(IPCB_LibComponent component, string identifier)
+        {
+            if (component == null || string.IsNullOrWhiteSpace(identifier))
+                return;
+
+            object iterator = null;
+            try
+            {
+                iterator = TryInvokeResult(component, "GroupIterator_Create")
+                    ?? TryInvokeResult(component, "Internal_GroupIterator_Create");
+                if (iterator == null)
+                    return;
+
+                object primitive = TryInvokeResult(iterator, "FirstPCBObject")
+                    ?? TryInvokeResult(iterator, "Internal_FirstPCBObject");
+                while (primitive != null)
+                {
+                    if (primitive is IPCB_ComponentBody body)
+                        SetComponentBodyIdentifier(body, identifier);
+
+                    primitive = TryInvokeResult(iterator, "NextPCBObject")
+                        ?? TryInvokeResult(iterator, "Internal_NextPCBObject");
+                }
+            }
+            finally
+            {
+                if (iterator != null)
+                    TryInvoke(component, "GroupIterator_Destroy", iterator);
+            }
+        }
+
+        public static void SetComponentBodyHeights(IPCB_ComponentBody body, double standoffHeightMm, double overallHeightMm)
+        {
+            if (body == null)
+                return;
+
+            if (standoffHeightMm > 0)
+                body.SetStandoffHeight(AltiumApi.MmToCoord(standoffHeightMm));
+
+            if (overallHeightMm > 0)
+                body.SetOverallHeight(AltiumApi.MmToCoord(overallHeightMm));
         }
 
         private static void TrySetLayer(object target, TLayerConstant layer)
@@ -250,32 +304,15 @@ namespace EasyEDA_Loader
             TryInvoke(target, "SetState_Layer", layer);
         }
 
-        private static void TrySetIdentifier(object target, string identifier)
-        {
-            if (string.IsNullOrEmpty(identifier))
-                return;
-
-            TryInvoke(target, "SetState_Identifier", identifier);
-            TryInvoke(target, "SetState_ModelIdentifier", identifier);
-            TryInvoke(target, "SetState_Name", identifier);
-        }
-
-        private static void TrySetHeight(object target, double standoffHeightMm, double overallHeightMm)
-        {
-            if (target == null)
-                return;
-
-            if (standoffHeightMm > 0)
-                TryInvoke(target, "SetStandoffHeight", AltiumApi.MmToCoord(standoffHeightMm));
-
-            if (overallHeightMm > 0)
-                TryInvoke(target, "SetOverallHeight", AltiumApi.MmToCoord(overallHeightMm));
-        }
-
         private static void TryInvoke(object target, string methodName, params object[] args)
         {
+            TryInvokeResult(target, methodName, args);
+        }
+
+        private static object TryInvokeResult(object target, string methodName, params object[] args)
+        {
             if (target == null)
-                return;
+                return null;
 
             foreach (var method in target.GetType().GetMethods(BindingFlags.Instance | BindingFlags.Public))
             {
@@ -284,13 +321,14 @@ namespace EasyEDA_Loader
 
                 try
                 {
-                    method.Invoke(target, args);
-                    return;
+                    return method.Invoke(target, args);
                 }
                 catch
                 {
                 }
             }
+
+            return null;
         }
     }
 }
