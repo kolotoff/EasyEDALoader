@@ -71,11 +71,12 @@ marked-region JSON is not loaded for cleanup. The test also regenerates
 same count and side names as non-empty compatible marker sidecars. This debug
 image check is a review aid for detector coverage and does not drive cleanup.
 
-The test then requires every generated clean model to have a matching golden
-file in `Validated`. If a generated clean model is missing from `Validated`, the
-test treats it as not fully cleaned and asks the reviewer to view the generated
-file before accepting it. Matching files are byte-compared against their
-`Validated` golden files.
+The test then requires every generated clean model to have a matching accepted
+model in `Validated`. If a generated clean model is missing from `Validated`,
+the test treats it as not fully cleaned and asks the reviewer to view the
+generated file before accepting it. Matching models are compared only through
+their generated six-side projection PNGs in `CleanProjection` and
+`ValidatedProjection`; STEP file bytes are not compared.
 
 Current cleanup notes:
 

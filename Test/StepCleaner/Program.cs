@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using SkiaSharp;
 
 namespace StepCleaner.Tests
 {
@@ -19,6 +20,8 @@ namespace StepCleaner.Tests
                 string validatedDirectory = Path.Combine(dataRoot, "Validated");
                 string markedDirectory = Path.Combine(dataRoot, "Marked");
                 string projectionDirectory = Path.Combine(dataRoot, "Projection");
+                string cleanProjectionDirectory = Path.Combine(dataRoot, "CleanProjection");
+                string validatedProjectionDirectory = Path.Combine(dataRoot, "ValidatedProjection");
                 string detectionDirectory = Path.Combine(cleanDirectory, "Detection");
 
                 Directory.CreateDirectory(cleanDirectory);
@@ -65,12 +68,6 @@ namespace StepCleaner.Tests
                             outputFile);
                         continue;
                     }
-
-                    byte[] expected = File.ReadAllBytes(validatedFile);
-                    byte[] actual = File.ReadAllBytes(outputFile);
-
-                    if (!expected.SequenceEqual(actual))
-                        failures.Add(FormatDifference(fileName, expected, actual));
                 }
 
                 foreach (string note in GetCleanupNotes())
@@ -82,6 +79,15 @@ namespace StepCleaner.Tests
                     if (!generatedCleanByName.ContainsKey(fileName))
                         failures.Add("Validated file has no matching Original model or generated Clean output: " + fileName);
                 }
+
+                CompareCleanAndValidatedProjections(
+                    generatedCleanByName,
+                    validatedByName,
+                    cleanDirectory,
+                    validatedDirectory,
+                    cleanProjectionDirectory,
+                    validatedProjectionDirectory,
+                    failures);
 
                 if (failures.Count > 0)
                 {
@@ -255,6 +261,110 @@ namespace StepCleaner.Tests
             return result;
         }
 
+        private static void CompareCleanAndValidatedProjections(
+            Dictionary<string, string> generatedCleanByName,
+            Dictionary<string, string> validatedByName,
+            string cleanDirectory,
+            string validatedDirectory,
+            string cleanProjectionDirectory,
+            string validatedProjectionDirectory,
+            List<string> failures)
+        {
+            var matchedFileNames = generatedCleanByName.Keys
+                .Where(fileName => validatedByName.ContainsKey(fileName))
+                .OrderBy(fileName => fileName, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            if (matchedFileNames.Count == 0)
+                return;
+
+            ClearProjectionFiles(cleanProjectionDirectory, matchedFileNames);
+            ClearProjectionFiles(validatedProjectionDirectory, matchedFileNames);
+
+            StepProjectionRenderer.ProjectDirectory(cleanDirectory, cleanProjectionDirectory);
+            StepProjectionRenderer.ProjectDirectory(validatedDirectory, validatedProjectionDirectory);
+
+            int comparedImages = 0;
+            foreach (string fileName in matchedFileNames)
+            {
+                string modelName = Path.GetFileNameWithoutExtension(fileName);
+                foreach (string viewName in StepProjectionRenderer.ViewNames)
+                {
+                    string cleanProjectionPath = Path.Combine(cleanProjectionDirectory, modelName + "__" + viewName + ".png");
+                    string validatedProjectionPath = Path.Combine(validatedProjectionDirectory, modelName + "__" + viewName + ".png");
+
+                    if (!File.Exists(cleanProjectionPath))
+                    {
+                        failures.Add("Clean projection is missing: " + cleanProjectionPath);
+                        continue;
+                    }
+
+                    if (!File.Exists(validatedProjectionPath))
+                    {
+                        failures.Add("Validated projection is missing: " + validatedProjectionPath);
+                        continue;
+                    }
+
+                    if (!ProjectionPixelsEqual(cleanProjectionPath, validatedProjectionPath))
+                    {
+                        failures.Add(
+                            fileName +
+                            " differs from Validated projection on " +
+                            viewName +
+                            ": " +
+                            cleanProjectionPath +
+                            " vs " +
+                            validatedProjectionPath);
+                    }
+
+                    comparedImages++;
+                }
+            }
+
+            Console.WriteLine(
+                "Projection comparison: models=" +
+                matchedFileNames.Count.ToString(CultureInfo.InvariantCulture) +
+                ", images=" +
+                comparedImages.ToString(CultureInfo.InvariantCulture));
+        }
+
+        private static bool ProjectionPixelsEqual(string cleanProjectionPath, string validatedProjectionPath)
+        {
+            using (var cleanImage = SKBitmap.Decode(cleanProjectionPath))
+            using (var validatedImage = SKBitmap.Decode(validatedProjectionPath))
+            {
+                if (cleanImage == null || validatedImage == null)
+                    return false;
+
+                if (cleanImage.Width != validatedImage.Width || cleanImage.Height != validatedImage.Height)
+                    return false;
+
+                for (int y = 0; y < cleanImage.Height; y++)
+                {
+                    for (int x = 0; x < cleanImage.Width; x++)
+                    {
+                        if (cleanImage.GetPixel(x, y) != validatedImage.GetPixel(x, y))
+                            return false;
+                    }
+                }
+
+                return true;
+            }
+        }
+
+        private static void ClearProjectionFiles(string projectionDirectory, IEnumerable<string> stepFileNames)
+        {
+            Directory.CreateDirectory(projectionDirectory);
+            foreach (string fileName in stepFileNames)
+            {
+                string modelName = Path.GetFileNameWithoutExtension(fileName);
+                foreach (string projectionFile in Directory.GetFiles(projectionDirectory, modelName + "__*.png"))
+                    File.Delete(projectionFile);
+
+                foreach (string projectionFile in Directory.GetFiles(projectionDirectory, modelName + "__*.json"))
+                    File.Delete(projectionFile);
+            }
+        }
+
         private static IReadOnlyList<string> GetCleanupNotes()
         {
             return new[]
@@ -319,32 +429,6 @@ namespace StepCleaner.Tests
 
             result.Sort(StringComparer.OrdinalIgnoreCase);
             return result;
-        }
-
-        private static string FormatDifference(string fileName, byte[] expected, byte[] actual)
-        {
-            long offset = FindFirstDifference(expected, actual);
-            return
-                fileName +
-                " differs from Validated at byte " +
-                offset.ToString(CultureInfo.InvariantCulture) +
-                " (validated length " +
-                expected.Length.ToString(CultureInfo.InvariantCulture) +
-                ", clean length " +
-                actual.Length.ToString(CultureInfo.InvariantCulture) +
-                ").";
-        }
-
-        private static long FindFirstDifference(byte[] expected, byte[] actual)
-        {
-            int length = Math.Min(expected.Length, actual.Length);
-            for (int i = 0; i < length; i++)
-            {
-                if (expected[i] != actual[i])
-                    return i;
-            }
-
-            return length;
         }
     }
 }
