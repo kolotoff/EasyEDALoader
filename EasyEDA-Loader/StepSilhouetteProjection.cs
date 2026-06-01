@@ -99,6 +99,10 @@ namespace EasyEDA_Loader
         private const double ArcMaxSweepDeg = 355.0;
         private const double ArcMergeAngleToleranceDeg = 0.5;
         private const double ArcBboxToleranceMm = 0.05;
+        private const double CompleteCircleCoverageDeg = 350.0;
+        private const double CompleteCircleMergeToleranceDeg = 1.0;
+        private const double RingInteriorLineToleranceMm = 0.08;
+        private const double RingInteriorCleanupMaxRadiusMm = 1.5;
         private const double MinVisibleLineLengthFactor = 1.5;
         private const double MinVisibleArcLengthFactor = 1.0;
         private const double MinVisibleArcRadiusFactor = 1.0;
@@ -109,6 +113,7 @@ namespace EasyEDA_Loader
         private const double ClosedPathEndpointToleranceMm = 0.02;
         private const double ClosedCircleSweepToleranceDeg = 20.0;
         private const double CircularPathRadialToleranceMm = 0.04;
+        private const double CircularEdgeConnectionToleranceMm = 0.03;
         private const int SegmentedArcMinPointCount = 5;
         private const double ShortDisconnectedLineLengthMm = 0.25;
         private const double PrimitiveConnectionToleranceMm = 0.08;
@@ -427,6 +432,10 @@ namespace EasyEDA_Loader
             int occludedSegments = 0;
             foreach (int edgeId in edgeIds)
             {
+                if (!geometry.Edges.TryGetValue(edgeId, out EdgeCurve edge))
+                    continue;
+
+                bool isCircularEdge = geometry.Circles.ContainsKey(edge.CurveId);
                 List<Vec3d> points = EdgePolylinePoints(geometry, edgeId)
                     .Select(point => TransformModelPoint(point, state))
                     .ToList();
@@ -446,7 +455,7 @@ namespace EasyEDA_Loader
                         continue;
                     }
 
-                    segments.Add(new Segment2d(p1.X, p1.Y, p2.X, p2.Y));
+                    segments.Add(new Segment2d(p1.X, p1.Y, p2.X, p2.Y, edgeId, edge.CurveId, isCircularEdge, index));
                 }
             }
 
@@ -761,7 +770,15 @@ namespace EasyEDA_Loader
                 if (Distance(a, b) < OutputMinLineLengthMm)
                     continue;
 
-                var rounded = new Segment2d(RoundCoord(a.X), RoundCoord(a.Y), RoundCoord(b.X), RoundCoord(b.Y));
+                var rounded = new Segment2d(
+                    RoundCoord(a.X),
+                    RoundCoord(a.Y),
+                    RoundCoord(b.X),
+                    RoundCoord(b.Y),
+                    segment.EdgeId,
+                    segment.CurveId,
+                    segment.IsCircularEdge,
+                    segment.SegmentIndex);
                 SegmentKey key = CanonicalSegmentKey(rounded);
                 if (!seen.Add(key))
                     continue;
@@ -791,8 +808,9 @@ namespace EasyEDA_Loader
         private static IReadOnlyList<StepSilhouettePrimitive> OptimizeSegmentsToPrimitives(List<Segment2d> segments)
         {
             List<Segment2d> deduped = DedupeSegments(segments);
-            List<List<Point2d>> paths = TraceSegmentPaths(deduped);
             var primitives = new List<StepSilhouettePrimitive>();
+            List<Segment2d> pathSegments = ExtractCircularEdgePrimitives(deduped, primitives);
+            List<List<Point2d>> paths = TraceSegmentPaths(pathSegments);
             foreach (List<Point2d> path in paths)
                 primitives.AddRange(PrimitivesFromPath(path));
 
@@ -801,6 +819,7 @@ namespace EasyEDA_Loader
             primitives = RemoveSmallVisiblePrimitives(primitives);
             primitives = RemoveStrokeCoveredPrimitives(primitives);
             primitives = AddLineGapBridges(primitives);
+            primitives = RemoveLinesInsideCompleteCircularRings(primitives);
             primitives = RemoveShortDisconnectedLines(primitives);
 
             var result = new List<StepSilhouettePrimitive>();
@@ -835,14 +854,20 @@ namespace EasyEDA_Loader
         private static List<Segment2d> DedupeSegments(List<Segment2d> segments)
         {
             var result = new List<Segment2d>();
-            var seen = new HashSet<SegmentKey>();
+            var seen = new Dictionary<SegmentKey, int>();
             foreach (Segment2d segment in segments)
             {
                 if (SegmentLength(segment) < OutputMinLineLengthMm)
                     continue;
                 SegmentKey key = CanonicalSegmentKey(segment);
-                if (!seen.Add(key))
+                if (seen.TryGetValue(key, out int existingIndex))
+                {
+                    if (segment.IsCircularEdge && !result[existingIndex].IsCircularEdge)
+                        result[existingIndex] = segment;
                     continue;
+                }
+
+                seen[key] = result.Count;
                 result.Add(segment);
             }
 
@@ -935,16 +960,7 @@ namespace EasyEDA_Loader
             if (arc != null)
                 return new List<StepSilhouettePrimitive> { arc };
 
-            List<StepSilhouettePrimitive> simplifiedLines = SimplifiedLinePrimitives(path);
-            List<StepSilhouettePrimitive> segmented = SegmentedPrimitivesFromPath(path);
-            int maxSegmentedPrimitiveCount = Math.Max(
-                simplifiedLines.Count + 4,
-                (int)Math.Ceiling(simplifiedLines.Count * 1.5));
-            if (segmented.Any(primitive => primitive.Kind == StepSilhouettePrimitiveKind.Arc) &&
-                segmented.Count <= maxSegmentedPrimitiveCount)
-                return segmented;
-
-            return simplifiedLines;
+            return SimplifiedLinePrimitives(path);
         }
 
         private static List<StepSilhouettePrimitive> SimplifiedLinePrimitives(List<Point2d> path)
@@ -959,6 +975,92 @@ namespace EasyEDA_Loader
             }
 
             return result;
+        }
+
+        private static List<Segment2d> ExtractCircularEdgePrimitives(List<Segment2d> segments, List<StepSilhouettePrimitive> primitives)
+        {
+            var converted = new HashSet<string>();
+            foreach (IGrouping<int, Segment2d> edgeGroup in segments
+                .Where(segment => segment.IsCircularEdge && segment.EdgeId != 0)
+                .GroupBy(segment => segment.EdgeId))
+            {
+                List<Segment2d> orderedSegments = edgeGroup
+                    .OrderBy(segment => segment.SegmentIndex)
+                    .ToList();
+
+                var run = new List<Segment2d>();
+                Segment2d? previous = null;
+                foreach (Segment2d segment in orderedSegments)
+                {
+                    if (previous.HasValue &&
+                        (segment.SegmentIndex != previous.Value.SegmentIndex + 1 ||
+                         Distance(
+                             new Point2d(previous.Value.X2, previous.Value.Y2),
+                             new Point2d(segment.X1, segment.Y1)) > CircularEdgeConnectionToleranceMm))
+                    {
+                        ConvertCircularSegmentRun(run, primitives, converted);
+                        run.Clear();
+                    }
+
+                    run.Add(segment);
+                    previous = segment;
+                }
+
+                ConvertCircularSegmentRun(run, primitives, converted);
+            }
+
+            return segments
+                .Where(segment => !converted.Contains(SegmentIdentityKey(segment)))
+                .ToList();
+        }
+
+        private static void ConvertCircularSegmentRun(
+            List<Segment2d> run,
+            List<StepSilhouettePrimitive> primitives,
+            HashSet<string> converted)
+        {
+            if (run.Count < 2)
+                return;
+
+            List<Point2d> points = PointsFromSegmentRun(run);
+            List<StepSilhouettePrimitive> circularPrimitives = null;
+            if (!TryFitClosedCircularPath(points, out circularPrimitives))
+            {
+                StepSilhouettePrimitive arc = FitArcToPoints(points, 3);
+                if (arc != null)
+                    circularPrimitives = new List<StepSilhouettePrimitive> { arc };
+            }
+
+            if (circularPrimitives == null || circularPrimitives.Count == 0)
+                return;
+
+            primitives.AddRange(circularPrimitives);
+            foreach (Segment2d segment in run)
+                converted.Add(SegmentIdentityKey(segment));
+        }
+
+        private static List<Point2d> PointsFromSegmentRun(List<Segment2d> run)
+        {
+            var points = new List<Point2d>(run.Count + 1)
+            {
+                new Point2d(run[0].X1, run[0].Y1)
+            };
+
+            foreach (Segment2d segment in run)
+            {
+                Point2d point = new Point2d(segment.X2, segment.Y2);
+                if (Distance(points[points.Count - 1], point) > PointEpsilonMm)
+                    points.Add(point);
+            }
+
+            return points;
+        }
+
+        private static string SegmentIdentityKey(Segment2d segment)
+        {
+            return segment.EdgeId.ToString(CultureInfo.InvariantCulture) +
+                "|" +
+                segment.SegmentIndex.ToString(CultureInfo.InvariantCulture);
         }
 
         private static List<StepSilhouettePrimitive> RemoveShortDisconnectedLines(List<StepSilhouettePrimitive> primitives)
@@ -1448,9 +1550,123 @@ namespace EasyEDA_Loader
             return null;
         }
 
-        private static StepSilhouettePrimitive FitArcToPoints(List<Point2d> points)
+        private static List<StepSilhouettePrimitive> RemoveLinesInsideCompleteCircularRings(List<StepSilhouettePrimitive> primitives)
         {
-            if (points.Count < 4 || PointsAreCollinear(points))
+            List<CompleteCircleRing> rings = FindCompleteCircularRings(primitives);
+            if (rings.Count == 0)
+                return primitives;
+
+            return primitives
+                .Where(primitive => primitive.Kind != StepSilhouettePrimitiveKind.Line ||
+                    !rings.Any(ring => LineIsInsideRing(primitive, ring)))
+                .ToList();
+        }
+
+        private static List<CompleteCircleRing> FindCompleteCircularRings(List<StepSilhouettePrimitive> primitives)
+        {
+            var groups = new Dictionary<string, List<StepSilhouettePrimitive>>();
+            foreach (StepSilhouettePrimitive primitive in primitives)
+            {
+                if (primitive.Kind != StepSilhouettePrimitiveKind.Arc)
+                    continue;
+                if (primitive.Radius < ProjectionLineWidthMm * MinVisibleArcRadiusFactor)
+                    continue;
+                if (primitive.Radius > RingInteriorCleanupMaxRadiusMm)
+                    continue;
+
+                string key = string.Join("|",
+                    (int)Math.Round(primitive.CenterX / CollinearDistanceToleranceMm),
+                    (int)Math.Round(primitive.CenterY / CollinearDistanceToleranceMm),
+                    (int)Math.Round(primitive.Radius / CollinearDistanceToleranceMm));
+                if (!groups.TryGetValue(key, out List<StepSilhouettePrimitive> arcs))
+                {
+                    arcs = new List<StepSilhouettePrimitive>();
+                    groups[key] = arcs;
+                }
+                arcs.Add(primitive);
+            }
+
+            var rings = new List<CompleteCircleRing>();
+            foreach (List<StepSilhouettePrimitive> arcs in groups.Values)
+            {
+                if (arcs.Count < 2)
+                    continue;
+
+                double coverage = CircularCoverageDegrees(arcs);
+                if (coverage < CompleteCircleCoverageDeg)
+                    continue;
+
+                double centerX = arcs.Average(arc => arc.CenterX);
+                double centerY = arcs.Average(arc => arc.CenterY);
+                double radius = arcs.Average(arc => arc.Radius);
+                rings.Add(new CompleteCircleRing(centerX, centerY, radius));
+            }
+
+            return rings;
+        }
+
+        private static double CircularCoverageDegrees(List<StepSilhouettePrimitive> arcs)
+        {
+            var intervals = new List<ArcInterval>();
+            foreach (StepSilhouettePrimitive arc in arcs)
+            {
+                double start = NormalizeRotationDegrees(arc.StartAngle);
+                double sweep = PrimitiveArcSweepDegrees(arc);
+                if (sweep >= 360.0 - CompleteCircleMergeToleranceDeg)
+                {
+                    intervals.Add(new ArcInterval(0.0, 360.0));
+                    continue;
+                }
+
+                double remainingSweep = sweep;
+                double currentStart = start;
+                while (remainingSweep > PointEpsilonMm)
+                {
+                    double currentEnd = Math.Min(360.0, currentStart + remainingSweep);
+                    intervals.Add(new ArcInterval(currentStart, currentEnd));
+                    remainingSweep -= currentEnd - currentStart;
+                    currentStart = 0.0;
+                }
+            }
+
+            if (intervals.Count == 0)
+                return 0.0;
+
+            intervals.Sort((a, b) => a.Start.CompareTo(b.Start));
+            double coverage = 0.0;
+            ArcInterval current = intervals[0];
+            for (int index = 1; index < intervals.Count; index++)
+            {
+                ArcInterval next = intervals[index];
+                if (next.Start <= current.End + CompleteCircleMergeToleranceDeg)
+                {
+                    current.End = Math.Max(current.End, next.End);
+                    continue;
+                }
+
+                coverage += current.End - current.Start;
+                current = next;
+            }
+
+            coverage += current.End - current.Start;
+            return Math.Min(360.0, coverage);
+        }
+
+        private static bool LineIsInsideRing(StepSilhouettePrimitive line, CompleteCircleRing ring)
+        {
+            var center = new Point2d(ring.CenterX, ring.CenterY);
+            var start = new Point2d(line.X1, line.Y1);
+            var end = new Point2d(line.X2, line.Y2);
+            var midpoint = new Point2d((line.X1 + line.X2) / 2.0, (line.Y1 + line.Y2) / 2.0);
+            double tolerance = Math.Max(RingInteriorLineToleranceMm, ProjectionLineWidthMm);
+            return Distance(start, center) <= ring.Radius + tolerance &&
+                Distance(end, center) <= ring.Radius + tolerance &&
+                Distance(midpoint, center) <= ring.Radius + tolerance;
+        }
+
+        private static StepSilhouettePrimitive FitArcToPoints(List<Point2d> points, int minimumPointCount = 4)
+        {
+            if (points.Count < minimumPointCount || PointsAreCollinear(points))
                 return null;
 
             Point2d middle = points[points.Count / 2];
@@ -2026,6 +2242,20 @@ namespace EasyEDA_Loader
             public double Length { get; }
         }
 
+        private sealed class CompleteCircleRing
+        {
+            public CompleteCircleRing(double centerX, double centerY, double radius)
+            {
+                CenterX = centerX;
+                CenterY = centerY;
+                Radius = radius;
+            }
+
+            public double CenterX { get; }
+            public double CenterY { get; }
+            public double Radius { get; }
+        }
+
         private struct Vec3d
         {
             public Vec3d(double x, double y, double z)
@@ -2054,18 +2284,34 @@ namespace EasyEDA_Loader
 
         private struct Segment2d
         {
-            public Segment2d(double x1, double y1, double x2, double y2)
+            public Segment2d(
+                double x1,
+                double y1,
+                double x2,
+                double y2,
+                int edgeId = 0,
+                int curveId = 0,
+                bool isCircularEdge = false,
+                int segmentIndex = 0)
             {
                 X1 = x1;
                 Y1 = y1;
                 X2 = x2;
                 Y2 = y2;
+                EdgeId = edgeId;
+                CurveId = curveId;
+                IsCircularEdge = isCircularEdge;
+                SegmentIndex = segmentIndex;
             }
 
             public double X1 { get; }
             public double Y1 { get; }
             public double X2 { get; }
             public double Y2 { get; }
+            public int EdgeId { get; }
+            public int CurveId { get; }
+            public bool IsCircularEdge { get; }
+            public int SegmentIndex { get; }
         }
 
         private struct Placement3d
