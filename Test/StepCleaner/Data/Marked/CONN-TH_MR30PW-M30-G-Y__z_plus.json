@@ -1,0 +1,14 @@
+{
+  "Version": 1,
+  "ImageFile": "CONN-TH_MR30PW-M30-G-Y__z_plus.png",
+  "ImageWidth": 1600,
+  "ImageHeight": 1600,
+  "Rectangles": [
+    {
+      "X": 503,
+      "Y": 659,
+      "Width": 598,
+      "Height": 217
+    }
+  ]
+}

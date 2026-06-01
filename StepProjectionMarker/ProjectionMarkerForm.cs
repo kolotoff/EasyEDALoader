@@ -19,6 +19,7 @@ namespace StepProjectionMarker
         private readonly Button _previousButton;
         private readonly Button _nextButton;
         private readonly Button _saveButton;
+        private readonly Button _clearButton;
         private readonly Label _statusLabel;
         private readonly Dictionary<string, AnnotationState> _states = new Dictionary<string, AnnotationState>(StringComparer.OrdinalIgnoreCase);
 
@@ -53,10 +54,11 @@ namespace StepProjectionMarker
             _previousButton = new Button { Text = "Previous", Width = 86, Height = 28 };
             _nextButton = new Button { Text = "Next", Width = 70, Height = 28 };
             _saveButton = new Button { Text = "Save", Width = 70, Height = 28 };
+            _clearButton = new Button { Text = "Clear Mapping", Width = 112, Height = 28 };
             _statusLabel = new Label
             {
                 AutoSize = false,
-                Width = 820,
+                Width = 700,
                 Height = 28,
                 TextAlign = ContentAlignment.MiddleLeft
             };
@@ -65,6 +67,7 @@ namespace StepProjectionMarker
             toolbar.Controls.Add(_previousButton);
             toolbar.Controls.Add(_nextButton);
             toolbar.Controls.Add(_saveButton);
+            toolbar.Controls.Add(_clearButton);
             toolbar.Controls.Add(_statusLabel);
 
             _splitContainer = new SplitContainer
@@ -97,6 +100,7 @@ namespace StepProjectionMarker
             _previousButton.Click += PreviousButton_Click;
             _nextButton.Click += NextButton_Click;
             _saveButton.Click += SaveButton_Click;
+            _clearButton.Click += ClearButton_Click;
             _imageList.SelectedIndexChanged += ImageList_SelectedIndexChanged;
             _canvas.RectangleCreated += Canvas_RectangleCreated;
 
@@ -150,6 +154,13 @@ namespace StepProjectionMarker
                 return;
             }
 
+            if (e.Control && e.KeyCode == Keys.Delete)
+            {
+                ClearCurrentMapping();
+                e.SuppressKeyPress = true;
+                return;
+            }
+
             if (e.KeyCode == Keys.Left)
             {
                 SelectRelativeImage(-1);
@@ -196,6 +207,11 @@ namespace StepProjectionMarker
         private void SaveButton_Click(object sender, EventArgs e)
         {
             SaveAll();
+        }
+
+        private void ClearButton_Click(object sender, EventArgs e)
+        {
+            ClearCurrentMapping();
         }
 
         private void ImageList_SelectedIndexChanged(object sender, EventArgs e)
@@ -337,11 +353,24 @@ namespace StepProjectionMarker
         private void ApplyAction(AnnotationState state, MarkerAction action)
         {
             if (action.Kind == MarkerActionKind.Add)
+            {
                 state.Rectangles.Add(action.Rectangle);
+                return;
+            }
+
+            if (action.Kind == MarkerActionKind.Clear)
+                state.Rectangles.Clear();
         }
 
         private void ApplyReverseAction(AnnotationState state, MarkerAction action)
         {
+            if (action.Kind == MarkerActionKind.Clear)
+            {
+                state.Rectangles.Clear();
+                state.Rectangles.AddRange(action.Rectangles);
+                return;
+            }
+
             if (action.Kind != MarkerActionKind.Add)
                 return;
 
@@ -353,6 +382,38 @@ namespace StepProjectionMarker
                     return;
                 }
             }
+        }
+
+        private void ClearCurrentMapping()
+        {
+            AnnotationState state = GetCurrentState();
+            if (state == null || string.IsNullOrEmpty(_currentImagePath))
+                return;
+
+            string jsonPath = GetJsonPath(_currentImagePath);
+            if (state.Rectangles.Count == 0 && !File.Exists(jsonPath))
+            {
+                UpdateStatus("Selected image has no mapping to clear.");
+                return;
+            }
+
+            DialogResult result = MessageBox.Show(
+                this,
+                "Clear mapping rectangles for the selected image?",
+                "Clear Mapping",
+                MessageBoxButtons.YesNo,
+                MessageBoxIcon.Warning);
+
+            if (result != DialogResult.Yes)
+                return;
+
+            var previousRectangles = state.Rectangles.ToList();
+            state.Rectangles.Clear();
+            state.Undo.Push(new MarkerAction(MarkerActionKind.Clear, previousRectangles));
+            state.Redo.Clear();
+            state.Dirty = true;
+            UpdateCanvasState();
+            UpdateStatus("Cleared mapping for " + Path.GetFileName(_currentImagePath) + ". Save to remove marker JSON.");
         }
 
         private void UpdateCanvasState()
@@ -378,6 +439,7 @@ namespace StepProjectionMarker
 
             Directory.CreateDirectory(_markedDirectory);
             int savedCount = 0;
+            int deletedCount = 0;
             foreach (KeyValuePair<string, AnnotationState> pair in _states)
             {
                 string imagePath = pair.Key;
@@ -386,6 +448,18 @@ namespace StepProjectionMarker
 
                 if (!state.Dirty && state.Rectangles.Count == 0 && !File.Exists(jsonPath))
                     continue;
+
+                if (state.Rectangles.Count == 0)
+                {
+                    if (state.Dirty && File.Exists(jsonPath))
+                    {
+                        File.Delete(jsonPath);
+                        deletedCount++;
+                    }
+
+                    state.Dirty = false;
+                    continue;
+                }
 
                 Size imageSize = GetImageSize(imagePath);
                 var document = new MarkerDocument
@@ -408,7 +482,11 @@ namespace StepProjectionMarker
                 savedCount++;
             }
 
-            UpdateStatus("Saved " + savedCount.ToString(System.Globalization.CultureInfo.InvariantCulture) + " marker JSON file(s).");
+            UpdateStatus(
+                "Saved " + savedCount.ToString(System.Globalization.CultureInfo.InvariantCulture) +
+                " marker JSON file(s); deleted " +
+                deletedCount.ToString(System.Globalization.CultureInfo.InvariantCulture) +
+                ".");
         }
 
         private Size GetImageSize(string imagePath)
@@ -672,7 +750,8 @@ namespace StepProjectionMarker
 
     internal enum MarkerActionKind
     {
-        Add
+        Add,
+        Clear
     }
 
     internal sealed class MarkerAction
@@ -683,8 +762,15 @@ namespace StepProjectionMarker
             Rectangle = rectangle;
         }
 
+        public MarkerAction(MarkerActionKind kind, IReadOnlyList<MarkerRectangle> rectangles)
+        {
+            Kind = kind;
+            Rectangles = rectangles.ToList();
+        }
+
         public MarkerActionKind Kind { get; }
         public MarkerRectangle Rectangle { get; }
+        public List<MarkerRectangle> Rectangles { get; } = new List<MarkerRectangle>();
     }
 
     internal sealed class MarkerDocument

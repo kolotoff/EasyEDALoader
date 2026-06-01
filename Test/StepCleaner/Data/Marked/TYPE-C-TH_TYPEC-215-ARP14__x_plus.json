@@ -1,0 +1,14 @@
+{
+  "Version": 1,
+  "ImageFile": "TYPE-C-TH_TYPEC-215-ARP14__x_plus.png",
+  "ImageWidth": 1600,
+  "ImageHeight": 1600,
+  "Rectangles": [
+    {
+      "X": 119,
+      "Y": 391,
+      "Width": 407,
+      "Height": 154
+    }
+  ]
+}
