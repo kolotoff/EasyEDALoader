@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Threading;
@@ -11,6 +12,7 @@ using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
+using System.Windows.Media.Media3D;
 using System.Windows.Threading;
 using Microsoft.Win32;
 using Newtonsoft.Json;
@@ -29,6 +31,18 @@ namespace EasyEDA_Loader
         private EeFootprint3dModel _currentModel;
         private Root _currentRoot;
         private bool _isRestoringSession;
+        private readonly AxisAngleRotation3D _objPreviewRotationX = new AxisAngleRotation3D(new Vector3D(1, 0, 0), -65);
+        private readonly AxisAngleRotation3D _objPreviewRotationY = new AxisAngleRotation3D(new Vector3D(0, 1, 0), -20);
+        private readonly ScaleTransform3D _objPreviewScale = new ScaleTransform3D(1, 1, 1);
+        private readonly TranslateTransform3D _objPreviewTranslate = new TranslateTransform3D();
+        private readonly Transform3DGroup _objPreviewTransform = new Transform3DGroup();
+        private Point _objPreviewDragStart;
+        private double _objPreviewDragStartRotationX;
+        private double _objPreviewDragStartRotationY;
+        private double _objPreviewDragStartTranslateX;
+        private double _objPreviewDragStartTranslateY;
+        private bool _isObjPreviewLeftDragging;
+        private bool _isObjPreviewRightDragging;
         private static readonly char[] PartNumberSeparators = { '\r', '\n', '\t', ' ', ',', ';', '|' };
         private static readonly string SessionStateFilePath = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
@@ -36,8 +50,6 @@ namespace EasyEDA_Loader
             "dialog-session.json");
 
         public List<ComponentSelection> SelectedComponents { get; private set; }
-        public bool SaveLibraryDocuments => saveLibraryDocumentsCheckBox?.IsChecked == true;
-        public bool CloseDocuments => closeDocumentsCheckBox?.IsChecked == true;
         public bool RemoveWatermark => removeWatermarkCheckBox?.IsChecked == true;
 
         public DialogWindow()
@@ -51,6 +63,10 @@ namespace EasyEDA_Loader
             SelectedComponents = new List<ComponentSelection>();
             
             resultsGrid.ItemsSource = searchResults;
+            _objPreviewTransform.Children.Add(_objPreviewScale);
+            _objPreviewTransform.Children.Add(new RotateTransform3D(_objPreviewRotationX));
+            _objPreviewTransform.Children.Add(new RotateTransform3D(_objPreviewRotationY));
+            _objPreviewTransform.Children.Add(_objPreviewTranslate);
 
             _footprintHelper = new CanvasZoomPanHelper(footprintCanvas);
             footprintCanvasView.ScrollChanged += (s, e) =>
@@ -216,8 +232,21 @@ namespace EasyEDA_Loader
                         {
                             try
                             {
-                                UpdatePreviewProgress("Rendering 3D projection...", 75);
+                                UpdatePreviewProgress("Rendering 3D projection...", 72);
                                 await ShowModelProjectionPreviewAsync(_currentModel, cancellationToken);
+                            }
+                            catch (OperationCanceledException)
+                            {
+                            }
+                            catch (Exception ex)
+                            {
+                                EasyEDALoaderModule.Trace($"3D projection preview failed: {ex}");
+                            }
+
+                            try
+                            {
+                                UpdatePreviewProgress("Loading OBJ preview...", 78);
+                                await ShowObjModelPreviewAsync(_currentModel, cancellationToken);
                             }
                             catch (OperationCanceledException)
                             {
@@ -285,16 +314,18 @@ namespace EasyEDA_Loader
         private void ClearModelPreview()
         {
             modelProjectionImage.Source = null;
+            objModelPreviewVisual.Content = null;
+            ResetObjPreviewTransform();
         }
 
         private async Task ShowModelProjectionPreviewAsync(EeFootprint3dModel modelInfo, CancellationToken cancellationToken)
         {
-            ClearModelPreview();
+            modelProjectionImage.Source = null;
 
             if (modelInfo == null)
                 return;
 
-            byte[] stepData = await Task.Run(() => Api.LoadModelAsync(modelInfo.Uuid, cancellationToken));
+            byte[] stepData = await ModelCache.GetStepModelAsync(Api, modelInfo.Uuid, cancellationToken);
             cancellationToken.ThrowIfCancellationRequested();
 
             if (stepData == null || stepData.Length == 0)
@@ -307,13 +338,37 @@ namespace EasyEDA_Loader
                 WriteMetadata = false
             };
 
-            byte[] projectionPng = await Task.Run(() => StepProjectionRenderer.ProjectSingleViewPng(stepData, "z_plus", options));
+            byte[] projectionPng = await Task.Run(() => StepProjectionRenderer.ProjectSingleViewPng(stepData, "z_plus", options), cancellationToken);
             cancellationToken.ThrowIfCancellationRequested();
 
             if (projectionPng == null || projectionPng.Length == 0)
                 return;
 
             modelProjectionImage.Source = LoadBitmapImage(projectionPng);
+        }
+
+        private async Task ShowObjModelPreviewAsync(EeFootprint3dModel modelInfo, CancellationToken cancellationToken)
+        {
+            objModelPreviewVisual.Content = null;
+            ResetObjPreviewTransform();
+
+            if (modelInfo == null)
+                return;
+
+            byte[] objData = await ModelCache.GetRawObjModelAsync(Api, modelInfo.Uuid, cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (objData == null || objData.Length == 0)
+                return;
+
+            Model3DGroup model = BuildObjPreviewModel(objData);
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (model == null)
+                return;
+
+            model.Transform = _objPreviewTransform;
+            objModelPreviewVisual.Content = model;
         }
 
         private static BitmapImage LoadBitmapImage(byte[] imageData)
@@ -329,6 +384,221 @@ namespace EasyEDA_Loader
             }
 
             return bitmap;
+        }
+
+        private static Model3DGroup BuildObjPreviewModel(byte[] objData)
+        {
+            var vertices = new List<Point3D>();
+            var indices = new List<int>();
+
+            using (var reader = new StringReader(System.Text.Encoding.UTF8.GetString(objData)))
+            {
+                string line;
+                while ((line = reader.ReadLine()) != null)
+                {
+                    line = line.Trim();
+                    if (line.Length == 0 || line.StartsWith("#", StringComparison.Ordinal))
+                        continue;
+
+                    string[] parts = line.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                    if (parts.Length == 0)
+                        continue;
+
+                    if (string.Equals(parts[0], "v", StringComparison.OrdinalIgnoreCase) && parts.Length >= 4)
+                    {
+                        if (double.TryParse(parts[1], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out double x) &&
+                            double.TryParse(parts[2], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out double y) &&
+                            double.TryParse(parts[3], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out double z))
+                            vertices.Add(new Point3D(x, y, z));
+                    }
+                    else if (string.Equals(parts[0], "f", StringComparison.OrdinalIgnoreCase) && parts.Length >= 4)
+                    {
+                        var face = new List<int>();
+                        for (int i = 1; i < parts.Length; i++)
+                        {
+                            if (TryParseObjVertexIndex(parts[i], vertices.Count, out int index))
+                                face.Add(index);
+                        }
+
+                        for (int i = 1; i + 1 < face.Count; i++)
+                        {
+                            indices.Add(face[0]);
+                            indices.Add(face[i]);
+                            indices.Add(face[i + 1]);
+                        }
+                    }
+                }
+            }
+
+            if (vertices.Count == 0 || indices.Count == 0)
+                return null;
+
+            Rect3D bounds = CalculateBounds(vertices);
+            double maxSize = Math.Max(bounds.SizeX, Math.Max(bounds.SizeY, bounds.SizeZ));
+            if (maxSize <= 0)
+                maxSize = 1;
+
+            var mesh = new MeshGeometry3D();
+            double scale = 2.2 / maxSize;
+            double centerX = bounds.X + bounds.SizeX / 2.0;
+            double centerY = bounds.Y + bounds.SizeY / 2.0;
+            double centerZ = bounds.Z + bounds.SizeZ / 2.0;
+
+            foreach (Point3D vertex in vertices)
+            {
+                mesh.Positions.Add(new Point3D(
+                    (vertex.X - centerX) * scale,
+                    (vertex.Y - centerY) * scale,
+                    (vertex.Z - centerZ) * scale));
+            }
+
+            foreach (int index in indices)
+                mesh.TriangleIndices.Add(index);
+
+            var material = new DiffuseMaterial(new SolidColorBrush(Color.FromRgb(180, 190, 205)));
+            var group = new Model3DGroup();
+            group.Children.Add(new AmbientLight(Color.FromRgb(70, 70, 70)));
+            group.Children.Add(new GeometryModel3D(mesh, material)
+            {
+                BackMaterial = material
+            });
+
+            return group;
+        }
+
+        private static bool TryParseObjVertexIndex(string token, int vertexCount, out int index)
+        {
+            index = -1;
+            string first = token.Split('/')[0];
+            if (!int.TryParse(first, out int objIndex) || objIndex == 0)
+                return false;
+
+            index = objIndex > 0 ? objIndex - 1 : vertexCount + objIndex;
+            return index >= 0 && index < vertexCount;
+        }
+
+        private static Rect3D CalculateBounds(IReadOnlyList<Point3D> vertices)
+        {
+            double minX = double.PositiveInfinity;
+            double minY = double.PositiveInfinity;
+            double minZ = double.PositiveInfinity;
+            double maxX = double.NegativeInfinity;
+            double maxY = double.NegativeInfinity;
+            double maxZ = double.NegativeInfinity;
+
+            foreach (Point3D vertex in vertices)
+            {
+                minX = Math.Min(minX, vertex.X);
+                minY = Math.Min(minY, vertex.Y);
+                minZ = Math.Min(minZ, vertex.Z);
+                maxX = Math.Max(maxX, vertex.X);
+                maxY = Math.Max(maxY, vertex.Y);
+                maxZ = Math.Max(maxZ, vertex.Z);
+            }
+
+            return new Rect3D(minX, minY, minZ, maxX - minX, maxY - minY, maxZ - minZ);
+        }
+
+        private void ResetObjPreviewTransform()
+        {
+            _objPreviewRotationX.Angle = -65;
+            _objPreviewRotationY.Angle = -20;
+            _objPreviewScale.ScaleX = 1;
+            _objPreviewScale.ScaleY = 1;
+            _objPreviewScale.ScaleZ = 1;
+            _objPreviewTranslate.OffsetX = 0;
+            _objPreviewTranslate.OffsetY = 0;
+            _objPreviewTranslate.OffsetZ = 0;
+            _isObjPreviewLeftDragging = false;
+            _isObjPreviewRightDragging = false;
+        }
+
+        private void ObjModelViewport_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+        {
+            if (objModelPreviewVisual.Content == null)
+                return;
+
+            _isObjPreviewLeftDragging = true;
+            _isObjPreviewRightDragging = false;
+            _objPreviewDragStart = e.GetPosition(objModelViewport);
+            _objPreviewDragStartRotationX = _objPreviewRotationX.Angle;
+            _objPreviewDragStartRotationY = _objPreviewRotationY.Angle;
+            objModelViewport.Focus();
+            objModelViewport.CaptureMouse();
+            e.Handled = true;
+        }
+
+        private void ObjModelViewport_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
+        {
+            if (!_isObjPreviewLeftDragging)
+                return;
+
+            _isObjPreviewLeftDragging = false;
+            if (!_isObjPreviewRightDragging)
+                objModelViewport.ReleaseMouseCapture();
+            e.Handled = true;
+        }
+
+        private void ObjModelViewport_MouseRightButtonDown(object sender, MouseButtonEventArgs e)
+        {
+            if (objModelPreviewVisual.Content == null)
+                return;
+
+            _isObjPreviewRightDragging = true;
+            _isObjPreviewLeftDragging = false;
+            _objPreviewDragStart = e.GetPosition(objModelViewport);
+            _objPreviewDragStartTranslateX = _objPreviewTranslate.OffsetX;
+            _objPreviewDragStartTranslateY = _objPreviewTranslate.OffsetY;
+            objModelViewport.Focus();
+            objModelViewport.CaptureMouse();
+            e.Handled = true;
+        }
+
+        private void ObjModelViewport_MouseRightButtonUp(object sender, MouseButtonEventArgs e)
+        {
+            if (!_isObjPreviewRightDragging)
+                return;
+
+            _isObjPreviewRightDragging = false;
+            if (!_isObjPreviewLeftDragging)
+                objModelViewport.ReleaseMouseCapture();
+            e.Handled = true;
+        }
+
+        private void ObjModelViewport_MouseMove(object sender, MouseEventArgs e)
+        {
+            if (objModelPreviewVisual.Content == null)
+                return;
+
+            Point current = e.GetPosition(objModelViewport);
+            double dx = current.X - _objPreviewDragStart.X;
+            double dy = current.Y - _objPreviewDragStart.Y;
+
+            if (_isObjPreviewLeftDragging)
+            {
+                _objPreviewRotationY.Angle = _objPreviewDragStartRotationY + dx * 0.6;
+                _objPreviewRotationX.Angle = _objPreviewDragStartRotationX + dy * 0.6;
+                e.Handled = true;
+            }
+            else if (_isObjPreviewRightDragging)
+            {
+                _objPreviewTranslate.OffsetX = _objPreviewDragStartTranslateX + dx / 120.0;
+                _objPreviewTranslate.OffsetY = _objPreviewDragStartTranslateY - dy / 120.0;
+                e.Handled = true;
+            }
+        }
+
+        private void ObjModelViewport_MouseWheel(object sender, MouseWheelEventArgs e)
+        {
+            if (objModelPreviewVisual.Content == null)
+                return;
+
+            double factor = e.Delta > 0 ? 1.1 : 1.0 / 1.1;
+            double scale = Math.Max(0.15, Math.Min(8.0, _objPreviewScale.ScaleX * factor));
+            _objPreviewScale.ScaleX = scale;
+            _objPreviewScale.ScaleY = scale;
+            _objPreviewScale.ScaleZ = scale;
+            e.Handled = true;
         }
 
         public void UpdateAddButtonState()
@@ -351,8 +621,6 @@ namespace EasyEDA_Loader
                 _isRestoringSession = true;
 
                 searchTextBox.Text = state.SearchText ?? string.Empty;
-                saveLibraryDocumentsCheckBox.IsChecked = state.SaveLibraryDocuments;
-                closeDocumentsCheckBox.IsChecked = state.CloseDocuments;
                 removeWatermarkCheckBox.IsChecked = state.RemoveWatermark ?? true;
 
                 searchResults.Clear();
@@ -408,8 +676,6 @@ namespace EasyEDA_Loader
                 var state = new DialogSessionState
                 {
                     SearchText = searchTextBox.Text,
-                    SaveLibraryDocuments = SaveLibraryDocuments,
-                    CloseDocuments = CloseDocuments,
                     RemoveWatermark = RemoveWatermark,
                     SelectedPart = (resultsGrid.SelectedItem as PartInfoViewModel)?.PartInfo?.Part,
                     Results = searchResults.Select(result => new DialogSessionResult
@@ -596,8 +862,6 @@ namespace EasyEDA_Loader
             importButton.IsEnabled = isEnabled;
             addToLibraryButton.IsEnabled = isEnabled && searchResults.Any(p => p.AddToLibrary);
             cancelButton.IsEnabled = isEnabled;
-            saveLibraryDocumentsCheckBox.IsEnabled = isEnabled;
-            closeDocumentsCheckBox.IsEnabled = isEnabled;
             removeWatermarkCheckBox.IsEnabled = isEnabled;
         }
 
@@ -727,7 +991,7 @@ namespace EasyEDA_Loader
                 {
                     Mouse.OverrideCursor = Cursors.Wait;
 
-                    var modelData = await Task.Run(() => Api.LoadModelAsync(_currentModel.Uuid, cts.Token));
+                    var modelData = await GetSelectedStepModelForSaveAsync(_currentModel, cts.Token);
 
                     if (modelData != null && modelData.Length > 0)
                     {
@@ -739,6 +1003,11 @@ namespace EasyEDA_Loader
                         MessageBox.Show("Failed to download model data.", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
                     }
                 }
+                catch (StepWatermarkCleanFailedException ex)
+                {
+                    ShowMarkdownReport(ex.ReportPath);
+                    MessageBox.Show($"Failed to clean model: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                }
                 catch (Exception ex)
                 {
                     MessageBox.Show($"Failed to save model: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
@@ -748,6 +1017,46 @@ namespace EasyEDA_Loader
                     Mouse.OverrideCursor = null;
                     saveModelButton.IsEnabled = _currentModel != null;
                 }
+            }
+        }
+
+        private async Task<byte[]> GetSelectedStepModelForSaveAsync(EeFootprint3dModel modelInfo, CancellationToken cancellationToken)
+        {
+            byte[] originalModel = await ModelCache.GetStepModelAsync(Api, modelInfo.Uuid, cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (!RemoveWatermark)
+                return originalModel;
+
+            return await Task.Run(() =>
+                StepWatermarkCleanVerifier.CleanOrThrow(
+                    originalModel,
+                    ModelCache.GetSafeFileName(modelInfo.Uuid ?? modelInfo.Name),
+                    Path.Combine(
+                        ModelCache.GetLocalDataRoot(),
+                        "StepCleanerReports",
+                        ModelCache.GetSafeFileName(modelInfo.Uuid ?? modelInfo.Name) +
+                        "_" +
+                        DateTime.Now.ToString("yyyyMMdd_HHmmss", System.Globalization.CultureInfo.InvariantCulture))),
+                cancellationToken);
+        }
+
+        private static void ShowMarkdownReport(string reportPath)
+        {
+            if (string.IsNullOrWhiteSpace(reportPath) || !File.Exists(reportPath))
+                return;
+
+            try
+            {
+                Process.Start(new ProcessStartInfo
+                {
+                    FileName = reportPath,
+                    UseShellExecute = true
+                });
+            }
+            catch (Exception ex)
+            {
+                EasyEDALoaderModule.Trace("Failed to open StepCleaner report: " + ex);
             }
         }
 
@@ -839,8 +1148,6 @@ namespace EasyEDA_Loader
     internal sealed class DialogSessionState
     {
         public string SearchText { get; set; }
-        public bool SaveLibraryDocuments { get; set; }
-        public bool CloseDocuments { get; set; }
         public bool? RemoveWatermark { get; set; }
         public string SelectedPart { get; set; }
         public List<DialogSessionResult> Results { get; set; }

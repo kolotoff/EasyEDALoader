@@ -71,7 +71,9 @@ namespace EasyEDA_Loader
             double? minZ = null;
             double? maxZ = null;
 
-            byte[] model = ctx.RawModelTask != null ? await ctx.RawModelTask : await new EasyedaApi().LoadRawModelAsync(Uuid, ctx.CancelToken);
+            byte[] model = ctx.RawModelTask != null
+                ? await ctx.RawModelTask
+                : await ModelCache.GetRawObjModelAsync(new EasyedaApi(), Uuid, ctx.CancelToken);
 
             using var reader = new StringReader(Encoding.UTF8.GetString(model));
 
@@ -106,12 +108,11 @@ namespace EasyEDA_Loader
         {
             try
             {
-                var modelTask = ctx.ModelTask ?? Task.Run(() => new EasyedaApi().LoadModelAsync(Uuid, ctx.CancelToken));
+                var modelTask = ctx.ModelTask ?? ModelCache.GetStepModelAsync(new EasyedaApi(), Uuid, ctx.CancelToken);
                 var zInfoTask = Task.Run(() => GetZInfoFromOrigin(ctx));
                 Task.WhenAll(modelTask, zInfoTask).Wait();
 
                 byte[] originalModel = modelTask.Result;
-                CacheOriginalModel(originalModel);
 
                 byte[] footprintModel = ctx.RemoveWatermark
                     ? StepWatermarkCleanVerifier.CleanOrThrow(originalModel, GetSafeCacheFileName(), CreateVerificationDirectory())
@@ -169,7 +170,7 @@ namespace EasyEDA_Loader
 
         private string CreateVerificationDirectory()
         {
-            string root = GetLocalDataRoot();
+            string root = ModelCache.GetLocalDataRoot();
             string reportName =
                 GetSafeCacheFileName() +
                 "_" +
@@ -177,26 +178,6 @@ namespace EasyEDA_Loader
             string reportDirectory = Path.Combine(root, "StepCleanerReports", reportName);
             Directory.CreateDirectory(reportDirectory);
             return reportDirectory;
-        }
-
-        private void CacheOriginalModel(byte[] modelData)
-        {
-            if (modelData == null || modelData.Length == 0)
-                return;
-
-            string cacheDirectory = Path.Combine(GetLocalDataRoot(), "ModelCache", "Original");
-            Directory.CreateDirectory(cacheDirectory);
-
-            string cachePath = Path.Combine(cacheDirectory, GetSafeCacheFileName() + ".step");
-            File.WriteAllBytes(cachePath, modelData);
-        }
-
-        private static string GetLocalDataRoot()
-        {
-            string localApplicationData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-            return string.IsNullOrWhiteSpace(localApplicationData)
-                ? Path.Combine(Path.GetTempPath(), "EasyEDA-Loader")
-                : Path.Combine(localApplicationData, "EasyEDA-Loader");
         }
 
         private static void ShowMarkdownReport(string reportPath)
@@ -224,7 +205,7 @@ namespace EasyEDA_Loader
             if (string.IsNullOrWhiteSpace(fileName))
                 fileName = Guid.NewGuid().ToString("N");
 
-            return GetSafeFileName(fileName);
+            return ModelCache.GetSafeFileName(fileName);
         }
 
         private static string FirstNonEmpty(params string[] values)
@@ -243,10 +224,7 @@ namespace EasyEDA_Loader
             if (string.IsNullOrWhiteSpace(fileName))
                 fileName = Guid.NewGuid().ToString("N");
 
-            foreach (char invalidChar in Path.GetInvalidFileNameChars())
-                fileName = fileName.Replace(invalidChar, '_');
-
-            return fileName;
+            return ModelCache.GetSafeFileName(fileName);
         }
 
         public class ModelZInfo

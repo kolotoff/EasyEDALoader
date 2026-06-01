@@ -259,8 +259,8 @@ namespace EasyEDA_Loader
                     EeFootprint3dModel model = selection.Include3dModel ? ee_footprint.GetModel() : null;
 
                     // Prefetch model if we can
-                    Task<byte[]> modelTask = model != null ? Task.Run(() => api.LoadModelAsync(model.Uuid, ctx.Token)) : null;
-                    Task<byte[]> rawModelTask = model != null ? Task.Run(() => api.LoadRawModelAsync(model.Uuid, ctx.Token)) : null;
+                    Task<byte[]> modelTask = model != null ? ModelCache.GetStepModelAsync(api, model.Uuid, ctx.Token) : null;
+                    Task<byte[]> rawModelTask = model != null ? ModelCache.GetRawObjModelAsync(api, model.Uuid, ctx.Token) : null;
 
                     // Get product info (use cached from search if available)
                     EasyedaApi.ProductInfo productInfo = selection.PartInfo?.Info;
@@ -302,8 +302,6 @@ namespace EasyEDA_Loader
                             };
                             ee_footprint.AddToComponent(libComp, footprintContext);
                             AltiumApi.GlobalVars.PCBServer.PostProcess();
-                            if (dialog.SaveLibraryDocuments)
-                                pcbDocument.DoFileSave("PcbLib");
                         }
                     }
 
@@ -324,8 +322,6 @@ namespace EasyEDA_Loader
                             AltiumApi.GlobalVars.PCBServer.PostProcess();
                             schLib.SetState_Current_SchComponent(component);
                             schLib.GraphicallyInvalidate();
-                            if (dialog.SaveLibraryDocuments)
-                                schDocument.DoFileSave("SchLib");
                         }
                     }
                 }
@@ -339,12 +335,6 @@ namespace EasyEDA_Loader
             if (currentDoc != null)
                 AltiumApi.GlobalVars.Client.ShowDocument(currentDoc);
 
-            // Close the library documents if requested
-            if (dialog.CloseDocuments)
-            {
-                AltiumApi.GlobalVars.Client.CloseDocument(pcbDocument);
-                AltiumApi.GlobalVars.Client.CloseDocument(schDocument);
-            }
         }
 
         private static IServerDocument GetCurrentDocument()

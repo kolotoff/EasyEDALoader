@@ -5,10 +5,10 @@
     xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
     mc:Ignorable="d"
     Title="EasyEDA Component Loader"
-    Height="600"
-    Width="1100"
+    Height="650"
+    Width="1480"
     MinHeight="500"
-    MinWidth="900"
+    MinWidth="1180"
     WindowStartupLocation="CenterScreen"
     ShowInTaskbar="False"
     ResizeMode="CanResize"
@@ -156,6 +156,7 @@
         <Grid.ColumnDefinitions>
             <ColumnDefinition Width="*"/>
             <ColumnDefinition Width="350"/>
+            <ColumnDefinition Width="380"/>
         </Grid.ColumnDefinitions>
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
@@ -290,16 +291,6 @@
             </Grid.ColumnDefinitions>
 
             <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
-                <CheckBox x:Name="saveLibraryDocumentsCheckBox"
-                          Content="Save library documents after adding"
-                          IsChecked="False"
-                          VerticalAlignment="Center"
-                          Margin="0,0,20,0"/>
-                <CheckBox x:Name="closeDocumentsCheckBox"
-                          Content="Close library documents after adding"
-                          IsChecked="False"
-                          VerticalAlignment="Center"
-                          Margin="0,0,20,0"/>
                 <CheckBox x:Name="removeWatermarkCheckBox"
                           Content="Remove Watermark"
                           IsChecked="True"
@@ -400,6 +391,51 @@
                            Stretch="Uniform"
                            HorizontalAlignment="Stretch"
                            VerticalAlignment="Stretch"/>
+                </Border>
+            </Grid>
+        </Border>
+
+        <Border Grid.Row="0" Grid.RowSpan="3" Grid.Column="2"
+                BorderBrush="{DynamicResource {x:Static SystemColors.ControlDarkBrushKey}}"
+                BorderThickness="1,0,0,0"
+                Padding="10">
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="*"/>
+                </Grid.RowDefinitions>
+
+                <TextBlock Grid.Row="0"
+                           Text="OBJ Model"
+                           FontSize="14"
+                           FontWeight="SemiBold"
+                           Margin="0,0,0,10"/>
+
+                <Border Grid.Row="1" Background="Black">
+                    <Viewport3D x:Name="objModelViewport"
+                                ClipToBounds="True"
+                                Focusable="True"
+                                MouseLeftButtonDown="ObjModelViewport_MouseLeftButtonDown"
+                                MouseLeftButtonUp="ObjModelViewport_MouseLeftButtonUp"
+                                MouseRightButtonDown="ObjModelViewport_MouseRightButtonDown"
+                                MouseRightButtonUp="ObjModelViewport_MouseRightButtonUp"
+                                MouseMove="ObjModelViewport_MouseMove"
+                                MouseWheel="ObjModelViewport_MouseWheel">
+                        <Viewport3D.Camera>
+                            <PerspectiveCamera x:Name="objModelCamera"
+                                               Position="0,0,4"
+                                               LookDirection="0,0,-4"
+                                               UpDirection="0,1,0"
+                                               FieldOfView="45"/>
+                        </Viewport3D.Camera>
+                        <ModelVisual3D>
+                            <ModelVisual3D.Content>
+                                <DirectionalLight Color="#FFFFFF"
+                                                  Direction="-0.4,-0.5,-1"/>
+                            </ModelVisual3D.Content>
+                        </ModelVisual3D>
+                        <ModelVisual3D x:Name="objModelPreviewVisual"/>
+                    </Viewport3D>
                 </Border>
             </Grid>
         </Border>
