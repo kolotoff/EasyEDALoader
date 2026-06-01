@@ -2308,6 +2308,9 @@ namespace EasyEDA_Loader
                     {
                         foreach (int pointId in data.GetPointIds(boundId, includeSurface: true))
                         {
+                            if (edits.ContainsKey(pointId))
+                                continue;
+
                             if (!data.TryGetPoint(pointId, out var point))
                                 continue;
 
@@ -3833,14 +3836,10 @@ namespace EasyEDA_Loader
                 if (componentFaces.Contains(faceId))
                     continue;
 
-                var faceBounds = data.GetBounds(faceId);
-                if (!faceBounds.HasValue)
+                if (!TryGetPlanarHostCandidateBounds(data, faceId, axis, options, out Bounds faceBounds))
                     continue;
 
-                if (faceBounds.Value.Size.Get(axis) > options.PlaneTolerance)
-                    continue;
-
-                double coordinate = (faceBounds.Value.Min.Get(axis) + faceBounds.Value.Max.Get(axis)) / 2.0;
+                double coordinate = (faceBounds.Min.Get(axis) + faceBounds.Max.Get(axis)) / 2.0;
                 double distance = Math.Min(
                     Math.Abs(coordinate - componentBounds.Min.Get(axis)),
                     Math.Abs(coordinate - componentBounds.Max.Get(axis)));
@@ -3848,7 +3847,7 @@ namespace EasyEDA_Loader
                 if (distance > options.HostPlaneSearchDistance)
                     continue;
 
-                if (!ProjectionIntersects(faceBounds.Value, componentBounds, axis, options.HostPlaneProjectionPadding))
+                if (!ProjectionIntersects(faceBounds, componentBounds, axis, options.HostPlaneProjectionPadding))
                     continue;
 
                 double colorWeight = 0.25;
@@ -3870,7 +3869,7 @@ namespace EasyEDA_Loader
                     }
                 }
 
-                double area = ProjectedArea(faceBounds.Value.Size, axis);
+                double area = ProjectedArea(faceBounds.Size, axis);
                 double score = colorWeight * area / Math.Max(distance, 0.0001);
                 if (best == null || score > best.Score)
                 {
@@ -3885,6 +3884,49 @@ namespace EasyEDA_Loader
             }
 
             return best;
+        }
+
+        private static bool TryGetPlanarHostCandidateBounds(
+            StepData data,
+            int faceId,
+            int axis,
+            StepWatermarkCleanerOptions options,
+            out Bounds bounds)
+        {
+            var faceBounds = data.GetBounds(faceId);
+            if (faceBounds.HasValue && faceBounds.Value.Size.Get(axis) <= options.PlaneTolerance)
+            {
+                bounds = faceBounds.Value;
+                return true;
+            }
+
+            Bounds bestOuterBounds = default;
+            double bestOuterArea = -1.0;
+            foreach (int boundId in data.GetAdvancedFaceBounds(faceId))
+            {
+                if (data.GetTypeName(boundId) != "FACE_OUTER_BOUND")
+                    continue;
+
+                var outerBounds = data.GetBounds(boundId);
+                if (!outerBounds.HasValue || outerBounds.Value.Size.Get(axis) > options.PlaneTolerance)
+                    continue;
+
+                double area = ProjectedArea(outerBounds.Value.Size, axis);
+                if (area <= bestOuterArea)
+                    continue;
+
+                bestOuterBounds = outerBounds.Value;
+                bestOuterArea = area;
+            }
+
+            if (bestOuterArea <= 0.0)
+            {
+                bounds = default;
+                return false;
+            }
+
+            bounds = bestOuterBounds;
+            return true;
         }
 
         private static HashSet<int> ExpandHostFaceBounds(

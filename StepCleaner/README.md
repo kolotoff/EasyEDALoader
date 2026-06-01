@@ -135,4 +135,8 @@ corrupted while ASCII STEP entities are edited.
 
 The EasyEDA loader dialog enables this by default with the `Remove Watermark`
 checkbox. When enabled, the downloaded original STEP is kept in the local model
-cache and the cleaned STEP bytes are used for the footprint 3D body.
+cache and the cleaned STEP bytes are used for the footprint 3D body. The cleaned
+model is also checked against the detected cleanup region before it is added to
+the footprint. If that verification fails, cleanup returns an error and writes a
+Markdown report with side-by-side projection PNGs under the local
+`EasyEDA-Loader\StepCleanerReports` folder.

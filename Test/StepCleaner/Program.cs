@@ -918,7 +918,7 @@ namespace StepCleaner.Tests
                 lines.Add(string.Empty);
 
                 if (wroteImage)
-                    lines.Add("![" + failure.FileName + " " + failure.ViewName + "](" + Path.GetFullPath(outputPath).Replace('\\', '/') + ")");
+                    lines.Add("![" + failure.FileName + " " + failure.ViewName + "](" + BuildMarkdownImagePath(reportPath, outputPath) + ")");
                 else
                     lines.Add("Could not create side-by-side image for this projection.");
 
@@ -1014,6 +1014,12 @@ namespace StepCleaner.Tests
                 "__" +
                 SanitizeFileName(failure.Category) +
                 ".png";
+        }
+
+        private static string BuildMarkdownImagePath(string reportPath, string imagePath)
+        {
+            string reportDirectory = Path.GetDirectoryName(Path.GetFullPath(reportPath)) ?? string.Empty;
+            return Path.GetRelativePath(reportDirectory, Path.GetFullPath(imagePath)).Replace('\\', '/');
         }
 
         private static string SanitizeFileName(string value)

@@ -1,6 +1,7 @@
 using Newtonsoft.Json;
 using PCB;
 using System;
+using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Text;
@@ -106,7 +107,7 @@ namespace EasyEDA_Loader
                 CacheOriginalModel(originalModel);
 
                 byte[] footprintModel = ctx.RemoveWatermark
-                    ? StepWatermarkCleaner.Clean(originalModel)
+                    ? StepWatermarkCleanVerifier.CleanOrThrow(originalModel, GetSafeCacheFileName(), CreateVerificationDirectory())
                     : originalModel;
 
                 string temp = Path.Combine(Path.GetTempPath(), $"{Uuid}.step");
@@ -127,6 +128,11 @@ namespace EasyEDA_Loader
 
                 File.Delete(temp);
             }
+            catch (StepWatermarkCleanFailedException ex)
+            {
+                ShowMarkdownReport(ex.ReportPath);
+                throw;
+            }
             catch (Exception ex)
             {
                 if (ctx.Exception != null && !ctx.Exception(ex))
@@ -136,21 +142,55 @@ namespace EasyEDA_Loader
             return true;
         }
 
+        private string CreateVerificationDirectory()
+        {
+            string root = GetLocalDataRoot();
+            string reportName =
+                GetSafeCacheFileName() +
+                "_" +
+                DateTime.Now.ToString("yyyyMMdd_HHmmss", CultureInfo.InvariantCulture);
+            string reportDirectory = Path.Combine(root, "StepCleanerReports", reportName);
+            Directory.CreateDirectory(reportDirectory);
+            return reportDirectory;
+        }
+
         private void CacheOriginalModel(byte[] modelData)
         {
             if (modelData == null || modelData.Length == 0)
                 return;
 
-            string localApplicationData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-            string cacheRoot = string.IsNullOrWhiteSpace(localApplicationData)
-                ? Path.Combine(Path.GetTempPath(), "EasyEDA-Loader")
-                : Path.Combine(localApplicationData, "EasyEDA-Loader");
-
-            string cacheDirectory = Path.Combine(cacheRoot, "ModelCache", "Original");
+            string cacheDirectory = Path.Combine(GetLocalDataRoot(), "ModelCache", "Original");
             Directory.CreateDirectory(cacheDirectory);
 
             string cachePath = Path.Combine(cacheDirectory, GetSafeCacheFileName() + ".step");
             File.WriteAllBytes(cachePath, modelData);
+        }
+
+        private static string GetLocalDataRoot()
+        {
+            string localApplicationData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+            return string.IsNullOrWhiteSpace(localApplicationData)
+                ? Path.Combine(Path.GetTempPath(), "EasyEDA-Loader")
+                : Path.Combine(localApplicationData, "EasyEDA-Loader");
+        }
+
+        private static void ShowMarkdownReport(string reportPath)
+        {
+            if (string.IsNullOrWhiteSpace(reportPath) || !File.Exists(reportPath))
+                return;
+
+            try
+            {
+                Process.Start(new ProcessStartInfo
+                {
+                    FileName = reportPath,
+                    UseShellExecute = true
+                });
+            }
+            catch (Exception ex)
+            {
+                EasyEDALoaderModule.Trace("Failed to open StepCleaner report: " + ex);
+            }
         }
 
         private string GetSafeCacheFileName()
