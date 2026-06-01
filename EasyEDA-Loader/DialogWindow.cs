@@ -164,6 +164,8 @@ namespace EasyEDA_Loader
             _cleanF3DPreview = CreateF3DPreviewHost("Clean STEP");
             f3dOriginalModelHost.Child = _originalF3DPreview.Panel;
             f3dCleanModelHost.Child = _cleanF3DPreview.Panel;
+            LocationChanged += (s, e) => UpdateF3DPreviewScreenBounds();
+            SizeChanged += (s, e) => UpdateF3DPreviewScreenBounds();
 
             _footprintHelper = new CanvasZoomPanHelper(footprintCanvas);
             footprintCanvasView.ScrollChanged += (s, e) =>
@@ -541,7 +543,11 @@ namespace EasyEDA_Loader
                 }
             };
 
-            host.Panel.Resize += (s, e) => ResizeEmbeddedF3DWindow(host);
+            host.Panel.Resize += (s, e) =>
+            {
+                ResizeEmbeddedF3DWindow(host);
+                UpdateF3DPreviewScreenBounds(host);
+            };
             return host;
         }
 
@@ -665,6 +671,7 @@ namespace EasyEDA_Loader
                 return;
 
             preview.WindowHandle = IntPtr.Zero;
+            preview.HasScreenBounds = false;
             if (preview.Process == null)
                 return;
 
@@ -703,6 +710,7 @@ namespace EasyEDA_Loader
             SetF3DPreviewEnabled(_cleanF3DPreview, true);
             _f3dMouseButtonState = 0;
             _f3dInputSource = null;
+            UpdateF3DPreviewScreenBounds();
             _f3dInputReady = true;
             EnsureF3DMouseHook();
         }
@@ -752,21 +760,28 @@ namespace EasyEDA_Loader
         {
             return _f3dInputReady &&
                    _f3dMouseHook != IntPtr.Zero &&
-                   IsPreviewReady(_originalF3DPreview) &&
-                   IsPreviewReady(_cleanF3DPreview);
+                   _originalF3DPreview?.WindowHandle != IntPtr.Zero &&
+                   _cleanF3DPreview?.WindowHandle != IntPtr.Zero &&
+                   _originalF3DPreview.HasScreenBounds &&
+                   _cleanF3DPreview.HasScreenBounds;
         }
 
         private void MirrorF3DMouseInput(int message, LowLevelMouseHookStruct hookData)
         {
+            if (_f3dInputSource != null &&
+                message == WmMouseMove &&
+                !PreviewContainsScreenPoint(_f3dInputSource, hookData.Point))
+            {
+                ReleaseF3DDrag(_f3dInputSource, hookData.Point);
+                return;
+            }
+
             F3DPreviewHost source = _f3dInputSource ?? GetPreviewUnderPoint(hookData.Point);
             if (message == WmLButtonDown || message == WmRButtonDown || message == WmMButtonDown)
                 source = GetPreviewUnderPoint(hookData.Point);
 
             if (source == null)
                 return;
-
-            if (message == WmLButtonDown || message == WmRButtonDown || message == WmMButtonDown)
-                EasyEDALoaderModule.Trace("F3D sync source: " + source.Name);
 
             F3DPreviewHost target = ReferenceEquals(source, _originalF3DPreview)
                 ? _cleanF3DPreview
@@ -816,16 +831,63 @@ namespace EasyEDA_Loader
             }
         }
 
+        private void ReleaseF3DDrag(F3DPreviewHost source, NativePoint screenPoint)
+        {
+            if (source == null || _f3dMouseButtonState == 0)
+                return;
+
+            F3DPreviewHost target = ReferenceEquals(source, _originalF3DPreview)
+                ? _cleanF3DPreview
+                : _originalF3DPreview;
+
+            int currentState = _f3dMouseButtonState;
+            ReleaseF3DButton(source, target, WmLButtonUp, MkLButton, ref currentState, screenPoint);
+            ReleaseF3DButton(source, target, WmRButtonUp, MkRButton, ref currentState, screenPoint);
+            ReleaseF3DButton(source, target, WmMButtonUp, MkMButton, ref currentState, screenPoint);
+
+            _f3dMouseButtonState = 0;
+            _f3dInputSource = null;
+        }
+
+        private static void ReleaseF3DButton(
+            F3DPreviewHost source,
+            F3DPreviewHost target,
+            int message,
+            int buttonMask,
+            ref int currentState,
+            NativePoint screenPoint)
+        {
+            if ((currentState & buttonMask) == 0)
+                return;
+
+            currentState &= ~buttonMask;
+            SendF3DMouseMessage(source, source, message, currentState, screenPoint);
+            SendF3DMouseMessage(source, target, message, currentState, screenPoint);
+        }
+
         private void SendMirroredF3DMouseMessage(
             F3DPreviewHost source,
             F3DPreviewHost target,
             int message,
             NativePoint screenPoint)
         {
+            SendF3DMouseMessage(source, target, message, _f3dMouseButtonState, screenPoint);
+        }
+
+        private static void SendF3DMouseMessage(
+            F3DPreviewHost source,
+            F3DPreviewHost target,
+            int message,
+            int buttonState,
+            NativePoint screenPoint)
+        {
+            if (source == null || !IsPreviewReady(target))
+                return;
+
             NativePoint sourcePoint = screenPoint;
             ScreenToClient(source.WindowHandle, ref sourcePoint);
             NativePoint targetPoint = MapClientPointBetweenPreviews(source, target, sourcePoint);
-            SendMessage(target.WindowHandle, message, new IntPtr(_f3dMouseButtonState), MakeLParam(targetPoint.X, targetPoint.Y));
+            SendMessage(target.WindowHandle, message, new IntPtr(buttonState), MakeLParam(targetPoint.X, targetPoint.Y));
         }
 
         private void SendMirroredF3DWheel(F3DPreviewHost source, F3DPreviewHost target, NativePoint screenPoint, int delta)
@@ -848,28 +910,52 @@ namespace EasyEDA_Loader
 
         private static bool PreviewContainsScreenPoint(F3DPreviewHost preview, NativePoint screenPoint)
         {
-            if (!IsPreviewReady(preview))
+            if (preview == null || !preview.HasScreenBounds)
                 return false;
 
-            if (preview.Panel != null)
-            {
-                System.Drawing.Rectangle panelRect = preview.Panel.RectangleToScreen(preview.Panel.ClientRectangle);
-                if (screenPoint.X >= panelRect.Left &&
-                    screenPoint.X < panelRect.Right &&
-                    screenPoint.Y >= panelRect.Top &&
-                    screenPoint.Y < panelRect.Bottom)
-                {
-                    return true;
-                }
-            }
-
-            if (!GetWindowRect(preview.WindowHandle, out NativeRect rect))
-                return false;
+            NativeRect rect = preview.ScreenBounds;
 
             return screenPoint.X >= rect.Left &&
                    screenPoint.X < rect.Right &&
                    screenPoint.Y >= rect.Top &&
                    screenPoint.Y < rect.Bottom;
+        }
+
+        private void UpdateF3DPreviewScreenBounds()
+        {
+            UpdateF3DPreviewScreenBounds(_originalF3DPreview);
+            UpdateF3DPreviewScreenBounds(_cleanF3DPreview);
+        }
+
+        private static void UpdateF3DPreviewScreenBounds(F3DPreviewHost preview)
+        {
+            if (preview == null)
+                return;
+
+            preview.HasScreenBounds = false;
+
+            if (preview.Panel != null && preview.Panel.IsHandleCreated)
+            {
+                System.Drawing.Rectangle rect = preview.Panel.RectangleToScreen(preview.Panel.ClientRectangle);
+                if (rect.Width > 0 && rect.Height > 0)
+                {
+                    preview.ScreenBounds = new NativeRect
+                    {
+                        Left = rect.Left,
+                        Top = rect.Top,
+                        Right = rect.Right,
+                        Bottom = rect.Bottom
+                    };
+                    preview.HasScreenBounds = true;
+                    return;
+                }
+            }
+
+            if (preview.WindowHandle != IntPtr.Zero && GetWindowRect(preview.WindowHandle, out NativeRect windowRect))
+            {
+                preview.ScreenBounds = windowRect;
+                preview.HasScreenBounds = windowRect.Right > windowRect.Left && windowRect.Bottom > windowRect.Top;
+            }
         }
 
         private static NativePoint MapClientPointBetweenPreviews(F3DPreviewHost source, F3DPreviewHost target, NativePoint sourcePoint)
@@ -964,6 +1050,8 @@ namespace EasyEDA_Loader
             public Forms.Panel Panel { get; set; }
             public Process Process { get; set; }
             public IntPtr WindowHandle { get; set; }
+            public NativeRect ScreenBounds { get; set; }
+            public bool HasScreenBounds { get; set; }
         }
 
         public void UpdateAddButtonState()
