@@ -1,6 +1,7 @@
 using EasyEDA_Loader;
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Linq;
@@ -48,6 +49,7 @@ namespace StepCleaner.Tests
                 var detectionViewNamesByFileName = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
                 var failures = new List<string>();
                 var visualFailures = new List<ProjectionVisualFailure>();
+                var projectionTimings = new ProjectionVerificationTimings();
 
                 if (originalFiles.Count == 0)
                     failures.Add("No STEP files were found in Original.");
@@ -96,7 +98,9 @@ namespace StepCleaner.Tests
 
                 var verificationProjectionOptions = CreateVerificationProjectionOptions();
                 ClearProjectionFiles(cleanProjectionDirectory, generatedCleanByName.Keys);
-                StepProjectionRenderer.ProjectDirectory(cleanDirectory, cleanProjectionDirectory, verificationProjectionOptions);
+                projectionTimings.Measure(
+                    "clean_projection_render_ms",
+                    () => StepProjectionRenderer.ProjectDirectory(cleanDirectory, cleanProjectionDirectory, verificationProjectionOptions));
 
                 VerifyPostCleanProjections(
                     originalFiles,
@@ -105,6 +109,7 @@ namespace StepCleaner.Tests
                     cleanProjectionDirectory,
                     verificationProjectionOptions,
                     detectionViewNamesByFileName,
+                    projectionTimings,
                     failures,
                     visualFailures);
 
@@ -116,15 +121,19 @@ namespace StepCleaner.Tests
                     validatedProjectionDirectory,
                     verificationProjectionOptions,
                     detectionViewNamesByFileName,
+                    projectionTimings,
                     failures,
                     visualFailures);
 
-                WriteFailedProjectionReport(
-                    failedProjectionReportPath,
-                    failedProjectionReportDirectory,
-                    visualFailures);
+                projectionTimings.Measure(
+                    "failed_projection_report_ms",
+                    () => WriteFailedProjectionReport(
+                        failedProjectionReportPath,
+                        failedProjectionReportDirectory,
+                        visualFailures));
                 if (visualFailures.Count > 0)
                     Console.WriteLine("Failed projection report: " + failedProjectionReportPath);
+                projectionTimings.WriteToConsole();
 
                 if (failures.Count > 0)
                 {
@@ -157,6 +166,7 @@ namespace StepCleaner.Tests
             string cleanProjectionDirectory,
             StepProjectionOptions projectionOptions,
             Dictionary<string, List<string>> detectionViewNamesByFileName,
+            ProjectionVerificationTimings projectionTimings,
             List<string> failures,
             List<ProjectionVisualFailure> visualFailures)
         {
@@ -180,12 +190,16 @@ namespace StepCleaner.Tests
                     continue;
                 }
 
-                var detectionReport = StepWatermarkCleaner.Detect(File.ReadAllBytes(originalFile), new StepWatermarkCleanerOptions());
-                var detectionRegions = StepProjectionRenderer.ProjectDetectionRegions(
+                var detectionReport = projectionTimings.Measure(
+                    "post_clean_detection_ms",
+                    () => StepWatermarkCleaner.Detect(File.ReadAllBytes(originalFile), new StepWatermarkCleanerOptions()));
+                var detectionRegions = projectionTimings.Measure(
+                    "post_clean_detection_region_projection_ms",
+                    () => StepProjectionRenderer.ProjectDetectionRegions(
                         originalFile,
                         detectionReport,
                         projectionOptions)
-                    .ToList();
+                    .ToList());
 
                 string modelName = Path.GetFileNameWithoutExtension(fileName);
                 var detectedViewNames = detectionRegions
@@ -198,7 +212,9 @@ namespace StepCleaner.Tests
                     continue;
 
                 var renderOptions = CreateProjectionOptionsForViews(detectedViewNames, projectionOptions);
-                StepProjectionRenderer.ProjectFile(originalFile, originalProjectionDirectory, renderOptions);
+                projectionTimings.Measure(
+                    "original_detection_side_projection_render_ms",
+                    () => StepProjectionRenderer.ProjectFile(originalFile, originalProjectionDirectory, renderOptions));
 
                 foreach (string viewName in detectedViewNames)
                 {
@@ -221,14 +237,16 @@ namespace StepCleaner.Tests
                         .Where(region => string.Equals(region.ViewName, viewName, StringComparison.OrdinalIgnoreCase))
                         .ToList();
 
-                    VerifyPostCleanProjectionImage(
-                        fileName,
-                        viewName,
-                        originalProjectionPath,
-                        cleanProjectionPath,
-                        viewRegions,
-                        failures,
-                        visualFailures);
+                    projectionTimings.Measure(
+                        "original_vs_clean_projection_compare_ms",
+                        () => VerifyPostCleanProjectionImage(
+                            fileName,
+                            viewName,
+                            originalProjectionPath,
+                            cleanProjectionPath,
+                            viewRegions,
+                            failures,
+                            visualFailures));
 
                     comparedImages++;
                     checkedRegions += viewRegions.Count;
@@ -549,16 +567,30 @@ namespace StepCleaner.Tests
 
             Directory.CreateDirectory(detectionDirectory);
 
+            Stopwatch stopwatch = Stopwatch.StartNew();
+            var expectedNames = GetMarkedDetectionImageNames(markedDirectory, originalBaseNames);
+            var expectedSet = new HashSet<string>(expectedNames, StringComparer.OrdinalIgnoreCase);
             foreach (string staleImage in Directory.GetFiles(detectionDirectory, "*.png"))
-                File.Delete(staleImage);
+            {
+                if (!expectedSet.Contains(Path.GetFileName(staleImage)))
+                    File.Delete(staleImage);
+            }
 
+            int regeneratedModels = 0;
+            int cachedModels = 0;
             foreach (string originalFile in originalFiles)
             {
-                var detectionReport = StepWatermarkCleaner.Detect(File.ReadAllBytes(originalFile), new StepWatermarkCleanerOptions());
                 var markedRegions = StepWatermarkCleaner.LoadMarkedRegionsForStepFile(
                     originalFile,
                     projectionDirectory,
                     markedDirectory);
+                if (IsDetectionDebugImageCacheFresh(originalFile, markedRegions, detectionDirectory))
+                {
+                    cachedModels++;
+                    continue;
+                }
+
+                var detectionReport = StepWatermarkCleaner.Detect(File.ReadAllBytes(originalFile), new StepWatermarkCleanerOptions());
 
                 StepProjectionRenderer.ProjectDetectionFile(
                     originalFile,
@@ -569,19 +601,27 @@ namespace StepCleaner.Tests
                         WriteMetadata = false
                     },
                     markedRegions);
+                regeneratedModels++;
             }
 
-            var expectedNames = GetMarkedDetectionImageNames(markedDirectory, originalBaseNames);
             var actualNames = Directory.GetFiles(detectionDirectory, "*.png")
                 .Select(Path.GetFileName)
                 .OrderBy(name => name, StringComparer.OrdinalIgnoreCase)
                 .ToList();
 
+            stopwatch.Stop();
             Console.WriteLine(
                 "Detection debug images: marked=" +
                 expectedNames.Count.ToString(CultureInfo.InvariantCulture) +
                 ", generated=" +
-                actualNames.Count.ToString(CultureInfo.InvariantCulture));
+                actualNames.Count.ToString(CultureInfo.InvariantCulture) +
+                ", regenerated models=" +
+                regeneratedModels.ToString(CultureInfo.InvariantCulture) +
+                ", cached models=" +
+                cachedModels.ToString(CultureInfo.InvariantCulture) +
+                ", elapsed=" +
+                stopwatch.ElapsedMilliseconds.ToString(CultureInfo.InvariantCulture) +
+                " ms");
 
             if (actualNames.Count != expectedNames.Count)
             {
@@ -593,7 +633,6 @@ namespace StepCleaner.Tests
                     ".");
             }
 
-            var expectedSet = new HashSet<string>(expectedNames, StringComparer.OrdinalIgnoreCase);
             var actualSet = new HashSet<string>(actualNames, StringComparer.OrdinalIgnoreCase);
 
             foreach (string expectedName in expectedNames)
@@ -607,6 +646,62 @@ namespace StepCleaner.Tests
                 if (!expectedSet.Contains(actualName))
                     failures.Add("Detection debug image has no matching marked side: " + actualName);
             }
+        }
+
+        private static bool IsDetectionDebugImageCacheFresh(
+            string originalFile,
+            IReadOnlyList<StepWatermarkMarkedRegion> markedRegions,
+            string detectionDirectory)
+        {
+            if (markedRegions == null || markedRegions.Count == 0)
+                return true;
+
+            DateTime latestInputWriteTimeUtc = GetLatestDetectionDebugInputWriteTimeUtc(originalFile, markedRegions);
+            foreach (StepWatermarkMarkedRegion region in markedRegions)
+            {
+                string markerPath = region.SourceMarkerPath;
+                if (string.IsNullOrEmpty(markerPath))
+                    return false;
+
+                string outputPath = Path.Combine(
+                    detectionDirectory,
+                    Path.GetFileNameWithoutExtension(markerPath) + ".png");
+                if (!File.Exists(outputPath))
+                    return false;
+
+                if (File.GetLastWriteTimeUtc(outputPath) < latestInputWriteTimeUtc)
+                    return false;
+            }
+
+            return true;
+        }
+
+        private static DateTime GetLatestDetectionDebugInputWriteTimeUtc(
+            string originalFile,
+            IReadOnlyList<StepWatermarkMarkedRegion> markedRegions)
+        {
+            DateTime latest = File.GetLastWriteTimeUtc(originalFile);
+            AddLatestWriteTimeUtc(ref latest, typeof(Program).Assembly.Location);
+            AddLatestWriteTimeUtc(ref latest, typeof(StepWatermarkCleaner).Assembly.Location);
+            AddLatestWriteTimeUtc(ref latest, typeof(StepProjectionRenderer).Assembly.Location);
+
+            foreach (StepWatermarkMarkedRegion region in markedRegions)
+            {
+                AddLatestWriteTimeUtc(ref latest, region.SourceMarkerPath);
+                AddLatestWriteTimeUtc(ref latest, region.SourceProjectionPath);
+            }
+
+            return latest;
+        }
+
+        private static void AddLatestWriteTimeUtc(ref DateTime latest, string path)
+        {
+            if (string.IsNullOrEmpty(path) || !File.Exists(path))
+                return;
+
+            DateTime writeTime = File.GetLastWriteTimeUtc(path);
+            if (writeTime > latest)
+                latest = writeTime;
         }
 
         private static List<string> GetMarkedDetectionImageNames(string markedDirectory, HashSet<string> originalBaseNames)
@@ -645,6 +740,7 @@ namespace StepCleaner.Tests
             string validatedProjectionDirectory,
             StepProjectionOptions projectionOptions,
             Dictionary<string, List<string>> detectionViewNamesByFileName,
+            ProjectionVerificationTimings projectionTimings,
             List<string> failures,
             List<ProjectionVisualFailure> visualFailures)
         {
@@ -657,7 +753,9 @@ namespace StepCleaner.Tests
 
             ClearProjectionFiles(validatedProjectionDirectory, matchedFileNames);
 
-            StepProjectionRenderer.ProjectDirectory(validatedDirectory, validatedProjectionDirectory, projectionOptions);
+            projectionTimings.Measure(
+                "validated_projection_render_ms",
+                () => StepProjectionRenderer.ProjectDirectory(validatedDirectory, validatedProjectionDirectory, projectionOptions));
 
             int comparedImages = 0;
             foreach (string fileName in matchedFileNames)
@@ -684,7 +782,10 @@ namespace StepCleaner.Tests
                         continue;
                     }
 
-                    if (!ProjectionPixelsEqual(cleanProjectionPath, validatedProjectionPath))
+                    bool projectionsEqual = projectionTimings.Measure(
+                        "clean_vs_validated_projection_compare_ms",
+                        () => ProjectionPixelsEqual(cleanProjectionPath, validatedProjectionPath));
+                    if (!projectionsEqual)
                     {
                         string message =
                             fileName +
@@ -970,6 +1071,65 @@ namespace StepCleaner.Tests
             public string LeftImagePath { get; set; }
             public string RightLabel { get; set; }
             public string RightImagePath { get; set; }
+        }
+
+        private sealed class ProjectionVerificationTimings
+        {
+            private readonly Dictionary<string, long> _elapsedByStage = new Dictionary<string, long>(StringComparer.Ordinal);
+            private readonly List<string> _stageOrder = new List<string>();
+
+            public void Measure(string stageName, Action action)
+            {
+                Stopwatch stopwatch = Stopwatch.StartNew();
+                try
+                {
+                    action();
+                }
+                finally
+                {
+                    stopwatch.Stop();
+                    Add(stageName, stopwatch.ElapsedMilliseconds);
+                }
+            }
+
+            public T Measure<T>(string stageName, Func<T> action)
+            {
+                Stopwatch stopwatch = Stopwatch.StartNew();
+                try
+                {
+                    return action();
+                }
+                finally
+                {
+                    stopwatch.Stop();
+                    Add(stageName, stopwatch.ElapsedMilliseconds);
+                }
+            }
+
+            public void WriteToConsole()
+            {
+                Console.WriteLine("Projection verification timings:");
+                long total = 0;
+                foreach (string stageName in _stageOrder)
+                {
+                    long elapsed = _elapsedByStage[stageName];
+                    total += elapsed;
+                    Console.WriteLine("  " + stageName + "=" + elapsed.ToString(CultureInfo.InvariantCulture) + " ms");
+                }
+
+                Console.WriteLine("  total_measured_projection_verification_ms=" + total.ToString(CultureInfo.InvariantCulture) + " ms");
+            }
+
+            private void Add(string stageName, long elapsedMilliseconds)
+            {
+                if (!_elapsedByStage.ContainsKey(stageName))
+                {
+                    _elapsedByStage.Add(stageName, 0);
+                    _stageOrder.Add(stageName);
+                }
+
+                _elapsedByStage[stageName] += elapsedMilliseconds;
+            }
         }
 
         private static List<string> GetStepFiles(string directory)
