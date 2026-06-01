@@ -84,7 +84,7 @@ Current cleanup notes:
   watermarks are removed and the gold pads are preserved.
 - `USB-A-TH_FUS264-FDSW3K.step` is considered cleaned; the watermark cut is
   flattened/removed in projection review.
-- `SOT-89-3_L4.3-W2.5-H1.6-LS4.1-P1.50.step` is not fully cleaned.
+- `SOT-89-3_L4.3-W2.5-H1.6-LS4.1-P1.50.step` is considered cleaned; the raised top watermark is flattened/removed in projection review.
 
 ## Projection marking workflow
 

@@ -3415,55 +3415,28 @@ namespace EasyEDA_Loader
                             continue;
                     }
 
-                    var hostBoundsToRemove = new HashSet<int>();
-                    foreach (int boundId in data.GetMatchingInnerFaceBounds(host.HostFaceId, componentBounds.Value, host.Axis, options.HostPlaneProjectionPadding)
-                        .Where(boundId => EntityInsideDetectedRegion(data, boundId, componentBounds.Value, host.Axis, options.HostPlaneProjectionPadding)))
-                        hostBoundsToRemove.Add(boundId);
-
-                    if (hostBoundsToRemove.Count > 0)
-                    {
-                        foreach (int boundId in ExpandHostFaceBounds(data, host.HostFaceId, hostBoundsToRemove, options))
-                            hostBoundsToRemove.Add(boundId);
-                    }
-
-                    bool removedBoundaryHostBounds = false;
-                    if (hostBoundsToRemove.Count > 0 && host.HostFaceId.HasValue)
-                    {
-                        var hostFaceBounds = data.GetBounds(host.HostFaceId.Value);
-                        if (hostFaceBounds.HasValue)
-                        {
-                            double hostEdgeMargin = GetAutomaticEdgeMargin(hostFaceBounds.Value, host.Axis);
-                            var filteredHostBounds = new HashSet<int>();
-                            foreach (int boundId in hostBoundsToRemove)
-                            {
-                                var boundBounds = data.GetBounds(boundId);
-                                if (boundBounds.HasValue &&
-                                    TouchesProjectedBoundary(boundBounds.Value, hostFaceBounds.Value, host.Axis, hostEdgeMargin))
-                                {
-                                    removedBoundaryHostBounds = true;
-                                    continue;
-                                }
-
-                                filteredHostBounds.Add(boundId);
-                            }
-
-                            hostBoundsToRemove = filteredHostBounds;
-                        }
-                    }
-
-                    if (removedBoundaryHostBounds && hostBoundsToRemove.Count == 0)
-                        continue;
+                    var hostBoundsToRemoveByFace = FindMatchingHostFaceBoundsInsideDetectedRegion(
+                        data,
+                        ownerInfo,
+                        componentBounds.Value,
+                        host.Axis,
+                        options);
 
                     var facesToRemove = new HashSet<int>(removableComponentFaces);
-                    if (hostBoundsToRemove.Count > 0)
+                    foreach (var hostBoundGroup in hostBoundsToRemoveByFace)
                     {
-                        var hostFaceBounds = host.HostFaceId.HasValue
-                            ? data.GetBounds(host.HostFaceId.Value)
-                            : null;
+                        int loopHostFaceId = hostBoundGroup.Key;
+                        var loopHost = new HostPlaneMatch
+                        {
+                            Axis = host.Axis,
+                            TargetCoordinate = host.TargetCoordinate,
+                            HostFaceId = loopHostFaceId
+                        };
+                        var hostFaceBounds = data.GetBounds(loopHostFaceId);
                         double hostEdgeMargin = hostFaceBounds.HasValue
                             ? GetAutomaticEdgeMargin(hostFaceBounds.Value, host.Axis)
                             : 0.0;
-                        foreach (int adjacentFaceId in FindHostLoopAdjacentFaces(data, ownerInfo, host, hostBoundsToRemove, options, componentBounds.Value))
+                        foreach (int adjacentFaceId in FindHostLoopAdjacentFaces(data, ownerInfo, loopHost, hostBoundGroup.Value, options, componentBounds.Value))
                         {
                             if (HasProtectedNonWatermarkColor(adjacentFaceId, styledByTarget, options))
                                 continue;
@@ -3516,7 +3489,7 @@ namespace EasyEDA_Loader
 
                     if (changedPoints == 0)
                     {
-                        if (hostBoundsToRemove.Count == 0 && !coplanarOverlay)
+                        if (hostBoundsToRemoveByFace.Count == 0 && !coplanarOverlay)
                             continue;
                     }
 
@@ -3530,15 +3503,16 @@ namespace EasyEDA_Loader
                             result.ReplacementFaceByRemovedFace[faceId] = host.HostFaceId.Value;
                     }
 
-                    foreach (int boundId in hostBoundsToRemove)
+                    foreach (var hostBoundGroup in hostBoundsToRemoveByFace)
                     {
-                        if (!result.HostFaceBoundsToRemove.TryGetValue(host.HostFaceId.Value, out var boundIds))
+                        if (!result.HostFaceBoundsToRemove.TryGetValue(hostBoundGroup.Key, out var boundIds))
                         {
                             boundIds = new HashSet<int>();
-                            result.HostFaceBoundsToRemove.Add(host.HostFaceId.Value, boundIds);
+                            result.HostFaceBoundsToRemove.Add(hostBoundGroup.Key, boundIds);
                         }
 
-                        boundIds.Add(boundId);
+                        foreach (int boundId in hostBoundGroup.Value)
+                            boundIds.Add(boundId);
                     }
 
                     result.FlattenedFaceCount += addedFaceCount;
@@ -3927,6 +3901,43 @@ namespace EasyEDA_Loader
 
             bounds = bestOuterBounds;
             return true;
+        }
+
+        private static Dictionary<int, HashSet<int>> FindMatchingHostFaceBoundsInsideDetectedRegion(
+            StepData data,
+            SolidInfo ownerInfo,
+            Bounds detectedRegion,
+            int axis,
+            StepWatermarkCleanerOptions options)
+        {
+            var result = new Dictionary<int, HashSet<int>>();
+            foreach (int faceId in ownerInfo.FaceIds)
+            {
+                var matchedBounds = new HashSet<int>(
+                    data.GetMatchingInnerFaceBounds(faceId, detectedRegion, axis, options.HostPlaneProjectionPadding)
+                        .Where(boundId => EntityInsideDetectedRegion(data, boundId, detectedRegion, axis, options.HostPlaneProjectionPadding)));
+                if (matchedBounds.Count == 0)
+                    continue;
+
+                foreach (int expandedBoundId in ExpandHostFaceBounds(data, faceId, matchedBounds, options))
+                    matchedBounds.Add(expandedBoundId);
+
+                if (TryGetPlanarHostCandidateBounds(data, faceId, axis, options, out Bounds hostBounds))
+                {
+                    double hostEdgeMargin = GetAutomaticEdgeMargin(hostBounds, axis);
+                    matchedBounds.RemoveWhere(boundId =>
+                    {
+                        var boundBounds = data.GetBounds(boundId);
+                        return boundBounds.HasValue &&
+                            TouchesProjectedBoundary(boundBounds.Value, hostBounds, axis, hostEdgeMargin);
+                    });
+                }
+
+                if (matchedBounds.Count > 0)
+                    result[faceId] = matchedBounds;
+            }
+
+            return result;
         }
 
         private static HashSet<int> ExpandHostFaceBounds(

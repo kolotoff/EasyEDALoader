@@ -1057,7 +1057,7 @@ namespace StepCleaner.Tests
             {
                 "LED-SMD_XL-3838UV2SA06G3.step cleaned output should be reviewed as cleaned.",
                 "USB-A-TH_FUS264-FDSW3K.step cleaned output should be reviewed as cleaned.",
-                "SOT-89-3_L4.3-W2.5-H1.6-LS4.1-P1.50.step is not fully cleaned."
+                "SOT-89-3_L4.3-W2.5-H1.6-LS4.1-P1.50.step cleaned output should be reviewed as cleaned."
             };
         }
 
