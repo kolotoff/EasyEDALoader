@@ -224,7 +224,16 @@ namespace EasyEDA_Loader
                 edits);
 
             MergeHostFaceBounds(flattenResult, detection.HostFaceBoundsToRemove);
+            var flattenRegions = BuildAutomaticFlattenRegions(
+                data,
+                detection,
+                context.FaceOwners,
+                context.SolidInfo,
+                context.StyledByTarget,
+                options);
             AddAutomaticRegionAdjacentFacesToFlattenResult(data, context.SolidInfo, flattenResult, detection.AutomaticRegions, options);
+            if (detection.RemovableSolidIds.Count == 0)
+                FlattenAllGeometryInsideAutomaticRegions(data, context.SolidInfo, flattenResult, flattenRegions, options, edits);
 
             FlattenCoplanarWatermarkFaces(
                 data,
@@ -1978,6 +1987,253 @@ namespace EasyEDA_Loader
                         flattenResult.FlattenedFaceCount++;
 
                     flattenResult.ReplacementFaceByRemovedFace[adjacentFaceId] = hostFaceId;
+                }
+            }
+        }
+
+        private static List<AutomaticWatermarkRegion> BuildAutomaticFlattenRegions(
+            StepData data,
+            AutomaticWatermarkDetection detection,
+            Dictionary<int, int> faceOwners,
+            Dictionary<int, SolidInfo> solidInfo,
+            Dictionary<int, List<StyledItemInfo>> styledByTarget,
+            StepWatermarkCleanerOptions options)
+        {
+            var seeds = new List<AutomaticWatermarkRegion>();
+            seeds.AddRange(detection.AutomaticRegions);
+
+            foreach (int faceId in detection.EmbeddedFaceIds.Concat(detection.CoplanarFaceIds).Distinct())
+            {
+                if (!faceOwners.TryGetValue(faceId, out int ownerId))
+                    continue;
+
+                if (!solidInfo.TryGetValue(ownerId, out var ownerInfo))
+                    continue;
+
+                var faceBounds = data.GetBounds(faceId);
+                if (!faceBounds.HasValue)
+                    continue;
+
+                var singleFace = new HashSet<int> { faceId };
+                bool allowLightHost = ComponentHasDarkWatermarkFace(singleFace, styledByTarget, options);
+                var host = ChooseHostPlane(data, ownerInfo, singleFace, faceBounds.Value, styledByTarget, allowLightHost, options);
+                if (host == null || !host.HostFaceId.HasValue)
+                    continue;
+
+                var hostBounds = data.GetBounds(host.HostFaceId.Value);
+                if (!hostBounds.HasValue)
+                    continue;
+
+                seeds.Add(new AutomaticWatermarkRegion
+                {
+                    OwnerId = ownerId,
+                    HostFaceId = host.HostFaceId.Value,
+                    Axis = host.Axis,
+                    HostCoordinate = host.TargetCoordinate,
+                    Bounds = faceBounds.Value,
+                    HostBounds = hostBounds.Value
+                });
+            }
+
+            foreach (var kvp in detection.HostFaceBoundsToRemove)
+            {
+                int hostFaceId = kvp.Key;
+                var ownerInfo = solidInfo.Values.FirstOrDefault(info => info.FaceIds.Contains(hostFaceId));
+                if (ownerInfo == null)
+                    continue;
+
+                var hostBounds = data.GetBounds(hostFaceId);
+                if (!hostBounds.HasValue)
+                    continue;
+
+                int axis = FindPlanarAxis(hostBounds.Value, options);
+                if (axis < 0)
+                    axis = GetSmallestAxis(hostBounds.Value);
+
+                double hostCoordinate = (hostBounds.Value.Min.Get(axis) + hostBounds.Value.Max.Get(axis)) / 2.0;
+                foreach (int boundId in kvp.Value)
+                {
+                    var boundBounds = data.GetBounds(boundId);
+                    if (!boundBounds.HasValue)
+                        continue;
+
+                    seeds.Add(new AutomaticWatermarkRegion
+                    {
+                        OwnerId = ownerInfo.SolidId,
+                        HostFaceId = hostFaceId,
+                        Axis = axis,
+                        HostCoordinate = hostCoordinate,
+                        Bounds = boundBounds.Value,
+                        HostBounds = hostBounds.Value
+                    });
+                }
+            }
+
+            return MergeAutomaticFlattenRegionSeeds(seeds, options);
+        }
+
+        private static List<AutomaticWatermarkRegion> MergeAutomaticFlattenRegionSeeds(
+            List<AutomaticWatermarkRegion> seeds,
+            StepWatermarkCleanerOptions options)
+        {
+            var result = new List<AutomaticWatermarkRegion>();
+            if (seeds.Count == 0)
+                return result;
+
+            double planeTolerance = Math.Max(options.PlaneTolerance, 0.000001);
+            var groups = seeds.GroupBy(seed => new
+            {
+                seed.OwnerId,
+                seed.HostFaceId,
+                seed.Axis,
+                Coordinate = Math.Round(seed.HostCoordinate / planeTolerance)
+            });
+
+            foreach (var group in groups)
+            {
+                var groupSeeds = group.ToList();
+                double gap = GetAutomaticClusterGap(groupSeeds[0].HostBounds, group.Key.Axis, options);
+                foreach (var cluster in BuildProjectedRegionClusters(groupSeeds, group.Key.Axis, gap))
+                {
+                    Bounds bounds = new Bounds();
+                    foreach (var seed in cluster)
+                        bounds.Include(seed.Bounds);
+
+                    result.Add(new AutomaticWatermarkRegion
+                    {
+                        OwnerId = group.Key.OwnerId,
+                        HostFaceId = group.Key.HostFaceId,
+                        Axis = group.Key.Axis,
+                        HostCoordinate = cluster[0].HostCoordinate,
+                        Bounds = bounds,
+                        HostBounds = cluster[0].HostBounds
+                    });
+                }
+            }
+
+            return result;
+        }
+
+        private static List<List<AutomaticWatermarkRegion>> BuildProjectedRegionClusters(
+            List<AutomaticWatermarkRegion> seeds,
+            int axis,
+            double gap)
+        {
+            var result = new List<List<AutomaticWatermarkRegion>>();
+            var visited = new bool[seeds.Count];
+
+            for (int i = 0; i < seeds.Count; i++)
+            {
+                if (visited[i])
+                    continue;
+
+                var cluster = new List<AutomaticWatermarkRegion>();
+                var queue = new Queue<int>();
+                visited[i] = true;
+                queue.Enqueue(i);
+
+                while (queue.Count > 0)
+                {
+                    int index = queue.Dequeue();
+                    var current = seeds[index];
+                    cluster.Add(current);
+
+                    for (int j = 0; j < seeds.Count; j++)
+                    {
+                        if (visited[j])
+                            continue;
+
+                        if (!ProjectedBoundsOverlap(current.Bounds, seeds[j].Bounds, axis, gap))
+                            continue;
+
+                        visited[j] = true;
+                        queue.Enqueue(j);
+                    }
+                }
+
+                result.Add(cluster);
+            }
+
+            return result;
+        }
+
+        private static void FlattenAllGeometryInsideAutomaticRegions(
+            StepData data,
+            Dictionary<int, SolidInfo> solidInfo,
+            FlattenResult flattenResult,
+            List<AutomaticWatermarkRegion> regions,
+            StepWatermarkCleanerOptions options,
+            Dictionary<int, string> edits)
+        {
+            var editedPoints = new HashSet<int>();
+            foreach (var region in regions)
+            {
+                if (!solidInfo.TryGetValue(region.OwnerId, out var ownerInfo))
+                    continue;
+
+                if (!ownerInfo.FaceIds.Contains(region.HostFaceId))
+                    continue;
+
+                if (!TouchesProjectedBoundary(
+                    region.Bounds,
+                    region.HostBounds,
+                    region.Axis,
+                    GetAutomaticEdgeMargin(region.HostBounds, region.Axis)))
+                    continue;
+
+                if (!flattenResult.HostFaceBoundsToRemove.TryGetValue(region.HostFaceId, out var boundIds))
+                {
+                    boundIds = new HashSet<int>();
+                    flattenResult.HostFaceBoundsToRemove.Add(region.HostFaceId, boundIds);
+                }
+
+                foreach (int boundId in data.GetMatchingInnerFaceBounds(
+                    region.HostFaceId,
+                    region.Bounds,
+                    region.Axis,
+                    options.HostPlaneProjectionPadding)
+                    .Where(boundId => EntityInsideDetectedRegion(data, boundId, region.Bounds, region.Axis, options.HostPlaneProjectionPadding)))
+                    boundIds.Add(boundId);
+
+                double maxDepth = Math.Max(options.HostPlaneSearchDistance, options.HostLoopAdjacentMaxDepth);
+                foreach (int faceId in ownerInfo.FaceIds)
+                {
+                    if (faceId == region.HostFaceId)
+                        continue;
+
+                    var faceBounds = data.GetBounds(faceId);
+                    if (!faceBounds.HasValue)
+                        continue;
+
+                    if (!ProjectedBoundsInside(faceBounds.Value, region.Bounds, region.Axis, options.HostPlaneProjectionPadding))
+                        continue;
+
+                    double minDistance = Math.Abs(faceBounds.Value.Min.Get(region.Axis) - region.HostCoordinate);
+                    double maxDistance = Math.Abs(faceBounds.Value.Max.Get(region.Axis) - region.HostCoordinate);
+                    if (Math.Max(minDistance, maxDistance) > maxDepth)
+                        continue;
+
+                    int changedPoints = 0;
+                    foreach (int pointId in data.GetPointIds(faceId, includeSurface: true))
+                    {
+                        if (!data.TryGetPoint(pointId, out var point))
+                            continue;
+
+                        if (Math.Abs(point.Get(region.Axis) - region.HostCoordinate) <= options.PlaneTolerance)
+                            continue;
+
+                        if (!editedPoints.Add(pointId))
+                            continue;
+
+                        edits[pointId] = data.ReplacePointCoordinate(pointId, region.Axis, region.HostCoordinate);
+                        changedPoints++;
+                    }
+
+                    if (flattenResult.FlattenedFaces.Add(faceId))
+                        flattenResult.FlattenedFaceCount++;
+
+                    flattenResult.FlattenedPointCount += changedPoints;
+                    flattenResult.ReplacementFaceByRemovedFace[faceId] = region.HostFaceId;
                 }
             }
         }
