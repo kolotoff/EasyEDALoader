@@ -195,10 +195,7 @@ namespace EasyEDA_Loader
                 }
             }
 
-            if (!ctx.Has3dBodyProjection)
-                EEPCB.Add3dBodyProjection(c, 0, 0, ctx.Box.Width, ctx.Box.Height);
-
-            EEPCB.AddAssemblyTexts(c, ctx.HasAssemblyDesignatorText, ctx.HasAssemblyCommentText, ctx.Box.Height);
+            EEPCB.AddAssemblyTexts(c, ctx.HasAssemblyDesignatorText, ctx.HasAssemblyCommentText, ctx.Box.Height, ctx.ProjectionPrimitives);
             EEPCB.AddCourtyard(c, ctx.Box.Width, ctx.Box.Height);
         }
     }

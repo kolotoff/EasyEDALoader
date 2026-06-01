@@ -22,6 +22,7 @@ namespace EasyEDA_Loader
         public string Description { get; set; }
         public double HeightMm { get; set; }
         public bool Has3dBodyProjection { get; set; }
+        internal List<StepSilhouettePrimitive> ProjectionPrimitives { get; } = new List<StepSilhouettePrimitive>();
         public bool HasAssemblyDesignatorText { get; set; }
         public bool HasAssemblyCommentText { get; set; }
         public int MountingHoleCount { get; set; }

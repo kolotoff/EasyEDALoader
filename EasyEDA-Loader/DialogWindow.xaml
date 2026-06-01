@@ -3,6 +3,7 @@
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
     xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    xmlns:wfi="clr-namespace:System.Windows.Forms.Integration;assembly=WindowsFormsIntegration"
     mc:Ignorable="d"
     Title="EasyEDA Component Loader"
     Height="650"
@@ -406,36 +407,13 @@
                 </Grid.RowDefinitions>
 
                 <TextBlock Grid.Row="0"
-                           Text="OBJ Model"
+                           Text="STEP Model"
                            FontSize="14"
                            FontWeight="SemiBold"
                            Margin="0,0,0,10"/>
 
-                <Border Grid.Row="1" Background="Black">
-                    <Viewport3D x:Name="objModelViewport"
-                                ClipToBounds="True"
-                                Focusable="True"
-                                MouseLeftButtonDown="ObjModelViewport_MouseLeftButtonDown"
-                                MouseLeftButtonUp="ObjModelViewport_MouseLeftButtonUp"
-                                MouseRightButtonDown="ObjModelViewport_MouseRightButtonDown"
-                                MouseRightButtonUp="ObjModelViewport_MouseRightButtonUp"
-                                MouseMove="ObjModelViewport_MouseMove"
-                                MouseWheel="ObjModelViewport_MouseWheel">
-                        <Viewport3D.Camera>
-                            <PerspectiveCamera x:Name="objModelCamera"
-                                               Position="0,0,4"
-                                               LookDirection="0,0,-4"
-                                               UpDirection="0,1,0"
-                                               FieldOfView="45"/>
-                        </Viewport3D.Camera>
-                        <ModelVisual3D>
-                            <ModelVisual3D.Content>
-                                <DirectionalLight Color="#FFFFFF"
-                                                  Direction="-0.4,-0.5,-1"/>
-                            </ModelVisual3D.Content>
-                        </ModelVisual3D>
-                        <ModelVisual3D x:Name="objModelPreviewVisual"/>
-                    </Viewport3D>
+                <Border Grid.Row="1" Background="White">
+                    <wfi:WindowsFormsHost x:Name="f3dModelHost"/>
                 </Border>
             </Grid>
         </Border>

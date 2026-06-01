@@ -87,5 +87,10 @@ namespace EasyEDA_Loader
         {
             return EDP.Utils.MilsToCoord(value);
         }
+
+        public static double CoordToMm(int value)
+        {
+            return EDP.Utils.CoordToMMs(value);
+        }
     }
 }

@@ -3,8 +3,10 @@ using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
@@ -12,10 +14,10 @@ using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
-using System.Windows.Media.Media3D;
 using System.Windows.Threading;
 using Microsoft.Win32;
 using Newtonsoft.Json;
+using Forms = System.Windows.Forms;
 
 namespace EasyEDA_Loader
 {
@@ -31,23 +33,45 @@ namespace EasyEDA_Loader
         private EeFootprint3dModel _currentModel;
         private Root _currentRoot;
         private bool _isRestoringSession;
-        private readonly AxisAngleRotation3D _objPreviewRotationX = new AxisAngleRotation3D(new Vector3D(1, 0, 0), -65);
-        private readonly AxisAngleRotation3D _objPreviewRotationY = new AxisAngleRotation3D(new Vector3D(0, 1, 0), -20);
-        private readonly ScaleTransform3D _objPreviewScale = new ScaleTransform3D(1, 1, 1);
-        private readonly TranslateTransform3D _objPreviewTranslate = new TranslateTransform3D();
-        private readonly Transform3DGroup _objPreviewTransform = new Transform3DGroup();
-        private Point _objPreviewDragStart;
-        private double _objPreviewDragStartRotationX;
-        private double _objPreviewDragStartRotationY;
-        private double _objPreviewDragStartTranslateX;
-        private double _objPreviewDragStartTranslateY;
-        private bool _isObjPreviewLeftDragging;
-        private bool _isObjPreviewRightDragging;
+        private Forms.Panel _f3dPanel;
+        private Process _f3dProcess;
+        private IntPtr _f3dWindowHandle;
+        private const int GwlStyle = -16;
+        private const int SwShow = 5;
+        private const long WsChild = 0x40000000L;
+        private const long WsVisible = 0x10000000L;
+        private const long WsCaption = 0x00C00000L;
+        private const long WsThickFrame = 0x00040000L;
+        private const long WsPopup = unchecked((long)0x80000000L);
         private static readonly char[] PartNumberSeparators = { '\r', '\n', '\t', ' ', ',', ';', '|' };
         private static readonly string SessionStateFilePath = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "EasyEDA-Loader",
             "dialog-session.json");
+
+        [DllImport("user32.dll")]
+        private static extern IntPtr SetParent(IntPtr hWndChild, IntPtr hWndNewParent);
+
+        [DllImport("user32.dll")]
+        private static extern bool MoveWindow(IntPtr hWnd, int x, int y, int nWidth, int nHeight, bool bRepaint);
+
+        [DllImport("user32.dll")]
+        private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+
+        [DllImport("user32.dll")]
+        private static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int x, int y, int cx, int cy, uint uFlags);
+
+        [DllImport("user32.dll", EntryPoint = "GetWindowLong")]
+        private static extern int GetWindowLong32(IntPtr hWnd, int nIndex);
+
+        [DllImport("user32.dll", EntryPoint = "GetWindowLongPtr")]
+        private static extern IntPtr GetWindowLongPtr64(IntPtr hWnd, int nIndex);
+
+        [DllImport("user32.dll", EntryPoint = "SetWindowLong")]
+        private static extern int SetWindowLong32(IntPtr hWnd, int nIndex, int dwNewLong);
+
+        [DllImport("user32.dll", EntryPoint = "SetWindowLongPtr")]
+        private static extern IntPtr SetWindowLongPtr64(IntPtr hWnd, int nIndex, IntPtr dwNewLong);
 
         public List<ComponentSelection> SelectedComponents { get; private set; }
         public bool RemoveWatermark => removeWatermarkCheckBox?.IsChecked == true;
@@ -63,10 +87,13 @@ namespace EasyEDA_Loader
             SelectedComponents = new List<ComponentSelection>();
             
             resultsGrid.ItemsSource = searchResults;
-            _objPreviewTransform.Children.Add(_objPreviewScale);
-            _objPreviewTransform.Children.Add(new RotateTransform3D(_objPreviewRotationX));
-            _objPreviewTransform.Children.Add(new RotateTransform3D(_objPreviewRotationY));
-            _objPreviewTransform.Children.Add(_objPreviewTranslate);
+            _f3dPanel = new Forms.Panel
+            {
+                Dock = Forms.DockStyle.Fill,
+                BackColor = System.Drawing.Color.White
+            };
+            _f3dPanel.Resize += (s, e) => ResizeEmbeddedF3DWindow();
+            f3dModelHost.Child = _f3dPanel;
 
             _footprintHelper = new CanvasZoomPanHelper(footprintCanvas);
             footprintCanvasView.ScrollChanged += (s, e) =>
@@ -245,8 +272,8 @@ namespace EasyEDA_Loader
 
                             try
                             {
-                                UpdatePreviewProgress("Loading OBJ preview...", 78);
-                                await ShowObjModelPreviewAsync(_currentModel, cancellationToken);
+                                UpdatePreviewProgress("Loading 3D preview...", 78);
+                                await ShowInteractiveModelPreviewAsync(_currentModel, cancellationToken);
                             }
                             catch (OperationCanceledException)
                             {
@@ -314,8 +341,7 @@ namespace EasyEDA_Loader
         private void ClearModelPreview()
         {
             modelProjectionImage.Source = null;
-            objModelPreviewVisual.Content = null;
-            ResetObjPreviewTransform();
+            StopF3DPreview();
         }
 
         private async Task ShowModelProjectionPreviewAsync(EeFootprint3dModel modelInfo, CancellationToken cancellationToken)
@@ -347,28 +373,30 @@ namespace EasyEDA_Loader
             modelProjectionImage.Source = LoadBitmapImage(projectionPng);
         }
 
-        private async Task ShowObjModelPreviewAsync(EeFootprint3dModel modelInfo, CancellationToken cancellationToken)
+        private async Task ShowInteractiveModelPreviewAsync(EeFootprint3dModel modelInfo, CancellationToken cancellationToken)
         {
-            objModelPreviewVisual.Content = null;
-            ResetObjPreviewTransform();
+            StopF3DPreview();
 
             if (modelInfo == null)
                 return;
 
-            byte[] objData = await ModelCache.GetRawObjModelAsync(Api, modelInfo.Uuid, cancellationToken);
+            byte[] stepData = await ModelCache.GetStepModelAsync(Api, modelInfo.Uuid, cancellationToken);
             cancellationToken.ThrowIfCancellationRequested();
 
-            if (objData == null || objData.Length == 0)
+            if (stepData == null || stepData.Length == 0)
                 return;
 
-            Model3DGroup model = BuildObjPreviewModel(objData);
-            cancellationToken.ThrowIfCancellationRequested();
+            string stepPath = ModelCache.GetOriginalStepPath(modelInfo.Uuid);
+            if (!File.Exists(stepPath))
+            {
+                string directory = Path.GetDirectoryName(stepPath);
+                if (!string.IsNullOrEmpty(directory))
+                    Directory.CreateDirectory(directory);
 
-            if (model == null)
-                return;
+                File.WriteAllBytes(stepPath, stepData);
+            }
 
-            model.Transform = _objPreviewTransform;
-            objModelPreviewVisual.Content = model;
+            await StartF3DPreviewAsync(stepPath, cancellationToken);
         }
 
         private static BitmapImage LoadBitmapImage(byte[] imageData)
@@ -386,219 +414,173 @@ namespace EasyEDA_Loader
             return bitmap;
         }
 
-        private static Model3DGroup BuildObjPreviewModel(byte[] objData)
+        private async Task StartF3DPreviewAsync(string stepPath, CancellationToken cancellationToken)
         {
-            var vertices = new List<Point3D>();
-            var indices = new List<int>();
+            string executable = FindF3DExecutable();
+            if (string.IsNullOrEmpty(executable))
+                throw new FileNotFoundException("F3D executable was not found. Install F3D or set STEPCLEANER_F3D to f3d.exe.");
 
-            using (var reader = new StringReader(System.Text.Encoding.UTF8.GetString(objData)))
+            int width = Math.Max(320, _f3dPanel?.ClientSize.Width ?? 0);
+            int height = Math.Max(240, _f3dPanel?.ClientSize.Height ?? 0);
+
+            var startInfo = new ProcessStartInfo
             {
-                string line;
-                while ((line = reader.ReadLine()) != null)
+                FileName = executable,
+                UseShellExecute = false,
+                CreateNoWindow = false,
+                WindowStyle = ProcessWindowStyle.Normal
+            };
+
+            startInfo.ArgumentList.Add("--no-config");
+            startInfo.ArgumentList.Add("--verbose=error");
+            startInfo.ArgumentList.Add("--background-color");
+            startInfo.ArgumentList.Add("#ffffff");
+            startInfo.ArgumentList.Add("--resolution");
+            startInfo.ArgumentList.Add(width.ToString(CultureInfo.InvariantCulture) + "," + height.ToString(CultureInfo.InvariantCulture));
+            startInfo.ArgumentList.Add("--position");
+            startInfo.ArgumentList.Add("-32000,-32000");
+            startInfo.ArgumentList.Add("--camera-orthographic");
+            startInfo.ArgumentList.Add("--anti-aliasing=fxaa");
+            startInfo.ArgumentList.Add("--ambient-occlusion");
+            startInfo.ArgumentList.Add("--scalar-coloring");
+            startInfo.ArgumentList.Add("--coloring-by-cells");
+            startInfo.ArgumentList.Add("--coloring-array=Colors");
+            startInfo.ArgumentList.Add("--coloring-component=-2");
+            startInfo.ArgumentList.Add("--interaction-style=trackball");
+            startInfo.ArgumentList.Add(stepPath);
+
+            try
+            {
+                _f3dProcess = Process.Start(startInfo);
+                if (_f3dProcess == null)
+                    return;
+
+                IntPtr handle = await WaitForMainWindowHandleAsync(_f3dProcess, cancellationToken);
+                cancellationToken.ThrowIfCancellationRequested();
+                if (handle == IntPtr.Zero)
                 {
-                    line = line.Trim();
-                    if (line.Length == 0 || line.StartsWith("#", StringComparison.Ordinal))
-                        continue;
+                    StopF3DPreview();
+                    return;
+                }
 
-                    string[] parts = line.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
-                    if (parts.Length == 0)
-                        continue;
+                _f3dWindowHandle = handle;
+                SetParent(_f3dWindowHandle, _f3dPanel.Handle);
 
-                    if (string.Equals(parts[0], "v", StringComparison.OrdinalIgnoreCase) && parts.Length >= 4)
-                    {
-                        if (double.TryParse(parts[1], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out double x) &&
-                            double.TryParse(parts[2], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out double y) &&
-                            double.TryParse(parts[3], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out double z))
-                            vertices.Add(new Point3D(x, y, z));
-                    }
-                    else if (string.Equals(parts[0], "f", StringComparison.OrdinalIgnoreCase) && parts.Length >= 4)
-                    {
-                        var face = new List<int>();
-                        for (int i = 1; i < parts.Length; i++)
-                        {
-                            if (TryParseObjVertexIndex(parts[i], vertices.Count, out int index))
-                                face.Add(index);
-                        }
+                long style = GetWindowLongPtr(_f3dWindowHandle, GwlStyle).ToInt64();
+                long embeddedStyle = (style & ~(WsCaption | WsThickFrame | WsPopup)) | WsChild | WsVisible;
+                SetWindowLongPtr(_f3dWindowHandle, GwlStyle, new IntPtr(embeddedStyle));
 
-                        for (int i = 1; i + 1 < face.Count; i++)
-                        {
-                            indices.Add(face[0]);
-                            indices.Add(face[i]);
-                            indices.Add(face[i + 1]);
-                        }
-                    }
+                ShowWindow(_f3dWindowHandle, SwShow);
+                ResizeEmbeddedF3DWindow();
+            }
+            catch (OperationCanceledException)
+            {
+                StopF3DPreview();
+                throw;
+            }
+        }
+
+        private static async Task<IntPtr> WaitForMainWindowHandleAsync(Process process, CancellationToken cancellationToken)
+        {
+            for (int i = 0; i < 200; i++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (process.HasExited)
+                    return IntPtr.Zero;
+
+                process.Refresh();
+                if (process.MainWindowHandle != IntPtr.Zero)
+                    return process.MainWindowHandle;
+
+                await Task.Delay(50, cancellationToken);
+            }
+
+            return IntPtr.Zero;
+        }
+
+        private void ResizeEmbeddedF3DWindow()
+        {
+            if (_f3dWindowHandle == IntPtr.Zero || _f3dPanel == null)
+                return;
+
+            MoveWindow(
+                _f3dWindowHandle,
+                0,
+                0,
+                Math.Max(1, _f3dPanel.ClientSize.Width),
+                Math.Max(1, _f3dPanel.ClientSize.Height),
+                true);
+            SetWindowPos(
+                _f3dWindowHandle,
+                IntPtr.Zero,
+                0,
+                0,
+                Math.Max(1, _f3dPanel.ClientSize.Width),
+                Math.Max(1, _f3dPanel.ClientSize.Height),
+                0x0040);
+        }
+
+        private void StopF3DPreview()
+        {
+            _f3dWindowHandle = IntPtr.Zero;
+            if (_f3dProcess == null)
+                return;
+
+            try
+            {
+                if (!_f3dProcess.HasExited)
+                {
+                    _f3dProcess.CloseMainWindow();
+                    if (!_f3dProcess.WaitForExit(800))
+                        _f3dProcess.Kill();
                 }
             }
-
-            if (vertices.Count == 0 || indices.Count == 0)
-                return null;
-
-            Rect3D bounds = CalculateBounds(vertices);
-            double maxSize = Math.Max(bounds.SizeX, Math.Max(bounds.SizeY, bounds.SizeZ));
-            if (maxSize <= 0)
-                maxSize = 1;
-
-            var mesh = new MeshGeometry3D();
-            double scale = 2.2 / maxSize;
-            double centerX = bounds.X + bounds.SizeX / 2.0;
-            double centerY = bounds.Y + bounds.SizeY / 2.0;
-            double centerZ = bounds.Z + bounds.SizeZ / 2.0;
-
-            foreach (Point3D vertex in vertices)
+            catch (Exception ex)
             {
-                mesh.Positions.Add(new Point3D(
-                    (vertex.X - centerX) * scale,
-                    (vertex.Y - centerY) * scale,
-                    (vertex.Z - centerZ) * scale));
+                EasyEDALoaderModule.Trace("Failed to stop F3D preview: " + ex);
             }
-
-            foreach (int index in indices)
-                mesh.TriangleIndices.Add(index);
-
-            var material = new DiffuseMaterial(new SolidColorBrush(Color.FromRgb(180, 190, 205)));
-            var group = new Model3DGroup();
-            group.Children.Add(new AmbientLight(Color.FromRgb(70, 70, 70)));
-            group.Children.Add(new GeometryModel3D(mesh, material)
+            finally
             {
-                BackMaterial = material
-            });
-
-            return group;
-        }
-
-        private static bool TryParseObjVertexIndex(string token, int vertexCount, out int index)
-        {
-            index = -1;
-            string first = token.Split('/')[0];
-            if (!int.TryParse(first, out int objIndex) || objIndex == 0)
-                return false;
-
-            index = objIndex > 0 ? objIndex - 1 : vertexCount + objIndex;
-            return index >= 0 && index < vertexCount;
-        }
-
-        private static Rect3D CalculateBounds(IReadOnlyList<Point3D> vertices)
-        {
-            double minX = double.PositiveInfinity;
-            double minY = double.PositiveInfinity;
-            double minZ = double.PositiveInfinity;
-            double maxX = double.NegativeInfinity;
-            double maxY = double.NegativeInfinity;
-            double maxZ = double.NegativeInfinity;
-
-            foreach (Point3D vertex in vertices)
-            {
-                minX = Math.Min(minX, vertex.X);
-                minY = Math.Min(minY, vertex.Y);
-                minZ = Math.Min(minZ, vertex.Z);
-                maxX = Math.Max(maxX, vertex.X);
-                maxY = Math.Max(maxY, vertex.Y);
-                maxZ = Math.Max(maxZ, vertex.Z);
-            }
-
-            return new Rect3D(minX, minY, minZ, maxX - minX, maxY - minY, maxZ - minZ);
-        }
-
-        private void ResetObjPreviewTransform()
-        {
-            _objPreviewRotationX.Angle = -65;
-            _objPreviewRotationY.Angle = -20;
-            _objPreviewScale.ScaleX = 1;
-            _objPreviewScale.ScaleY = 1;
-            _objPreviewScale.ScaleZ = 1;
-            _objPreviewTranslate.OffsetX = 0;
-            _objPreviewTranslate.OffsetY = 0;
-            _objPreviewTranslate.OffsetZ = 0;
-            _isObjPreviewLeftDragging = false;
-            _isObjPreviewRightDragging = false;
-        }
-
-        private void ObjModelViewport_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
-        {
-            if (objModelPreviewVisual.Content == null)
-                return;
-
-            _isObjPreviewLeftDragging = true;
-            _isObjPreviewRightDragging = false;
-            _objPreviewDragStart = e.GetPosition(objModelViewport);
-            _objPreviewDragStartRotationX = _objPreviewRotationX.Angle;
-            _objPreviewDragStartRotationY = _objPreviewRotationY.Angle;
-            objModelViewport.Focus();
-            objModelViewport.CaptureMouse();
-            e.Handled = true;
-        }
-
-        private void ObjModelViewport_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
-        {
-            if (!_isObjPreviewLeftDragging)
-                return;
-
-            _isObjPreviewLeftDragging = false;
-            if (!_isObjPreviewRightDragging)
-                objModelViewport.ReleaseMouseCapture();
-            e.Handled = true;
-        }
-
-        private void ObjModelViewport_MouseRightButtonDown(object sender, MouseButtonEventArgs e)
-        {
-            if (objModelPreviewVisual.Content == null)
-                return;
-
-            _isObjPreviewRightDragging = true;
-            _isObjPreviewLeftDragging = false;
-            _objPreviewDragStart = e.GetPosition(objModelViewport);
-            _objPreviewDragStartTranslateX = _objPreviewTranslate.OffsetX;
-            _objPreviewDragStartTranslateY = _objPreviewTranslate.OffsetY;
-            objModelViewport.Focus();
-            objModelViewport.CaptureMouse();
-            e.Handled = true;
-        }
-
-        private void ObjModelViewport_MouseRightButtonUp(object sender, MouseButtonEventArgs e)
-        {
-            if (!_isObjPreviewRightDragging)
-                return;
-
-            _isObjPreviewRightDragging = false;
-            if (!_isObjPreviewLeftDragging)
-                objModelViewport.ReleaseMouseCapture();
-            e.Handled = true;
-        }
-
-        private void ObjModelViewport_MouseMove(object sender, MouseEventArgs e)
-        {
-            if (objModelPreviewVisual.Content == null)
-                return;
-
-            Point current = e.GetPosition(objModelViewport);
-            double dx = current.X - _objPreviewDragStart.X;
-            double dy = current.Y - _objPreviewDragStart.Y;
-
-            if (_isObjPreviewLeftDragging)
-            {
-                _objPreviewRotationY.Angle = _objPreviewDragStartRotationY + dx * 0.6;
-                _objPreviewRotationX.Angle = _objPreviewDragStartRotationX + dy * 0.6;
-                e.Handled = true;
-            }
-            else if (_isObjPreviewRightDragging)
-            {
-                _objPreviewTranslate.OffsetX = _objPreviewDragStartTranslateX + dx / 120.0;
-                _objPreviewTranslate.OffsetY = _objPreviewDragStartTranslateY - dy / 120.0;
-                e.Handled = true;
+                _f3dProcess.Dispose();
+                _f3dProcess = null;
             }
         }
 
-        private void ObjModelViewport_MouseWheel(object sender, MouseWheelEventArgs e)
+        private static string FindF3DExecutable()
         {
-            if (objModelPreviewVisual.Content == null)
-                return;
+            string configuredPath = Environment.GetEnvironmentVariable("STEPCLEANER_F3D");
+            if (!string.IsNullOrWhiteSpace(configuredPath) && File.Exists(configuredPath))
+                return configuredPath;
 
-            double factor = e.Delta > 0 ? 1.1 : 1.0 / 1.1;
-            double scale = Math.Max(0.15, Math.Min(8.0, _objPreviewScale.ScaleX * factor));
-            _objPreviewScale.ScaleX = scale;
-            _objPreviewScale.ScaleY = scale;
-            _objPreviewScale.ScaleZ = scale;
-            e.Handled = true;
+            string programFiles = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
+            string programFilesX86 = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86);
+            string[] candidates =
+            {
+                Path.Combine(programFiles, "F3D", "bin", "f3d.exe"),
+                Path.Combine(programFilesX86, "F3D", "bin", "f3d.exe")
+            };
+
+            foreach (string candidate in candidates)
+            {
+                if (File.Exists(candidate))
+                    return candidate;
+            }
+
+            return "f3d.exe";
+        }
+
+        private static IntPtr GetWindowLongPtr(IntPtr hWnd, int nIndex)
+        {
+            return IntPtr.Size == 8
+                ? GetWindowLongPtr64(hWnd, nIndex)
+                : new IntPtr(GetWindowLong32(hWnd, nIndex));
+        }
+
+        private static IntPtr SetWindowLongPtr(IntPtr hWnd, int nIndex, IntPtr value)
+        {
+            return IntPtr.Size == 8
+                ? SetWindowLongPtr64(hWnd, nIndex, value)
+                : new IntPtr(SetWindowLong32(hWnd, nIndex, value.ToInt32()));
         }
 
         public void UpdateAddButtonState()
@@ -1070,6 +1052,7 @@ namespace EasyEDA_Loader
 
         protected override void OnClosed(EventArgs e)
         {
+            StopF3DPreview();
             cts?.Dispose();
             previewCts?.Dispose();
             base.OnClosed(e);

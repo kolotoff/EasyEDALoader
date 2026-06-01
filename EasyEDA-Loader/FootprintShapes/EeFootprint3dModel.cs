@@ -1,6 +1,7 @@
 using Newtonsoft.Json;
 using PCB;
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
@@ -151,8 +152,30 @@ namespace EasyEDA_Loader
                 EEPCB.AddToPCB(c, body);
                 EEPCB.SetComponentBodyIdentifier(body, modelIdentifier);
                 EEPCB.SetComponentBodyHeights(body, standoffHeight, overallHeight);
-                EEPCB.Add3dBodyProjection(c, modelX, modelY, Width, Height);
-                ctx.Has3dBodyProjection = true;
+
+                try
+                {
+                    StepSilhouetteBounds projectionBounds = EEPCB.GetComponentBodyBoundsMm(c, body, modelX, modelY, Width, Height);
+                    IReadOnlyList<StepSilhouettePrimitive> projectionPrimitives = StepSilhouetteProjection.Generate(
+                        footprintModel,
+                        new StepSilhouettePlacement
+                        {
+                            TargetBounds = projectionBounds,
+                            RotX = Rotation.X,
+                            RotY = Rotation.Y,
+                            RotZ = Rotation.Z
+                        });
+                    int projectionCount = EEPCB.Add3dBodyProjection(c, projectionPrimitives);
+                    if (projectionCount > 0)
+                    {
+                        ctx.ProjectionPrimitives.AddRange(projectionPrimitives);
+                        ctx.Has3dBodyProjection = true;
+                    }
+                }
+                catch (Exception projectionEx)
+                {
+                    EasyEDALoaderModule.Trace("3D body projection failed: " + projectionEx);
+                }
 
                 File.Delete(temp);
             }

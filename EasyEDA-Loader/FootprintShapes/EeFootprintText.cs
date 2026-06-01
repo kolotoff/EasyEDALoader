@@ -40,9 +40,9 @@ namespace EasyEDA_Loader
                     if (targetLayer == TLayerConstant.eMechanical2)
                     {
                         if (string.Equals(Text, ".Designator", StringComparison.OrdinalIgnoreCase))
-                            ctx.HasAssemblyDesignatorText = true;
+                            return true;
                         if (string.Equals(Text, ".Comment", StringComparison.OrdinalIgnoreCase))
-                            ctx.HasAssemblyCommentText = true;
+                            return true;
                     }
 
                     var track = EEPCB.CreateText(c, targetLayer, Text, ConvertX(CenterX, ctx), ConvertY(CenterY, ctx), StrokeWidth, FontSize, Rotation);

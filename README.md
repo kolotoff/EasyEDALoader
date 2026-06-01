@@ -16,6 +16,47 @@ Using the extension is pretty straight forward once it is installed, there will 
 
 Hitting OK will automatically create `EasyEDA.pcblib` and `EasyEDA.schlib` if they don't already exist in `Documents/AltiumEE`, create the footprint, download the 3d model, create the symbol, add part info, map the footprint to the symbol, then place the component into the active schematic at the bottom left.
 
+# Runtime Dependencies
+
+## F3D for STEP preview
+
+The interactive 3D preview in the loader dialog uses [F3D](https://f3d.app/) to
+render the cached STEP file directly. F3D provides the OpenCascade/OCCT STEP
+reader used for proper STEP tessellation and display; the preview does not use
+the EasyEDA OBJ model.
+
+Install F3D on Windows with WinGet:
+
+```powershell
+winget install -e --id f3d-app.f3d
+```
+
+Or download and run the Windows x64 installer from:
+
+```text
+https://github.com/f3d-app/f3d/releases
+```
+
+The default installer path is:
+
+```text
+C:\Program Files\F3D\bin\f3d.exe
+```
+
+The extension looks for F3D in that default location. If F3D is installed
+somewhere else, set `STEPCLEANER_F3D` to the full path of `f3d.exe` and restart
+Altium so the extension can read the updated environment:
+
+```powershell
+[Environment]::SetEnvironmentVariable(
+    "STEPCLEANER_F3D",
+    "D:\Tools\F3D\bin\f3d.exe",
+    "User")
+```
+
+If F3D is missing, footprint import can still download and attach STEP models,
+but the right-side interactive STEP preview will not be available.
+
 # Comparisons
 
 Left EasyEDA, Right Altium after import
