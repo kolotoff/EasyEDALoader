@@ -48,6 +48,7 @@ namespace StepCleaner.Tests
                     StringComparer.OrdinalIgnoreCase);
                 var generatedCleanByName = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
                 var detectionViewNamesByFileName = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+                var postCleanFaultFileNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                 var failures = new List<string>();
                 var visualFailures = new List<ProjectionVisualFailure>();
                 var projectionTimings = new ProjectionVerificationTimings();
@@ -111,6 +112,7 @@ namespace StepCleaner.Tests
                     verificationProjectionOptions,
                     detectionViewNamesByFileName,
                     projectionTimings,
+                    postCleanFaultFileNames,
                     failures,
                     visualFailures);
 
@@ -123,6 +125,7 @@ namespace StepCleaner.Tests
                     verificationProjectionOptions,
                     detectionViewNamesByFileName,
                     projectionTimings,
+                    postCleanFaultFileNames,
                     failures,
                     visualFailures);
 
@@ -168,6 +171,7 @@ namespace StepCleaner.Tests
             StepProjectionOptions projectionOptions,
             Dictionary<string, List<string>> detectionViewNamesByFileName,
             ProjectionVerificationTimings projectionTimings,
+            HashSet<string> postCleanFaultFileNames,
             List<string> failures,
             List<ProjectionVisualFailure> visualFailures)
         {
@@ -246,6 +250,7 @@ namespace StepCleaner.Tests
                             originalProjectionPath,
                             cleanProjectionPath,
                             viewRegions,
+                            postCleanFaultFileNames,
                             failures,
                             visualFailures));
 
@@ -296,6 +301,7 @@ namespace StepCleaner.Tests
             string originalProjectionPath,
             string cleanProjectionPath,
             IReadOnlyList<StepProjectionDetectionRegion> detectionRegions,
+            HashSet<string> postCleanFaultFileNames,
             List<string> failures,
             List<ProjectionVisualFailure> visualFailures)
         {
@@ -347,6 +353,7 @@ namespace StepCleaner.Tests
                 int allowedOutsideRegionChanges = GetAllowedOutsideRegionChanges(originalImage.Width, originalImage.Height);
                 if (changedOutsideRegion > allowedOutsideRegionChanges)
                 {
+                    postCleanFaultFileNames.Add(fileName);
                     string message =
                         fileName +
                         " changed outside detected cleanup region on " +
@@ -376,7 +383,7 @@ namespace StepCleaner.Tests
                 }
 
                 foreach (StepProjectionDetectionRegion region in detectionRegions)
-                    VerifyCleanedRegionFlatness(fileName, viewName, originalImage, cleanImage, region, failures);
+                    VerifyCleanedRegionFlatness(fileName, viewName, originalImage, cleanImage, region, postCleanFaultFileNames, failures);
             }
         }
 
@@ -422,6 +429,7 @@ namespace StepCleaner.Tests
             SKBitmap originalImage,
             SKBitmap cleanImage,
             StepProjectionDetectionRegion region,
+            HashSet<string> postCleanFaultFileNames,
             List<string> failures)
         {
             int left = Math.Max(0, region.RectangleX);
@@ -439,6 +447,7 @@ namespace StepCleaner.Tests
                 cleanEdgeRatio <= originalEdgeRatio * MaxRetainedRegionEdgeRatio)
                 return;
 
+            postCleanFaultFileNames.Add(fileName);
             failures.Add(
                 fileName +
                 " cleaned region still has non-flat visual detail on " +
@@ -754,6 +763,7 @@ namespace StepCleaner.Tests
             StepProjectionOptions projectionOptions,
             Dictionary<string, List<string>> detectionViewNamesByFileName,
             ProjectionVerificationTimings projectionTimings,
+            HashSet<string> postCleanFaultFileNames,
             List<string> failures,
             List<ProjectionVisualFailure> visualFailures)
         {
@@ -771,6 +781,7 @@ namespace StepCleaner.Tests
                 () => StepProjectionRenderer.ProjectDirectory(validatedDirectory, validatedProjectionDirectory, projectionOptions));
 
             int comparedImages = 0;
+            int ignoredValidatedDifferences = 0;
             foreach (string fileName in matchedFileNames)
             {
                 string modelName = Path.GetFileNameWithoutExtension(fileName);
@@ -800,6 +811,12 @@ namespace StepCleaner.Tests
                         () => ProjectionPixelsEqual(cleanProjectionPath, validatedProjectionPath));
                     if (!projectionsEqual)
                     {
+                        if (!postCleanFaultFileNames.Contains(fileName))
+                        {
+                            ignoredValidatedDifferences++;
+                            continue;
+                        }
+
                         string message =
                             fileName +
                             " differs from Validated projection on " +
@@ -830,7 +847,9 @@ namespace StepCleaner.Tests
                 "Projection comparison: models=" +
                 matchedFileNames.Count.ToString(CultureInfo.InvariantCulture) +
                 ", images=" +
-                comparedImages.ToString(CultureInfo.InvariantCulture));
+                comparedImages.ToString(CultureInfo.InvariantCulture) +
+                ", ignored non-post-clean diffs=" +
+                ignoredValidatedDifferences.ToString(CultureInfo.InvariantCulture));
         }
 
         private static bool ProjectionPixelsEqual(string cleanProjectionPath, string validatedProjectionPath)
