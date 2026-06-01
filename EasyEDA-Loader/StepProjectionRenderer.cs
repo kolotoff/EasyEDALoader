@@ -121,6 +121,26 @@ namespace EasyEDA_Loader
             };
         }
 
+        public static byte[] ProjectSingleViewPng(byte[] stepData, string viewName, StepProjectionOptions options = null)
+        {
+            if (stepData == null)
+                throw new ArgumentNullException(nameof(stepData));
+
+            if (string.IsNullOrWhiteSpace(viewName))
+                throw new ArgumentException("Projection view name is required.", nameof(viewName));
+
+            options = CloneSingleViewOptions(options, viewName);
+
+            string stepText = Encoding.Latin1.GetString(stepData);
+            StepModel model = StepModel.Parse(stepText);
+            model.BuildIndexes();
+            var drawingModel = ProjectionModel.Build(model);
+            ViewSpec view = GetSelectedViews(options)[0];
+            ProjectionTransform transform = ProjectionTransform.Create(drawingModel.Bounds, view, options);
+
+            return RenderProjectionImage(drawingModel, view, transform, options).ToPngBytes();
+        }
+
         public static StepProjectionReport ProjectDetectionFile(
             string inputPath,
             string outputDirectory,
@@ -275,6 +295,17 @@ namespace EasyEDA_Loader
                 return;
             }
 
+            var image = RenderProjectionImage(model, view, transform, options, highlights);
+            image.SavePng(outputPath);
+        }
+
+        private static RgbaImage RenderProjectionImage(
+            ProjectionModel model,
+            ViewSpec view,
+            ProjectionTransform transform,
+            StepProjectionOptions options,
+            IReadOnlyList<ProjectionHighlight> highlights = null)
+        {
             int scale = Math.Max(1, RenderSupersampling);
             StepProjectionOptions renderOptions = scale == 1
                 ? options
@@ -323,7 +354,7 @@ namespace EasyEDA_Loader
                 image = image.Downsample(options.ImageSizePixels, options.ImageSizePixels);
 
             DrawDetectionHighlights(image, view, transform, highlights);
-            image.SavePng(outputPath);
+            return image;
         }
 
         private static bool TryRenderWithF3D(
@@ -1213,6 +1244,18 @@ namespace EasyEDA_Loader
 
             GetSelectedViews(options);
             return options;
+        }
+
+        private static StepProjectionOptions CloneSingleViewOptions(StepProjectionOptions options, string viewName)
+        {
+            var clone = new StepProjectionOptions
+            {
+                ImageSizePixels = options?.ImageSizePixels ?? 1600,
+                PaddingPixels = options?.PaddingPixels ?? 80,
+                WriteMetadata = false
+            };
+            clone.ViewNames.Add(viewName);
+            return NormalizeOptions(clone);
         }
 
         private static IReadOnlyList<ViewSpec> GetSelectedViews(StepProjectionOptions options)
@@ -2678,6 +2721,14 @@ namespace EasyEDA_Loader
                 using (SKData data = image.Encode(SKEncodedImageFormat.Png, 100))
                 using (Stream stream = File.Create(path))
                     data.SaveTo(stream);
+            }
+
+            public byte[] ToPngBytes()
+            {
+                _canvas.Flush();
+                using (SKImage image = SKImage.FromBitmap(_bitmap))
+                using (SKData data = image.Encode(SKEncodedImageFormat.Png, 100))
+                    return data.ToArray();
             }
 
             public void BlendPixel(int x, int y, Rgba color)

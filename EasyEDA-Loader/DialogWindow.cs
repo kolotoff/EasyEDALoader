@@ -293,54 +293,32 @@ namespace EasyEDA_Loader
             if (modelInfo == null)
                 return;
 
-            string tempDirectory = Path.Combine(
-                Path.GetTempPath(),
-                "EasyEDA-Loader",
-                "Preview",
-                Guid.NewGuid().ToString("N"));
+            byte[] stepData = await Task.Run(() => Api.LoadModelAsync(modelInfo.Uuid, cancellationToken));
+            cancellationToken.ThrowIfCancellationRequested();
 
-            try
+            if (stepData == null || stepData.Length == 0)
+                return;
+
+            var options = new StepProjectionOptions
             {
-                Directory.CreateDirectory(tempDirectory);
+                ImageSizePixels = 256,
+                PaddingPixels = 16,
+                WriteMetadata = false
+            };
 
-                byte[] stepData = await Task.Run(() => Api.LoadModelAsync(modelInfo.Uuid, cancellationToken));
-                cancellationToken.ThrowIfCancellationRequested();
+            byte[] projectionPng = await Task.Run(() => StepProjectionRenderer.ProjectSingleViewPng(stepData, "z_plus", options));
+            cancellationToken.ThrowIfCancellationRequested();
 
-                if (stepData == null || stepData.Length == 0)
-                    return;
+            if (projectionPng == null || projectionPng.Length == 0)
+                return;
 
-                string safeModelName = SanitizePreviewFileName(string.IsNullOrWhiteSpace(modelInfo.Name) ? modelInfo.Uuid : modelInfo.Name);
-                string stepPath = Path.Combine(tempDirectory, safeModelName + ".step");
-                File.WriteAllBytes(stepPath, stepData);
-
-                var options = new StepProjectionOptions
-                {
-                    ImageSizePixels = 512,
-                    PaddingPixels = 32,
-                    WriteMetadata = false
-                };
-                options.ViewNames.Add("z_plus");
-
-                StepProjectionReport report = await Task.Run(() => StepProjectionRenderer.ProjectFile(stepPath, tempDirectory, options));
-                cancellationToken.ThrowIfCancellationRequested();
-
-                string projectionPath = report?.OutputFiles?.FirstOrDefault(file =>
-                    string.Equals(Path.GetExtension(file), ".png", StringComparison.OrdinalIgnoreCase));
-                if (string.IsNullOrEmpty(projectionPath) || !File.Exists(projectionPath))
-                    return;
-
-                modelProjectionImage.Source = LoadBitmapImage(projectionPath);
-            }
-            finally
-            {
-                TryDeleteDirectory(tempDirectory);
-            }
+            modelProjectionImage.Source = LoadBitmapImage(projectionPng);
         }
 
-        private static BitmapImage LoadBitmapImage(string imagePath)
+        private static BitmapImage LoadBitmapImage(byte[] imageData)
         {
             var bitmap = new BitmapImage();
-            using (var stream = new MemoryStream(File.ReadAllBytes(imagePath)))
+            using (var stream = new MemoryStream(imageData))
             {
                 bitmap.BeginInit();
                 bitmap.CacheOption = BitmapCacheOption.OnLoad;
@@ -350,26 +328,6 @@ namespace EasyEDA_Loader
             }
 
             return bitmap;
-        }
-
-        private static string SanitizePreviewFileName(string value)
-        {
-            var invalidCharacters = Path.GetInvalidFileNameChars();
-            var characters = (value ?? "model").Select(character =>
-                invalidCharacters.Contains(character) ? '_' : character).ToArray();
-            return new string(characters);
-        }
-
-        private static void TryDeleteDirectory(string directory)
-        {
-            try
-            {
-                if (Directory.Exists(directory))
-                    Directory.Delete(directory, true);
-            }
-            catch
-            {
-            }
         }
 
         public void UpdateAddButtonState()
