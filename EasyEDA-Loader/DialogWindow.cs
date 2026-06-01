@@ -35,32 +35,32 @@ namespace EasyEDA_Loader
         private bool _isRestoringSession;
         private F3DPreviewHost _originalF3DPreview;
         private F3DPreviewHost _cleanF3DPreview;
-        private DispatcherTimer _mouseSyncTimer;
-        private F3DPreviewHost _mouseSyncSource;
-        private bool _mouseSyncLeftDown;
-        private bool _mouseSyncRightDown;
         private const int GwlStyle = -16;
+        private const int GwlWndProc = -4;
         private const int SwShow = 5;
         private const int WmMouseMove = 0x0200;
         private const int WmLButtonDown = 0x0201;
         private const int WmLButtonUp = 0x0202;
         private const int WmRButtonDown = 0x0204;
         private const int WmRButtonUp = 0x0205;
-        private const int MkLButton = 0x0001;
-        private const int MkRButton = 0x0002;
-        private const int VirtualKeyLButton = 0x01;
-        private const int VirtualKeyRButton = 0x02;
+        private const int WmMButtonDown = 0x0207;
+        private const int WmMButtonUp = 0x0208;
+        private const int WmMouseWheel = 0x020A;
+        private const int WmMouseHWheel = 0x020E;
         private const long WsChild = 0x40000000L;
         private const long WsVisible = 0x10000000L;
         private const long WsCaption = 0x00C00000L;
         private const long WsThickFrame = 0x00040000L;
         private const long WsPopup = unchecked((long)0x80000000L);
         private const uint SwpShowWindow = 0x0040;
+        private bool _isMirroringF3DMessage;
         private static readonly char[] PartNumberSeparators = { '\r', '\n', '\t', ' ', ',', ';', '|' };
         private static readonly string SessionStateFilePath = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "EasyEDA-Loader",
             "dialog-session.json");
+
+        private delegate IntPtr WindowProc(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
 
         [StructLayout(LayoutKind.Sequential)]
         private struct NativePoint
@@ -82,22 +82,19 @@ namespace EasyEDA_Loader
         private static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int x, int y, int cx, int cy, uint uFlags);
 
         [DllImport("user32.dll")]
-        private static extern IntPtr WindowFromPoint(NativePoint point);
-
-        [DllImport("user32.dll")]
-        private static extern bool GetCursorPos(out NativePoint point);
-
-        [DllImport("user32.dll")]
-        private static extern bool IsChild(IntPtr hWndParent, IntPtr hWnd);
+        private static extern bool ClientToScreen(IntPtr hWnd, ref NativePoint point);
 
         [DllImport("user32.dll")]
         private static extern bool ScreenToClient(IntPtr hWnd, ref NativePoint point);
 
         [DllImport("user32.dll")]
-        private static extern bool PostMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
+        private static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
 
         [DllImport("user32.dll")]
-        private static extern short GetKeyState(int nVirtKey);
+        private static extern bool EnableWindow(IntPtr hWnd, bool bEnable);
+
+        [DllImport("user32.dll")]
+        private static extern IntPtr CallWindowProc(IntPtr lpPrevWndFunc, IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
 
         [DllImport("user32.dll", EntryPoint = "GetWindowLong")]
         private static extern int GetWindowLong32(IntPtr hWnd, int nIndex);
@@ -105,10 +102,10 @@ namespace EasyEDA_Loader
         [DllImport("user32.dll", EntryPoint = "GetWindowLongPtr")]
         private static extern IntPtr GetWindowLongPtr64(IntPtr hWnd, int nIndex);
 
-        [DllImport("user32.dll", EntryPoint = "SetWindowLong")]
+        [DllImport("user32.dll", EntryPoint = "SetWindowLong", SetLastError = true)]
         private static extern int SetWindowLong32(IntPtr hWnd, int nIndex, int dwNewLong);
 
-        [DllImport("user32.dll", EntryPoint = "SetWindowLongPtr")]
+        [DllImport("user32.dll", EntryPoint = "SetWindowLongPtr", SetLastError = true)]
         private static extern IntPtr SetWindowLongPtr64(IntPtr hWnd, int nIndex, IntPtr dwNewLong);
 
         public List<ComponentSelection> SelectedComponents { get; private set; }
@@ -431,20 +428,22 @@ namespace EasyEDA_Loader
                 File.WriteAllBytes(stepPath, stepData);
             }
 
-            await StartF3DPreviewAsync(_originalF3DPreview, stepPath, cancellationToken);
-
             try
             {
-                string cleanStepPath = await GetOrCreateCleanStepPreviewFileAsync(modelInfo, stepData, stepPath, cancellationToken);
-                await StartF3DPreviewAsync(_cleanF3DPreview, cleanStepPath, cancellationToken);
+                string cleanStepPath = await GetOrCreateCleanStepPreviewFileAsync(modelInfo, stepData, cancellationToken);
+
+                await StartF3DPreviewAsync(_originalF3DPreview, stepPath, false, cancellationToken);
+                await StartF3DPreviewAsync(_cleanF3DPreview, cleanStepPath, false, cancellationToken);
+
+                InstallF3DPreviewSync();
+                SetF3DPreviewEnabled(_originalF3DPreview, true);
+                SetF3DPreviewEnabled(_cleanF3DPreview, true);
             }
             catch (StepWatermarkCleanFailedException ex)
             {
                 ShowMarkdownReport(ex.ReportPath);
                 EasyEDALoaderModule.Trace("Failed to create clean STEP preview: " + ex);
             }
-
-            EnsureMouseSyncTimer();
         }
 
         private static BitmapImage LoadBitmapImage(byte[] imageData)
@@ -465,47 +464,33 @@ namespace EasyEDA_Loader
         private static async Task<string> GetOrCreateCleanStepPreviewFileAsync(
             EeFootprint3dModel modelInfo,
             byte[] originalStepData,
-            string originalStepPath,
             CancellationToken cancellationToken)
         {
-            string cleanStepPath = GetSiblingCleanStepPath(originalStepPath);
-            if (File.Exists(cleanStepPath) && new FileInfo(cleanStepPath).Length > 0)
-                return cleanStepPath;
-
-            byte[] sourceStepData = originalStepData;
-            if ((sourceStepData == null || sourceStepData.Length == 0) && File.Exists(originalStepPath))
-                sourceStepData = File.ReadAllBytes(originalStepPath);
-
             cancellationToken.ThrowIfCancellationRequested();
-            if (sourceStepData == null || sourceStepData.Length == 0)
+            if (originalStepData == null || originalStepData.Length == 0)
                 throw new InvalidOperationException("Original STEP data is empty.");
 
-            string safeName = ModelCache.GetSafeFileName(modelInfo?.Uuid ?? modelInfo?.Name ?? Path.GetFileNameWithoutExtension(originalStepPath));
-            byte[] cleanStepData = await Task.Run(() =>
-                StepWatermarkCleanVerifier.CleanOrThrow(
-                    sourceStepData,
-                    safeName,
-                    Path.Combine(
-                        ModelCache.GetLocalDataRoot(),
-                        "StepCleanerReports",
-                        safeName + "_" + DateTime.Now.ToString("yyyyMMdd_HHmmss", CultureInfo.InvariantCulture))),
+            string modelKey = modelInfo?.Uuid ?? modelInfo?.Name;
+            string safeName = ModelCache.GetSafeFileName(modelKey);
+            byte[] cleanStepData = await ModelCache.GetCleanStepModelAsync(
+                modelKey,
+                () => Task.Run(() =>
+                    StepWatermarkCleanVerifier.CleanOrThrow(
+                        originalStepData,
+                        safeName,
+                        Path.Combine(
+                            ModelCache.GetLocalDataRoot(),
+                            "StepCleanerReports",
+                            safeName + "_" + DateTime.Now.ToString("yyyyMMdd_HHmmss", CultureInfo.InvariantCulture))),
+                    cancellationToken),
                 cancellationToken);
 
             cancellationToken.ThrowIfCancellationRequested();
 
-            string directory = Path.GetDirectoryName(cleanStepPath);
-            if (!string.IsNullOrEmpty(directory))
-                Directory.CreateDirectory(directory);
+            if (cleanStepData == null || cleanStepData.Length == 0)
+                throw new InvalidOperationException("Clean STEP data is empty.");
 
-            File.WriteAllBytes(cleanStepPath, cleanStepData);
-            return cleanStepPath;
-        }
-
-        private static string GetSiblingCleanStepPath(string originalStepPath)
-        {
-            string directory = Path.GetDirectoryName(originalStepPath);
-            string name = Path.GetFileNameWithoutExtension(originalStepPath);
-            return Path.Combine(directory ?? string.Empty, name + "_clean.step");
+            return ModelCache.GetCleanStepPath(modelKey);
         }
 
         private static F3DPreviewHost CreateF3DPreviewHost(string name)
@@ -524,7 +509,7 @@ namespace EasyEDA_Loader
             return host;
         }
 
-        private async Task StartF3DPreviewAsync(F3DPreviewHost preview, string stepPath, CancellationToken cancellationToken)
+        private async Task StartF3DPreviewAsync(F3DPreviewHost preview, string stepPath, bool enableInput, CancellationToken cancellationToken)
         {
             string executable = FindF3DExecutable();
             if (string.IsNullOrEmpty(executable))
@@ -582,6 +567,7 @@ namespace EasyEDA_Loader
 
                 ShowWindow(preview.WindowHandle, SwShow);
                 ResizeEmbeddedF3DWindow(preview);
+                SetF3DPreviewEnabled(preview, enableInput);
             }
             catch (OperationCanceledException)
             {
@@ -632,7 +618,7 @@ namespace EasyEDA_Loader
 
         private void StopF3DPreview()
         {
-            DisableMouseSyncTimer();
+            UninstallF3DPreviewSync();
             StopF3DPreview(_originalF3DPreview);
             StopF3DPreview(_cleanF3DPreview);
         }
@@ -666,104 +652,134 @@ namespace EasyEDA_Loader
             }
         }
 
-        private void EnsureMouseSyncTimer()
+        private void SetF3DPreviewEnabled(F3DPreviewHost preview, bool enabled)
         {
-            if (_mouseSyncTimer == null)
-            {
-                _mouseSyncTimer = new DispatcherTimer(DispatcherPriority.Input)
-                {
-                    Interval = TimeSpan.FromMilliseconds(16)
-                };
-                _mouseSyncTimer.Tick += MouseSyncTimer_Tick;
-            }
-
-            if (!_mouseSyncTimer.IsEnabled)
-                _mouseSyncTimer.Start();
+            if (IsPreviewReady(preview))
+                EnableWindow(preview.WindowHandle, enabled);
         }
 
-        private void DisableMouseSyncTimer()
-        {
-            if (_mouseSyncTimer != null)
-                _mouseSyncTimer.Stop();
-
-            ReleaseMouseSyncTarget();
-            _mouseSyncSource = null;
-        }
-
-        private void MouseSyncTimer_Tick(object sender, EventArgs e)
+        private void InstallF3DPreviewSync()
         {
             if (!IsPreviewReady(_originalF3DPreview) || !IsPreviewReady(_cleanF3DPreview))
                 return;
-            if (!GetCursorPos(out NativePoint screenPoint))
-                return;
 
-            bool leftDown = IsVirtualKeyDown(VirtualKeyLButton);
-            bool rightDown = IsVirtualKeyDown(VirtualKeyRButton);
-            if (!leftDown && !rightDown)
-            {
-                ReleaseMouseSyncTarget();
-                _mouseSyncSource = null;
-                return;
-            }
-
-            if (_mouseSyncSource == null)
-            {
-                _mouseSyncSource = GetPreviewUnderPoint(screenPoint);
-                if (_mouseSyncSource == null)
-                    return;
-            }
-
-            F3DPreviewHost target = ReferenceEquals(_mouseSyncSource, _originalF3DPreview)
-                ? _cleanF3DPreview
-                : _originalF3DPreview;
-            if (!IsPreviewReady(target))
-                return;
-
-            NativePoint targetPoint = MapPointBetweenPreviews(_mouseSyncSource, target, screenPoint);
-            int buttonState = GetMouseButtonState(leftDown, rightDown);
-
-            if (leftDown && !_mouseSyncLeftDown)
-                PostMessage(target.WindowHandle, WmLButtonDown, new IntPtr(buttonState | MkLButton), MakeLParam(targetPoint.X, targetPoint.Y));
-            if (rightDown && !_mouseSyncRightDown)
-                PostMessage(target.WindowHandle, WmRButtonDown, new IntPtr(buttonState | MkRButton), MakeLParam(targetPoint.X, targetPoint.Y));
-
-            PostMessage(target.WindowHandle, WmMouseMove, new IntPtr(buttonState), MakeLParam(targetPoint.X, targetPoint.Y));
-
-            if (!leftDown && _mouseSyncLeftDown)
-                PostMessage(target.WindowHandle, WmLButtonUp, new IntPtr(buttonState & ~MkLButton), MakeLParam(targetPoint.X, targetPoint.Y));
-            if (!rightDown && _mouseSyncRightDown)
-                PostMessage(target.WindowHandle, WmRButtonUp, new IntPtr(buttonState & ~MkRButton), MakeLParam(targetPoint.X, targetPoint.Y));
-
-            _mouseSyncLeftDown = leftDown;
-            _mouseSyncRightDown = rightDown;
+            InstallF3DWindowProc(_originalF3DPreview, _cleanF3DPreview);
+            InstallF3DWindowProc(_cleanF3DPreview, _originalF3DPreview);
         }
 
-        private void ReleaseMouseSyncTarget()
+        private void InstallF3DWindowProc(F3DPreviewHost source, F3DPreviewHost target)
         {
-            if (_mouseSyncSource == null || (!_mouseSyncLeftDown && !_mouseSyncRightDown))
+            if (source.WindowProc != null)
                 return;
 
-            F3DPreviewHost target = ReferenceEquals(_mouseSyncSource, _originalF3DPreview)
-                ? _cleanF3DPreview
-                : _originalF3DPreview;
-            if (IsPreviewReady(target) && GetCursorPos(out NativePoint screenPoint))
-            {
-                NativePoint targetPoint = MapPointBetweenPreviews(_mouseSyncSource, target, screenPoint);
-                if (_mouseSyncLeftDown)
-                    PostMessage(target.WindowHandle, WmLButtonUp, IntPtr.Zero, MakeLParam(targetPoint.X, targetPoint.Y));
-                if (_mouseSyncRightDown)
-                    PostMessage(target.WindowHandle, WmRButtonUp, IntPtr.Zero, MakeLParam(targetPoint.X, targetPoint.Y));
-            }
+            source.WindowProc = (hWnd, msg, wParam, lParam) =>
+                F3DPreviewWindowProc(source, target, hWnd, msg, wParam, lParam);
 
-            _mouseSyncLeftDown = false;
-            _mouseSyncRightDown = false;
+            IntPtr procPointer = Marshal.GetFunctionPointerForDelegate(source.WindowProc);
+            source.OriginalWindowProc = SetWindowLongPtr(source.WindowHandle, GwlWndProc, procPointer);
+            if (source.OriginalWindowProc == IntPtr.Zero)
+            {
+                int error = Marshal.GetLastWin32Error();
+                EasyEDALoaderModule.Trace("Unable to install F3D preview sync for " + source.Name + ". Win32 error: " + error);
+                source.WindowProc = null;
+            }
         }
 
-        private static NativePoint MapPointBetweenPreviews(F3DPreviewHost source, F3DPreviewHost target, NativePoint screenPoint)
+        private void UninstallF3DPreviewSync()
         {
-            NativePoint sourcePoint = screenPoint;
-            ScreenToClient(source.WindowHandle, ref sourcePoint);
+            RestoreF3DWindowProc(_originalF3DPreview);
+            RestoreF3DWindowProc(_cleanF3DPreview);
+            _isMirroringF3DMessage = false;
+        }
 
+        private static void RestoreF3DWindowProc(F3DPreviewHost preview)
+        {
+            if (preview == null)
+                return;
+
+            if (preview.WindowHandle != IntPtr.Zero && preview.OriginalWindowProc != IntPtr.Zero)
+                SetWindowLongPtr(preview.WindowHandle, GwlWndProc, preview.OriginalWindowProc);
+
+            preview.OriginalWindowProc = IntPtr.Zero;
+            preview.WindowProc = null;
+        }
+
+        private IntPtr F3DPreviewWindowProc(
+            F3DPreviewHost source,
+            F3DPreviewHost target,
+            IntPtr hWnd,
+            int msg,
+            IntPtr wParam,
+            IntPtr lParam)
+        {
+            if (!_isMirroringF3DMessage && IsF3DMouseSyncMessage(msg) && IsPreviewReady(target))
+                MirrorF3DPreviewMessage(source, target, msg, wParam, lParam);
+
+            return CallF3DOriginalWindowProc(source, hWnd, msg, wParam, lParam);
+        }
+
+        private IntPtr CallF3DOriginalWindowProc(F3DPreviewHost source, IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam)
+        {
+            if (source.OriginalWindowProc == IntPtr.Zero)
+                return IntPtr.Zero;
+
+            return CallWindowProc(source.OriginalWindowProc, hWnd, msg, wParam, lParam);
+        }
+
+        private void MirrorF3DPreviewMessage(F3DPreviewHost source, F3DPreviewHost target, int msg, IntPtr wParam, IntPtr lParam)
+        {
+            IntPtr mappedLParam = IsMouseWheelMessage(msg)
+                ? MapScreenPointLParam(source, target, lParam)
+                : MapClientPointLParam(source, target, lParam);
+
+            _isMirroringF3DMessage = true;
+            try
+            {
+                SendMessage(target.WindowHandle, msg, wParam, mappedLParam);
+            }
+            finally
+            {
+                _isMirroringF3DMessage = false;
+            }
+        }
+
+        private static bool IsF3DMouseSyncMessage(int msg)
+        {
+            return msg == WmMouseMove ||
+                   msg == WmLButtonDown ||
+                   msg == WmLButtonUp ||
+                   msg == WmRButtonDown ||
+                   msg == WmRButtonUp ||
+                   msg == WmMButtonDown ||
+                   msg == WmMButtonUp ||
+                   msg == WmMouseWheel ||
+                   msg == WmMouseHWheel;
+        }
+
+        private static bool IsMouseWheelMessage(int msg)
+        {
+            return msg == WmMouseWheel || msg == WmMouseHWheel;
+        }
+
+        private static IntPtr MapClientPointLParam(F3DPreviewHost source, F3DPreviewHost target, IntPtr lParam)
+        {
+            NativePoint sourcePoint = LParamToPoint(lParam);
+            NativePoint targetPoint = MapClientPointBetweenPreviews(source, target, sourcePoint);
+            return MakeLParam(targetPoint.X, targetPoint.Y);
+        }
+
+        private static IntPtr MapScreenPointLParam(F3DPreviewHost source, F3DPreviewHost target, IntPtr lParam)
+        {
+            NativePoint sourceClientPoint = LParamToPoint(lParam);
+            ScreenToClient(source.WindowHandle, ref sourceClientPoint);
+
+            NativePoint targetPoint = MapClientPointBetweenPreviews(source, target, sourceClientPoint);
+            ClientToScreen(target.WindowHandle, ref targetPoint);
+            return MakeLParam(targetPoint.X, targetPoint.Y);
+        }
+
+        private static NativePoint MapClientPointBetweenPreviews(F3DPreviewHost source, F3DPreviewHost target, NativePoint sourcePoint)
+        {
             int sourceWidth = Math.Max(1, source.Panel.ClientSize.Width);
             int sourceHeight = Math.Max(1, source.Panel.ClientSize.Height);
             int targetWidth = Math.Max(1, target.Panel.ClientSize.Width);
@@ -774,23 +790,6 @@ namespace EasyEDA_Loader
                 X = Math.Max(0, Math.Min(targetWidth - 1, sourcePoint.X * targetWidth / sourceWidth)),
                 Y = Math.Max(0, Math.Min(targetHeight - 1, sourcePoint.Y * targetHeight / sourceHeight))
             };
-        }
-
-        private F3DPreviewHost GetPreviewUnderPoint(NativePoint screenPoint)
-        {
-            IntPtr window = WindowFromPoint(screenPoint);
-            if (WindowBelongsToPreview(_originalF3DPreview, window))
-                return _originalF3DPreview;
-            if (WindowBelongsToPreview(_cleanF3DPreview, window))
-                return _cleanF3DPreview;
-            return null;
-        }
-
-        private static bool WindowBelongsToPreview(F3DPreviewHost preview, IntPtr window)
-        {
-            return IsPreviewReady(preview) &&
-                   window != IntPtr.Zero &&
-                   (window == preview.WindowHandle || IsChild(preview.WindowHandle, window));
         }
 
         private static bool IsPreviewReady(F3DPreviewHost preview)
@@ -808,19 +807,14 @@ namespace EasyEDA_Loader
             }
         }
 
-        private static bool IsVirtualKeyDown(int virtualKey)
+        private static NativePoint LParamToPoint(IntPtr lParam)
         {
-            return (GetKeyState(virtualKey) & unchecked((short)0x8000)) != 0;
-        }
-
-        private static int GetMouseButtonState(bool leftDown, bool rightDown)
-        {
-            int state = 0;
-            if (leftDown)
-                state |= MkLButton;
-            if (rightDown)
-                state |= MkRButton;
-            return state;
+            long value = lParam.ToInt64();
+            return new NativePoint
+            {
+                X = unchecked((short)(value & 0xffff)),
+                Y = unchecked((short)((value >> 16) & 0xffff))
+            };
         }
 
         private static IntPtr MakeLParam(int low, int high)
@@ -871,6 +865,8 @@ namespace EasyEDA_Loader
             public Forms.Panel Panel { get; set; }
             public Process Process { get; set; }
             public IntPtr WindowHandle { get; set; }
+            public IntPtr OriginalWindowProc { get; set; }
+            public WindowProc WindowProc { get; set; }
         }
 
         public void UpdateAddButtonState()

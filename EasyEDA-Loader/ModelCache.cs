@@ -29,9 +29,25 @@ namespace EasyEDA_Loader
                 cancellationToken);
         }
 
+        public static Task<byte[]> GetCleanStepModelAsync(string modelUuid, Func<Task<byte[]>> clean, CancellationToken cancellationToken)
+        {
+            if (clean == null)
+                throw new ArgumentNullException(nameof(clean));
+
+            return GetOrDownloadAsync(
+                GetCleanStepPath(modelUuid),
+                clean,
+                cancellationToken);
+        }
+
         public static string GetOriginalStepPath(string modelUuid)
         {
             return Path.Combine(GetModelCacheDirectory("Original"), GetSafeFileName(modelUuid) + ".step");
+        }
+
+        public static string GetCleanStepPath(string modelUuid)
+        {
+            return Path.Combine(GetModelCacheDirectory("Clean"), GetSafeFileName(modelUuid) + "_clean.step");
         }
 
         public static string GetRawObjPath(string modelUuid)
