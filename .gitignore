@@ -58,5 +58,6 @@ TestResult.xml
 nunit-*.xml
 
 # Generated STEP cleaner outputs
+Test/StepCleaner/Data/
 Test/StepCleaner/Data/Clean/
 Test/StepCleaner/Data/Projection/
