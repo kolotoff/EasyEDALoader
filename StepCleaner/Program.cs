@@ -17,6 +17,9 @@ namespace StepCleaner
         private const double MaxOutsideDetectionRegionChangeRatio = 0.005;
         private const int VerificationProjectionImageSizePixels = 1000;
         private const int VerificationProjectionPaddingPixels = 50;
+        private const int FlatnessEdgeThreshold = 28;
+        private const double MaxCleanedRegionEdgeRatio = 0.035;
+        private const double MaxRetainedRegionEdgeRatio = 0.45;
 
         private static int Main(string[] args)
         {
@@ -415,35 +418,150 @@ namespace StepCleaner
                 }
 
                 int allowedOutsideRegionChanges = GetAllowedOutsideRegionChanges(originalImage.Width, originalImage.Height);
-                if (changedOutsideRegion <= allowedOutsideRegionChanges)
-                    return;
-
-                string message =
-                    fileName +
-                    " changed outside detected cleanup region on " +
-                    viewName +
-                    ": pixels=" +
-                    changedOutsideRegion.ToString(CultureInfo.InvariantCulture) +
-                    ", allowed=" +
-                    allowedOutsideRegionChanges.ToString(CultureInfo.InvariantCulture) +
-                    ", first=(" +
-                    firstOutsideX.ToString(CultureInfo.InvariantCulture) +
-                    "," +
-                    firstOutsideY.ToString(CultureInfo.InvariantCulture) +
-                    ").";
-                result.Failures.Add(message);
-                result.VisualFailures.Add(new ProjectionVisualFailure
+                if (changedOutsideRegion > allowedOutsideRegionChanges)
                 {
-                    Category = "Original vs Clean: outside detected region",
-                    FileName = fileName,
-                    ViewName = viewName,
-                    Message = message,
-                    LeftLabel = "Original",
-                    LeftImagePath = originalProjectionPath,
-                    RightLabel = "Clean",
-                    RightImagePath = cleanProjectionPath
-                });
+                    string message =
+                        fileName +
+                        " changed outside detected cleanup region on " +
+                        viewName +
+                        ": pixels=" +
+                        changedOutsideRegion.ToString(CultureInfo.InvariantCulture) +
+                        ", allowed=" +
+                        allowedOutsideRegionChanges.ToString(CultureInfo.InvariantCulture) +
+                        ", first=(" +
+                        firstOutsideX.ToString(CultureInfo.InvariantCulture) +
+                        "," +
+                        firstOutsideY.ToString(CultureInfo.InvariantCulture) +
+                        ").";
+                    result.Failures.Add(message);
+                    result.VisualFailures.Add(new ProjectionVisualFailure
+                    {
+                        Category = "Original vs Clean: outside detected region",
+                        FileName = fileName,
+                        ViewName = viewName,
+                        Message = message,
+                        LeftLabel = "Original",
+                        LeftImagePath = originalProjectionPath,
+                        RightLabel = "Clean",
+                        RightImagePath = cleanProjectionPath
+                    });
+                }
+
+                foreach (StepProjectionDetectionRegion region in detectionRegions)
+                    VerifyCleanedRegionFlatness(
+                        fileName,
+                        viewName,
+                        originalImage,
+                        cleanImage,
+                        originalProjectionPath,
+                        cleanProjectionPath,
+                        region,
+                        result);
             }
+        }
+
+        private static void VerifyCleanedRegionFlatness(
+            string fileName,
+            string viewName,
+            SKBitmap originalImage,
+            SKBitmap cleanImage,
+            string originalProjectionPath,
+            string cleanProjectionPath,
+            StepProjectionDetectionRegion region,
+            PostCleanVerificationResult result)
+        {
+            int left = Math.Max(0, region.RectangleX);
+            int top = Math.Max(0, region.RectangleY);
+            int right = Math.Min(cleanImage.Width - 1, region.RectangleX + region.RectangleWidth - 1);
+            int bottom = Math.Min(cleanImage.Height - 1, region.RectangleY + region.RectangleHeight - 1);
+            int width = right - left + 1;
+            int height = bottom - top + 1;
+            if (width < 16 || height < 16 || width * height < 500)
+                return;
+
+            double originalEdgeRatio = MeasureRegionEdgeRatio(originalImage, left, top, right, bottom);
+            double cleanEdgeRatio = MeasureRegionEdgeRatio(cleanImage, left, top, right, bottom);
+            if (cleanEdgeRatio <= MaxCleanedRegionEdgeRatio ||
+                cleanEdgeRatio <= originalEdgeRatio * MaxRetainedRegionEdgeRatio)
+                return;
+
+            string message =
+                fileName +
+                " cleaned region still has non-flat visual detail on " +
+                viewName +
+                " at [" +
+                left.ToString(CultureInfo.InvariantCulture) +
+                "," +
+                top.ToString(CultureInfo.InvariantCulture) +
+                " " +
+                width.ToString(CultureInfo.InvariantCulture) +
+                "x" +
+                height.ToString(CultureInfo.InvariantCulture) +
+                "]: clean edge ratio=" +
+                cleanEdgeRatio.ToString("0.0000", CultureInfo.InvariantCulture) +
+                ", original edge ratio=" +
+                originalEdgeRatio.ToString("0.0000", CultureInfo.InvariantCulture) +
+                ".";
+            result.Failures.Add(message);
+            result.VisualFailures.Add(new ProjectionVisualFailure
+            {
+                Category = "Original vs Clean: non-flat cleaned region",
+                FileName = fileName,
+                ViewName = viewName,
+                Message = message,
+                LeftLabel = "Original",
+                LeftImagePath = originalProjectionPath,
+                RightLabel = "Clean",
+                RightImagePath = cleanProjectionPath
+            });
+        }
+
+        private static double MeasureRegionEdgeRatio(SKBitmap image, int left, int top, int right, int bottom)
+        {
+            int highContrastEdges = 0;
+            int sampledEdges = 0;
+
+            for (int y = top; y <= bottom; y++)
+            {
+                for (int x = left; x <= right; x++)
+                {
+                    SKColor current = image.GetPixel(x, y);
+                    if (IsBackgroundLike(current))
+                        continue;
+
+                    if (x < right)
+                    {
+                        SKColor next = image.GetPixel(x + 1, y);
+                        if (!IsBackgroundLike(next))
+                        {
+                            sampledEdges++;
+                            if (ColorDistance(current, next) > FlatnessEdgeThreshold)
+                                highContrastEdges++;
+                        }
+                    }
+
+                    if (y < bottom)
+                    {
+                        SKColor next = image.GetPixel(x, y + 1);
+                        if (!IsBackgroundLike(next))
+                        {
+                            sampledEdges++;
+                            if (ColorDistance(current, next) > FlatnessEdgeThreshold)
+                                highContrastEdges++;
+                        }
+                    }
+                }
+            }
+
+            if (sampledEdges == 0)
+                return 0.0;
+
+            return (double)highContrastEdges / sampledEdges;
+        }
+
+        private static bool IsBackgroundLike(SKColor color)
+        {
+            return color.Red >= 245 && color.Green >= 245 && color.Blue >= 245;
         }
 
         private static StepProjectionOptions CreateVerificationProjectionOptions()

@@ -235,8 +235,7 @@ namespace EasyEDA_Loader
                 context.StyledByTarget,
                 options);
             AddAutomaticRegionAdjacentFacesToFlattenResult(data, context.SolidInfo, flattenResult, detection.AutomaticRegions, options);
-            if (detection.RemovableSolidIds.Count == 0)
-                FlattenAllGeometryInsideAutomaticRegions(data, context.SolidInfo, flattenResult, flattenRegions, options, edits);
+            FlattenAllGeometryInsideAutomaticRegions(data, context.SolidInfo, flattenResult, flattenRegions, options, edits);
 
             FlattenCoplanarWatermarkFaces(
                 data,
