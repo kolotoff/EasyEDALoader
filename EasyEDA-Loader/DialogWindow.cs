@@ -79,6 +79,8 @@ namespace EasyEDA_Loader
         private F3DPreviewHost _f3dInputSource;
         private HwndSource _f3dRawInputSource;
         private bool _f3dRawInputRegistered;
+        private bool _isCriticalOperationActive;
+        private bool _operationCompleted;
         private static readonly char[] PartNumberSeparators = { '\r', '\n', '\t', ' ', ',', ';', '|' };
         private static readonly string SessionStateFilePath = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
@@ -203,6 +205,7 @@ namespace EasyEDA_Loader
 
         public List<ComponentSelection> SelectedComponents { get; private set; }
         public bool RemoveWatermark => removeWatermarkCheckBox?.IsChecked == true;
+        public Func<IReadOnlyList<ComponentSelection>, Action<ImportProgressEvent>, bool> ImportExecutor { get; set; }
 
         public DialogWindow()
         {
@@ -245,6 +248,7 @@ namespace EasyEDA_Loader
             ApplyAltiumTheme();
             SetSearchProgress(false);
             SetPreviewProgress(false);
+            SetOperationProgress(false);
             RestoreLastSession();
             searchTextBox.Focus();
             searchTextBox.CaretIndex = searchTextBox.Text?.Length ?? 0;
@@ -303,6 +307,64 @@ namespace EasyEDA_Loader
             previewProgressBar.IsIndeterminate = false;
             previewProgressBar.Value = progress;
             previewProgressText.Text = message;
+        }
+
+        private void SetOperationProgress(bool isVisible, string message = null, double? progress = null, bool isIndeterminate = true)
+        {
+            operationProgressPanel.Visibility = isVisible ? Visibility.Visible : Visibility.Collapsed;
+            operationProgressBar.IsIndeterminate = isVisible && (isIndeterminate || !progress.HasValue);
+            operationProgressBar.Value = isVisible && progress.HasValue ? progress.Value : 0;
+            operationProgressText.Text = isVisible ? (message ?? "Working...") : string.Empty;
+        }
+
+        private void BeginCriticalOperation(string message)
+        {
+            _isCriticalOperationActive = true;
+            _operationCompleted = false;
+            operationLogTextBox.Clear();
+            cancelButton.Content = "Working";
+            cancelButton.IsEnabled = false;
+            SetOperationProgress(true, message, null, true);
+            AppendOperationLog(message, false);
+            PumpUi();
+        }
+
+        private void CompleteCriticalOperation(string message, bool success)
+        {
+            _isCriticalOperationActive = false;
+            _operationCompleted = success;
+            cancelButton.Content = "Close";
+            cancelButton.IsEnabled = true;
+            SetOperationProgress(true, message, 100, false);
+            AppendOperationLog(message, !success);
+            PumpUi();
+        }
+
+        private void ReportImportProgress(ImportProgressEvent progress)
+        {
+            if (progress == null)
+                return;
+
+            SetOperationProgress(true, progress.Message, progress.Percent, progress.IsIndeterminate);
+            if (progress.AddToLog)
+                AppendOperationLog(progress.Message, progress.IsError);
+            PumpUi();
+        }
+
+        private void AppendOperationLog(string message, bool isError)
+        {
+            if (string.IsNullOrWhiteSpace(message))
+                return;
+
+            string prefix = isError ? "ERROR " : "";
+            operationLogTextBox.AppendText(DateTime.Now.ToString("HH:mm:ss", CultureInfo.InvariantCulture) + "  " + prefix + message + Environment.NewLine);
+            operationLogTextBox.ScrollToEnd();
+        }
+
+        private void PumpUi()
+        {
+            Dispatcher.Invoke(DispatcherPriority.Background, new Action(() => { }));
+            Forms.Application.DoEvents();
         }
 
         private async void ResultsGrid_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -1504,6 +1566,12 @@ namespace EasyEDA_Loader
                 var partInfo = partViewModel.PartInfo;
                 var progress = selectedParts.Count > 0 ? (i * 100.0) / selectedParts.Count : 0;
                 SetSearchProgress(true, $"Loading component {i + 1}/{selectedParts.Count}: {partInfo.Part}", progress);
+                ReportImportProgress(new ImportProgressEvent
+                {
+                    Message = $"Loading component data {i + 1}/{selectedParts.Count}: {partInfo.Part}",
+                    Percent = Math.Min(20, progress * 0.2),
+                    IsIndeterminate = false
+                });
 
                 var root = await Task.Run(() => Api.GetComponentJsonAsync(partInfo.Part, cts.Token));
 
@@ -1539,6 +1607,12 @@ namespace EasyEDA_Loader
                 throw new InvalidOperationException("No component data was loaded.");
 
             SetSearchProgress(true, "Import ready.", 100);
+            ReportImportProgress(new ImportProgressEvent
+            {
+                Message = "Component data loaded.",
+                Percent = 20,
+                IsIndeterminate = false
+            });
         }
 
         private void SetImportControlsEnabled(bool isEnabled)
@@ -1630,14 +1704,26 @@ namespace EasyEDA_Loader
             try
             {
                 Mouse.OverrideCursor = Cursors.Wait;
+                BeginCriticalOperation("Preparing import...");
                 await LoadComponentsForImportAsync(selectedParts, importTarget, includeFootprint, includeSymbol, include3dModel);
 
-                closeDialog = true;
-                DialogResult = true;
-                Close();
+                if (ImportExecutor == null)
+                    throw new InvalidOperationException("Import executor is not available.");
+
+                ReportImportProgress(new ImportProgressEvent
+                {
+                    Message = "Starting Altium import...",
+                    Percent = 20,
+                    IsIndeterminate = false
+                });
+
+                bool imported = ImportExecutor(SelectedComponents, ReportImportProgress);
+                closeDialog = imported;
+                CompleteCriticalOperation(imported ? "Import complete." : "Import did not complete.", imported);
             }
             catch (Exception ex)
             {
+                CompleteCriticalOperation($"Import failed: {ex.Message}", false);
                 MessageBox.Show($"Failed to load component data: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
             }
             finally
@@ -1653,7 +1739,10 @@ namespace EasyEDA_Loader
 
         private void CancelButton_Click(object sender, RoutedEventArgs e)
         {
-            DialogResult = false;
+            if (_isCriticalOperationActive)
+                return;
+
+            DialogResult = _operationCompleted;
             Close();
         }
 
@@ -1677,44 +1766,73 @@ namespace EasyEDA_Loader
                 try
                 {
                     Mouse.OverrideCursor = Cursors.Wait;
+                    SetImportControlsEnabled(false);
+                    BeginCriticalOperation("Saving STEP model...");
 
-                    var modelData = await GetSelectedStepModelForSaveAsync(_currentModel, cts.Token);
+                    var modelData = await GetSelectedStepModelForSaveAsync(_currentModel, cts.Token, (message, progress) =>
+                    {
+                        ReportImportProgress(new ImportProgressEvent
+                        {
+                            Message = message,
+                            Percent = progress,
+                            IsIndeterminate = !progress.HasValue
+                        });
+                    });
 
                     if (modelData != null && modelData.Length > 0)
                     {
+                        ReportImportProgress(new ImportProgressEvent
+                        {
+                            Message = "Writing STEP file...",
+                            Percent = 95,
+                            IsIndeterminate = false
+                        });
                         File.WriteAllBytes(saveFileDialog.FileName, modelData);
+                        CompleteCriticalOperation($"Model saved to {saveFileDialog.FileName}", true);
                         MessageBox.Show($"Model saved successfully to {saveFileDialog.FileName}", "Success", MessageBoxButton.OK, MessageBoxImage.Information);
                     }
                     else
                     {
+                        CompleteCriticalOperation("Model save failed: downloaded data was empty.", false);
                         MessageBox.Show("Failed to download model data.", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
                     }
                 }
                 catch (StepWatermarkCleanFailedException ex)
                 {
+                    CompleteCriticalOperation($"Failed to clean model: {ex.Message}", false);
                     ShowMarkdownReport(ex.ReportPath);
                     MessageBox.Show($"Failed to clean model: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
                 }
                 catch (Exception ex)
                 {
+                    CompleteCriticalOperation($"Failed to save model: {ex.Message}", false);
                     MessageBox.Show($"Failed to save model: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
                 }
                 finally
                 {
                     Mouse.OverrideCursor = null;
+                    SetImportControlsEnabled(true);
                     saveModelButton.IsEnabled = _currentModel != null;
                 }
             }
         }
 
-        private async Task<byte[]> GetSelectedStepModelForSaveAsync(EeFootprint3dModel modelInfo, CancellationToken cancellationToken)
+        private async Task<byte[]> GetSelectedStepModelForSaveAsync(
+            EeFootprint3dModel modelInfo,
+            CancellationToken cancellationToken,
+            Action<string, double?> progress)
         {
+            progress?.Invoke("Downloading STEP model...", 20);
             byte[] originalModel = await ModelCache.GetStepModelAsync(Api, modelInfo.Uuid, cancellationToken);
             cancellationToken.ThrowIfCancellationRequested();
 
             if (!RemoveWatermark)
+            {
+                progress?.Invoke("Using original STEP model.", 90);
                 return originalModel;
+            }
 
+            progress?.Invoke("Cleaning STEP watermark geometry...", null);
             return await Task.Run(() =>
                 StepWatermarkCleanVerifier.CleanOrThrow(
                     originalModel,
@@ -1749,6 +1867,14 @@ namespace EasyEDA_Loader
 
         protected override void OnClosing(CancelEventArgs e)
         {
+            if (_isCriticalOperationActive)
+            {
+                e.Cancel = true;
+                AppendOperationLog("Close ignored while operation is running.", false);
+                PumpUi();
+                return;
+            }
+
             SaveLastSession();
             cts?.Cancel();
             previewCts?.Cancel();

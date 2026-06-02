@@ -21,6 +21,7 @@ namespace EasyEDA_Loader
         public string PartNumber { get; set; }
         public string Description { get; set; }
         public double HeightMm { get; set; }
+        public Vec3 ModelOffset { get; set; }
         public bool Has3dBodyProjection { get; set; }
         internal List<StepSilhouettePrimitive> ProjectionPrimitives { get; } = new List<StepSilhouettePrimitive>();
         public bool HasAssemblyDesignatorText { get; set; }

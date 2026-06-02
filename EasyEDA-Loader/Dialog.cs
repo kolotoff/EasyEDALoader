@@ -13,13 +13,16 @@ namespace EasyEDA_Loader
     public class Dialog
     {
         private DialogWindow wpfDialog;
+        private readonly Func<IReadOnlyList<ComponentSelection>, Action<ImportProgressEvent>, bool> importExecutor;
 
         public List<ComponentSelection> SelectedComponents => wpfDialog?.SelectedComponents;
         public bool RemoveWatermark => wpfDialog?.RemoveWatermark ?? true;
 
-        public Dialog()
+        public Dialog(Func<IReadOnlyList<ComponentSelection>, Action<ImportProgressEvent>, bool> importExecutor = null)
         {
+            this.importExecutor = importExecutor;
             wpfDialog = new DialogWindow();
+            wpfDialog.ImportExecutor = this.importExecutor;
             wpfDialog.ShowActivated = true;
             wpfDialog.WindowStartupLocation = WindowStartupLocation.CenterOwner;
 
@@ -59,6 +62,15 @@ namespace EasyEDA_Loader
         public bool IncludeSymbol { get; set; }
         public bool RemoveWatermark { get; set; }
         public ComponentImportTarget ImportTarget { get; set; }
+    }
+
+    public sealed class ImportProgressEvent
+    {
+        public string Message { get; set; }
+        public double? Percent { get; set; }
+        public bool IsIndeterminate { get; set; }
+        public bool IsError { get; set; }
+        public bool AddToLog { get; set; } = true;
     }
 
     public enum ComponentImportTarget

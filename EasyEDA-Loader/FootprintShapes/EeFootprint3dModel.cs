@@ -129,10 +129,11 @@ namespace EasyEDA_Loader
                 // The Z is the lowest Z of the mesh plus the Z offset (hence why we download the Raw mesh and search for the lowest vert.z as this offset is not part of the info)
 
                 // Will leave this for now as it's "close enough" most of the time to only need a nudge by a few 10ths of a millimeter
-                double modelX = ConvertX(Translation.X, ctx);
-                double modelY = ConvertY(Translation.Y, ctx);
+                double modelX = ctx.ModelOffset != null ? ctx.ModelOffset.X : ConvertX(Translation.X, ctx);
+                double modelY = ctx.ModelOffset != null ? ctx.ModelOffset.Y : ConvertY(Translation.Y, ctx);
                 ModelZInfo zInfo = zInfoTask.GetAwaiter().GetResult();
-                double standoffHeight = Translation.Z + zInfo.OffsetFromOrigin;
+                double modelZOffset = ctx.ModelOffset != null ? ctx.ModelOffset.Z : Translation.Z;
+                double standoffHeight = modelZOffset + zInfo.OffsetFromOrigin;
                 double modelHeight = ctx.HeightMm > 0 ? ctx.HeightMm : zInfo.Height;
                 double overallHeight = modelHeight > 0 ? standoffHeight + modelHeight : 0;
                 if (overallHeight > 0)

@@ -2718,13 +2718,51 @@ namespace EasyEDA_Loader
             double minLineLength = ProjectionLineWidthMm * MinVisibleLineLengthFactor;
             double minArcLength = ProjectionLineWidthMm * MinVisibleArcLengthFactor;
             double minArcRadius = ProjectionLineWidthMm * MinVisibleArcRadiusFactor;
-            return primitives.Where(primitive =>
+            double coverageTolerance = ProjectionLineWidthMm * StrokeCoverageDistanceFactor;
+            double sampleStep = Math.Max(ProjectionLineWidthMm * StrokeCoverageSampleStepFactor, OptimizePointGridMm);
+            double[] lengths = primitives.Select(PrimitiveLength).ToArray();
+            var result = new List<StepSilhouettePrimitive>(primitives.Count);
+
+            for (int index = 0; index < primitives.Count; index++)
             {
-                double length = PrimitiveLength(primitive);
-                if (primitive.Kind == StepSilhouettePrimitiveKind.Line)
-                    return length >= minLineLength;
-                return length >= minArcLength && primitive.Radius >= minArcRadius;
-            }).ToList();
+                StepSilhouettePrimitive primitive = primitives[index];
+                double length = lengths[index];
+                bool small = primitive.Kind == StepSilhouettePrimitiveKind.Line
+                    ? length < minLineLength
+                    : length < minArcLength || primitive.Radius < minArcRadius;
+
+                if (!small || !PrimitiveIsCoveredBySameOrLongerPrimitive(primitives, lengths, index, coverageTolerance, sampleStep))
+                    result.Add(primitive);
+            }
+
+            return result;
+        }
+
+        private static bool PrimitiveIsCoveredBySameOrLongerPrimitive(
+            List<StepSilhouettePrimitive> primitives,
+            double[] lengths,
+            int candidateIndex,
+            double coverageTolerance,
+            double sampleStep)
+        {
+            StepSilhouettePrimitive candidate = primitives[candidateIndex];
+            double candidateLength = lengths[candidateIndex];
+            for (int otherIndex = 0; otherIndex < primitives.Count; otherIndex++)
+            {
+                if (otherIndex == candidateIndex)
+                    continue;
+
+                double otherLength = lengths[otherIndex];
+                if (otherLength + PointEpsilonMm < candidateLength)
+                    continue;
+                if (Math.Abs(otherLength - candidateLength) <= PointEpsilonMm && otherIndex > candidateIndex)
+                    continue;
+
+                if (PrimitiveIsStrokeCovered(candidate, primitives[otherIndex], coverageTolerance, sampleStep))
+                    return true;
+            }
+
+            return false;
         }
 
         private static List<StepSilhouettePrimitive> RemoveStrokeCoveredPrimitives(List<StepSilhouettePrimitive> primitives)

@@ -276,6 +276,42 @@
             </DataGrid.Columns>
         </DataGrid>
 
+        <Border x:Name="operationProgressPanel"
+                Grid.Row="1"
+                Grid.Column="0"
+                Margin="12,0,12,10"
+                Padding="10"
+                Background="#FFFFFF"
+                BorderBrush="#AFC3DA"
+                BorderThickness="1"
+                Visibility="Collapsed">
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="*"/>
+                </Grid.RowDefinitions>
+                <TextBlock x:Name="operationProgressText"
+                           Grid.Row="0"
+                           Text="Importing..."
+                           FontWeight="SemiBold"
+                           Margin="0,0,0,8"/>
+                <ProgressBar x:Name="operationProgressBar"
+                             Grid.Row="1"
+                             IsIndeterminate="True"
+                             Margin="0,0,0,8"/>
+                <TextBox x:Name="operationLogTextBox"
+                         Grid.Row="2"
+                         IsReadOnly="True"
+                         AcceptsReturn="True"
+                         TextWrapping="Wrap"
+                         VerticalScrollBarVisibility="Auto"
+                         HorizontalScrollBarVisibility="Auto"
+                         FontFamily="Consolas"
+                         FontSize="11"/>
+            </Grid>
+        </Border>
+
         <Grid Grid.Row="2" Grid.Column="0" Margin="12,0,12,12">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="*"/>

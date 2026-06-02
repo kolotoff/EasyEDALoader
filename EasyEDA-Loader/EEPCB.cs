@@ -645,9 +645,65 @@ namespace EasyEDA_Loader
             if (Math.Abs(move.XMm) <= 0.000001 && Math.Abs(move.YMm) <= 0.000001)
                 return true;
 
-            body.MoveByXY(AltiumApi.MmToCoord(move.XMm), AltiumApi.MmToCoord(move.YMm));
+            if (!TranslateComponentBodyModelOriginMm(body, move.XMm, move.YMm))
+                body.MoveByXY(AltiumApi.MmToCoord(move.XMm), AltiumApi.MmToCoord(move.YMm));
+
             body.GraphicallyInvalidate();
             return true;
+        }
+
+        private static bool TranslateComponentBodyModelOriginMm(IPCB_ComponentBody body, double xMm, double yMm)
+        {
+            if (body == null)
+                return false;
+
+            object modelObject = TryInvokeResult(body, "Internal_GetModel");
+            if (!(modelObject is IPCB_Model model))
+                return false;
+
+            int originX = 0;
+            int originY = 0;
+            object origin = TryInvokeResult(model, "Internal_GetOrigin");
+            if (origin != null)
+            {
+                TryGetCoordPointValue(origin, "GetX", "X", out originX);
+                TryGetCoordPointValue(origin, "GetY", "Y", out originY);
+            }
+
+            var newOrigin = new CoordPoint
+            {
+                X = originX + AltiumApi.MmToCoord(xMm),
+                Y = originY + AltiumApi.MmToCoord(yMm)
+            };
+
+            model.SetOrigin(newOrigin);
+            body.SetModel(model);
+            body.SetState_FromModel();
+            return true;
+        }
+
+        private static bool TryGetCoordPointValue(object point, string methodName, string propertyName, out int value)
+        {
+            value = 0;
+            object raw = TryInvokeResult(point, methodName);
+            if (raw == null)
+            {
+                PropertyInfo property = point.GetType().GetProperty(propertyName, BindingFlags.Instance | BindingFlags.Public);
+                raw = property?.GetValue(point);
+            }
+
+            if (raw == null)
+                return false;
+
+            try
+            {
+                value = Convert.ToInt32(raw, CultureInfo.InvariantCulture);
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
         }
 
         public static StepSilhouetteBounds GetComponentBodyBoundsMm(IPCB_LibComponent component, IPCB_ComponentBody body, double fallbackCenterX, double fallbackCenterY, double fallbackWidth, double fallbackHeight)
