@@ -103,6 +103,7 @@ namespace EasyEDA_Loader
         private const double CompleteCircleMergeToleranceDeg = 1.0;
         private const double NearlyCompleteCircleCoverageDeg = 270.0;
         private const double NearlyCompleteCircleMaxGapDeg = 30.0;
+        private const double NearlyCompleteCircleMaxRadiusMm = 0.9;
         private const int NearlyCompleteCircleMinArcCount = 3;
         private const double EndpointSnapToleranceMm = 0.08;
         private const double RingInteriorLineToleranceMm = 0.08;
@@ -1461,6 +1462,9 @@ namespace EasyEDA_Loader
                 double centerX = arcs.Average(arc => arc.CenterX);
                 double centerY = arcs.Average(arc => arc.CenterY);
                 double radius = arcs.Average(arc => arc.Radius);
+                if (radius > NearlyCompleteCircleMaxRadiusMm)
+                    continue;
+
                 completed[item.Key] = FullCircleArcs(centerX, centerY, radius);
             }
 
