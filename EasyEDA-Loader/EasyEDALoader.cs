@@ -461,6 +461,7 @@ namespace EasyEDA_Loader
                                     RawModelTask = rawModelTask,
                                     RemoveWatermark = selection.RemoveWatermark,
                                     CleanText = selection.CleanText,
+                                    ImportLcscMechanicalLayers = selection.ImportLcscMechanicalLayers,
                                     PartNumber = partNumber,
                                     Description = footprintDescription,
                                     HeightMm = footprintHeight,

@@ -36,7 +36,9 @@ namespace EasyEDA_Loader
             {
                 try
                 {
-                    targetLayer = EEPCB.EELayerToAltium(layer.Name);
+                    if (!EEPCB.TryEELayerToAltium(layer.Name, ctx.ImportLcscMechanicalLayers, out targetLayer))
+                        return true;
+
                     if (targetLayer == TLayerConstant.eMechanical2)
                     {
                         if (string.Equals(Text, ".Designator", StringComparison.OrdinalIgnoreCase))

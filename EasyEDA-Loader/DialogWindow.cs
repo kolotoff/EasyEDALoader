@@ -206,6 +206,7 @@ namespace EasyEDA_Loader
         public List<ComponentSelection> SelectedComponents { get; private set; }
         public bool RemoveWatermark => removeWatermarkCheckBox?.IsChecked == true;
         public bool CleanText => RemoveWatermark && cleanTextCheckBox?.IsChecked == true;
+        public bool ImportLcscMechanicalLayers => importLcscMechanicalLayersCheckBox?.IsChecked == true;
         public Func<IReadOnlyList<ComponentSelection>, Action<ImportProgressEvent>, bool> ImportExecutor { get; set; }
 
         public DialogWindow()
@@ -305,6 +306,14 @@ namespace EasyEDA_Loader
 
             if (resultsGrid?.SelectedItem is PartInfoViewModel partViewModel)
                 await LoadPreviewAsync(partViewModel, previewCts.Token);
+        }
+
+        private void ImportOptionsChanged(object sender, RoutedEventArgs e)
+        {
+            if (_isRestoringSession)
+                return;
+
+            SaveLastSession();
         }
 
         private void UpdateCleanTextControlState()
@@ -1405,6 +1414,7 @@ namespace EasyEDA_Loader
                 searchTextBox.Text = state.SearchText ?? string.Empty;
                 removeWatermarkCheckBox.IsChecked = state.RemoveWatermark ?? true;
                 cleanTextCheckBox.IsChecked = state.CleanText ?? false;
+                importLcscMechanicalLayersCheckBox.IsChecked = state.ImportLcscMechanicalLayers ?? false;
                 UpdateCleanTextControlState();
 
                 searchResults.Clear();
@@ -1462,6 +1472,7 @@ namespace EasyEDA_Loader
                     SearchText = searchTextBox.Text,
                     RemoveWatermark = RemoveWatermark,
                     CleanText = CleanText,
+                    ImportLcscMechanicalLayers = ImportLcscMechanicalLayers,
                     SelectedPart = (resultsGrid.SelectedItem as PartInfoViewModel)?.PartInfo?.Part,
                     Results = searchResults.Select(result => new DialogSessionResult
                     {
@@ -1651,6 +1662,7 @@ namespace EasyEDA_Loader
                         IncludeSymbol = includeThisSymbol,
                         RemoveWatermark = RemoveWatermark,
                         CleanText = CleanText,
+                        ImportLcscMechanicalLayers = ImportLcscMechanicalLayers,
                         ImportTarget = importTarget
                     });
                 }
@@ -1683,6 +1695,7 @@ namespace EasyEDA_Loader
             }
             cancelButton.IsEnabled = isEnabled;
             removeWatermarkCheckBox.IsEnabled = isEnabled;
+            importLcscMechanicalLayersCheckBox.IsEnabled = isEnabled;
             UpdateCleanTextControlState();
         }
 
@@ -2020,6 +2033,7 @@ namespace EasyEDA_Loader
         public string SearchText { get; set; }
         public bool? RemoveWatermark { get; set; }
         public bool? CleanText { get; set; }
+        public bool? ImportLcscMechanicalLayers { get; set; }
         public string SelectedPart { get; set; }
         public List<DialogSessionResult> Results { get; set; }
     }

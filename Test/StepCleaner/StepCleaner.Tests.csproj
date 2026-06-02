@@ -14,6 +14,7 @@
     <Compile Include="..\..\EasyEDA-Loader\FootprintModelPlacement.cs" Link="FootprintModelPlacement.cs" />
     <Compile Include="..\..\EasyEDA-Loader\StepSilhouetteImageRenderer.cs" Link="StepSilhouetteImageRenderer.cs" />
     <Compile Include="..\..\EasyEDA-Loader\FootprintMetadataSelector.cs" Link="FootprintMetadataSelector.cs" />
+    <Compile Include="..\..\EasyEDA-Loader\FootprintLayerMap.cs" Link="FootprintLayerMap.cs" />
     <Compile Include="..\..\EasyEDA-Loader\ImportLibrarySavePolicy.cs" Link="ImportLibrarySavePolicy.cs" />
     <Compile Include="..\..\EasyEDA-Loader\SymbolImportRules.cs" Link="SymbolImportRules.cs" />
   </ItemGroup>

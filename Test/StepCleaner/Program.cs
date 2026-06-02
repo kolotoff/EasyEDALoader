@@ -479,6 +479,13 @@ namespace StepCleaner.Tests
             AssertEqual("Mechanical", FootprintLayerMap.NormalizeLayerName("Document"), "document layer should import as non-production mechanical documentation", failures);
             AssertEqual("TopSilkLayer", FootprintLayerMap.NormalizeLayerName("TopSilkLayer"), "existing EasyEDA layer names should remain unchanged", failures);
 
+            AssertEqual(null, FootprintLayerMap.NormalizeLayerName("ComponentShapeLayer", false), "component shape should be skipped when LCSC mechanical layers are disabled", failures);
+            AssertEqual(null, FootprintLayerMap.NormalizeLayerName("ComponentMarkingLayer", false), "component marking should be skipped when LCSC mechanical layers are disabled", failures);
+            AssertEqual(null, FootprintLayerMap.NormalizeLayerName("ComponentPolarityLayer", false), "component polarity should be skipped when LCSC mechanical layers are disabled", failures);
+            AssertEqual(null, FootprintLayerMap.NormalizeLayerName("LeadShapeLayer", false), "lead shape should be skipped when LCSC mechanical layers are disabled", failures);
+            AssertEqual(null, FootprintLayerMap.NormalizeLayerName("Document", false), "document layer should be skipped when LCSC mechanical layers are disabled", failures);
+            AssertEqual("TopSilkLayer", FootprintLayerMap.NormalizeLayerName("TopSilkLayer", false), "existing EasyEDA layer names should remain available when LCSC mechanical layers are disabled", failures);
+
             if (failures.Count > 0)
             {
                 Console.Error.WriteLine("Footprint layer regression test failed.");

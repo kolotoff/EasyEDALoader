@@ -19,6 +19,7 @@ namespace EasyEDA_Loader
         public Task<byte[]> RawModelTask { get; set; }
         public bool RemoveWatermark { get; set; }
         public bool CleanText { get; set; }
+        public bool ImportLcscMechanicalLayers { get; set; }
         public string PartNumber { get; set; }
         public string Description { get; set; }
         public double HeightMm { get; set; }

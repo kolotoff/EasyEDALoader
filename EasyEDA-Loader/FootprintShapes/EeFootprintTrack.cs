@@ -54,7 +54,9 @@ namespace EasyEDA_Loader
             {
                 try
                 {
-                    targetLayer = EEPCB.EELayerToAltium(layer.Name);
+                    if (!EEPCB.TryEELayerToAltium(layer.Name, ctx.ImportLcscMechanicalLayers, out targetLayer))
+                        return true;
+
                     for (var i = 1; i < Points.Count; ++i)
                     {
                         var track = EEPCB.CreateLine(c, targetLayer, ConvertX(Points[i - 1].X, ctx), ConvertY(Points[i - 1].Y, ctx), ConvertX(Points[i].X, ctx), ConvertY(Points[i].Y, ctx), StrokeWidth);

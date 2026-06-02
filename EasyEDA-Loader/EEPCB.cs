@@ -64,21 +64,41 @@ namespace EasyEDA_Loader
 
         public static TLayerConstant EELayerToAltium(string layer)
         {
+            return EELayerToAltium(layer, true);
+        }
+
+        public static TLayerConstant EELayerToAltium(string layer, bool importLcscMechanicalLayers)
+        {
+            if (TryEELayerToAltium(layer, importLcscMechanicalLayers, out TLayerConstant altiumLayer))
+                return altiumLayer;
+
+            throw new LayerMapException($"Skipped layer {layer}");
+        }
+
+        public static bool TryEELayerToAltium(string layer, bool importLcscMechanicalLayers, out TLayerConstant altiumLayer)
+        {
+            layer = FootprintLayerMap.NormalizeLayerName(layer, importLcscMechanicalLayers);
+            if (layer == null)
+            {
+                altiumLayer = default(TLayerConstant);
+                return false;
+            }
+
             switch (layer)
             {
-                case "TopLayer": return TLayerConstant.eTopLayer;
-                case "BottomLayer": return TLayerConstant.eBottomLayer;
-                case "TopSilkLayer": return TLayerConstant.eTopOverlay;
-                case "BottomSilkLayer": return TLayerConstant.eBottomOverlay;
-                case "TopPasteMaskLayer": return TLayerConstant.eTopPaste;
-                case "BottomPasteMaskLayer": return TLayerConstant.eBottomPaste;
-                case "TopSolderMaskLayer": return TLayerConstant.eTopSolder;
-                case "BottomSolderMaskLayer": return TLayerConstant.eBottomSolder;
-                case "BoardOutline": return TLayerConstant.eMechanical3;
-                case "Multi-Layer": return TLayerConstant.eMultiLayer;
-                case "TopAssembly": return TLayerConstant.eMechanical2;
-                case "Mechanical": return TLayerConstant.eMechanical2;
-                case "3DModel": return TLayerConstant.eMechanical1;
+                case "TopLayer": altiumLayer = TLayerConstant.eTopLayer; return true;
+                case "BottomLayer": altiumLayer = TLayerConstant.eBottomLayer; return true;
+                case "TopSilkLayer": altiumLayer = TLayerConstant.eTopOverlay; return true;
+                case "BottomSilkLayer": altiumLayer = TLayerConstant.eBottomOverlay; return true;
+                case "TopPasteMaskLayer": altiumLayer = TLayerConstant.eTopPaste; return true;
+                case "BottomPasteMaskLayer": altiumLayer = TLayerConstant.eBottomPaste; return true;
+                case "TopSolderMaskLayer": altiumLayer = TLayerConstant.eTopSolder; return true;
+                case "BottomSolderMaskLayer": altiumLayer = TLayerConstant.eBottomSolder; return true;
+                case "BoardOutline": altiumLayer = TLayerConstant.eMechanical3; return true;
+                case "Multi-Layer": altiumLayer = TLayerConstant.eMultiLayer; return true;
+                case "TopAssembly": altiumLayer = TLayerConstant.eMechanical2; return true;
+                case "Mechanical": altiumLayer = TLayerConstant.eMechanical2; return true;
+                case "3DModel": altiumLayer = TLayerConstant.eMechanical1; return true;
                 default: throw new LayerMapException($"Invalid layer {layer}");
             }
         }

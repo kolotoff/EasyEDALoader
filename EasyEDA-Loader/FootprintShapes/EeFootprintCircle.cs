@@ -74,7 +74,8 @@ namespace EasyEDA_Loader
             {
                 try
                 {
-                    targetLayer = EEPCB.EELayerToAltium(layer.Name);
+                    if (!EEPCB.TryEELayerToAltium(layer.Name, ctx.ImportLcscMechanicalLayers, out targetLayer))
+                        return true;
 
                     var arc = EEPCB.CreateArc(c, targetLayer, ConvertX(Cx, ctx), ConvertY(Cy, ctx), Radius, StrokeWidth, 0, 360);
                     if (arc != null)
