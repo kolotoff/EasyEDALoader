@@ -282,7 +282,7 @@ namespace EasyEDA_Loader
 
         private static string CleanPropertyValue(string value)
         {
-            if (string.IsNullOrWhiteSpace(value) || value == "-")
+            if (string.IsNullOrWhiteSpace(value) || value == "-" || value.Trim() == "*")
                 return "";
 
             return value.Trim();
@@ -458,7 +458,15 @@ namespace EasyEDA_Loader
                         if (targetSchDocument != null)
                             AltiumApi.GlobalVars.Client.ShowDocument(targetSchDocument);
 
-                        string description = productInfo?.Description ?? partName;
+                        string description = SymbolImportRules.SelectSymbolDescription(
+                            productInfo?.Description,
+                            root.Component?.Description,
+                            root.Component?.PackageDetail?.Title,
+                            package,
+                            partNumber,
+                            mounting,
+                            productInfo?.Parameters,
+                            BuildFootprintDescriptionGeometry(ee_footprint));
                         string designator = EESCH.SelectRuleDesignator(ee_symbol.Head.Parameters.Pre, partName, description, package);
 
                         var existingComponent = targetSchLib.GetState_SchComponentByLibRef(partName);
@@ -484,6 +492,9 @@ namespace EasyEDA_Loader
                     MessageBox.Show($"Failed to process component {selection.PartInfo.Name}: {ex.Message}", "EasyEDA Loader Error", MessageBoxButtons.OK, MessageBoxIcon.Hand);
                 }
             }
+
+            ImportLibrarySavePolicy.EnsureAutomaticLibrarySaveIsDisabled();
+            Trace("Imported libraries left unsaved by import policy.");
 
             // Return to the original document we started in
             if (currentDoc != null)

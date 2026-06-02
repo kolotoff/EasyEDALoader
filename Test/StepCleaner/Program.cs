@@ -174,8 +174,14 @@ namespace StepCleaner.Tests
             if (IsOption(args[0], "--symbol-rules"))
                 return RunSymbolRuleTests();
 
+            if (IsOption(args[0], "--import-save-policy"))
+                return RunImportSavePolicyTests();
+
             if (IsOption(args[0], "--async-import"))
                 return RunAsyncImportTests();
+
+            if (IsOption(args[0], "--footprint-placement"))
+                return RunFootprintPlacementTests();
 
             if (IsOption(args[0], "--silhouette"))
                 return SaveSilhouetteProjectionImage(args);
@@ -183,9 +189,75 @@ namespace StepCleaner.Tests
             Console.Error.WriteLine("Unknown command: " + args[0]);
             Console.Error.WriteLine("Usage: StepCleaner.Tests --metadata");
             Console.Error.WriteLine("Usage: StepCleaner.Tests --symbol-rules");
+            Console.Error.WriteLine("Usage: StepCleaner.Tests --import-save-policy");
             Console.Error.WriteLine("Usage: StepCleaner.Tests --async-import");
+            Console.Error.WriteLine("Usage: StepCleaner.Tests --footprint-placement");
             Console.Error.WriteLine("Usage: StepCleaner.Tests --silhouette <input.step> <output.png> [--rotx deg] [--roty deg] [--rotz deg] [--rotation2d deg] [--size pixels] [--padding pixels] [--no-grid] [--no-axes]");
             return 2;
+        }
+
+        private static int RunImportSavePolicyTests()
+        {
+            var failures = new List<string>();
+            string repoRoot = FindRepoRoot();
+
+            AssertEqual(
+                "False",
+                ImportLibrarySavePolicy.SaveLibrariesAfterImport ? "True" : "False",
+                "schematic/PCB library import must leave libraries unsaved for manual review",
+                failures);
+            AssertNoForbiddenLibrarySaveCalls(
+                Path.Combine(repoRoot, "EasyEDA-Loader", "EasyEDALoader.cs"),
+                "EasyEDALoader",
+                failures);
+
+            if (failures.Count > 0)
+            {
+                Console.Error.WriteLine("Import save policy regression test failed.");
+                foreach (string failure in failures)
+                    Console.Error.WriteLine("  " + failure);
+                return 1;
+            }
+
+            Console.WriteLine("Import save policy regression test passed.");
+            return 0;
+        }
+
+        private static int RunFootprintPlacementTests()
+        {
+            var failures = new List<string>();
+
+            var lm317ImportedBounds = new StepSilhouetteBounds
+            {
+                Left = -945.30976,
+                Bottom = 657.15,
+                Right = -938.20032,
+                Top = 663.65
+            };
+
+            FootprintModelMove move = FootprintModelPlacement.CalculateCenteringMoveMm(lm317ImportedBounds, 0.0, 0.0);
+            AssertNear(941.75504, move.XMm, 0.00001, "LM317 body should move from imported STEP bounds to footprint center on X", failures);
+            AssertNear(-660.4, move.YMm, 0.00001, "LM317 body should move from imported STEP bounds to footprint center on Y", failures);
+            AssertNear(0.0, lm317ImportedBounds.CenterX + move.XMm, 0.00001, "LM317 centered body X should match target center", failures);
+            AssertNear(0.0, lm317ImportedBounds.CenterY + move.YMm, 0.00001, "LM317 centered body Y should match target center", failures);
+
+            FootprintModelMove shiftedTargetMove = FootprintModelPlacement.CalculateCenteringMoveMm(lm317ImportedBounds, 2.5, -1.25);
+            AssertNear(2.5, lm317ImportedBounds.CenterX + shiftedTargetMove.XMm, 0.00001, "body centering should support non-zero EasyEDA model X", failures);
+            AssertNear(-1.25, lm317ImportedBounds.CenterY + shiftedTargetMove.YMm, 0.00001, "body centering should support non-zero EasyEDA model Y", failures);
+
+            AssertNear(0.0, FootprintModelPlacement.ProjectionPlacementRotationDeg(0.0), 0.00001, "projection placement should not apply model Z rotation a second time", failures);
+            AssertNear(355.0, FootprintModelPlacement.ProjectionPlacementRotationDeg(-5.0), 0.00001, "projection correction rotation should normalize negative angles", failures);
+
+            if (failures.Count > 0)
+            {
+                Console.Error.WriteLine("Footprint placement regression test failed.");
+                foreach (string failure in failures)
+                    Console.Error.WriteLine("  " + failure);
+                return 1;
+            }
+
+            Console.WriteLine("Footprint placement regression test passed.");
+            return 0;
         }
 
         private static int RunAsyncImportTests()
@@ -240,6 +312,35 @@ namespace StepCleaner.Tests
                 string line = lines[i].Trim();
                 if (line.Contains(".Wait()") || line.Contains(".Result"))
                     failures.Add(label + " line " + (i + 1).ToString(CultureInfo.InvariantCulture) + " blocks synchronously on a Task: " + line);
+            }
+        }
+
+        private static void AssertNoForbiddenLibrarySaveCalls(string filePath, string label, List<string> failures)
+        {
+            string[] lines = File.ReadAllLines(filePath);
+            string[] forbiddenTokens =
+            {
+                "SaveDocument",
+                "SaveObject",
+                "WorkspaceManager:SaveObject",
+                "CloseDocument"
+            };
+
+            for (int i = 0; i < lines.Length; i++)
+            {
+                string line = lines[i].Trim();
+                foreach (string forbiddenToken in forbiddenTokens)
+                {
+                    if (line.IndexOf(forbiddenToken, StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        failures.Add(
+                            label +
+                            " line " +
+                            (i + 1).ToString(CultureInfo.InvariantCulture) +
+                            " contains forbidden import-time library persistence call: " +
+                            line);
+                    }
+                }
             }
         }
 
@@ -360,6 +461,62 @@ namespace StepCleaner.Tests
             AssertEqual("not custom", SymbolImportRules.IsCustomParameter("Package") ? "custom" : "not custom", "package must not be added as a custom parameter", failures);
             AssertEqual("not custom", SymbolImportRules.IsCustomParameter("mounting") ? "custom" : "not custom", "mounting must not be added as a custom parameter", failures);
             AssertEqual("custom", SymbolImportRules.IsCustomParameter("Manufacturer") ? "custom" : "not custom", "manufacturer remains a custom GOST parameter", failures);
+
+            AssertEqual(
+                "3-position vertical through-hole male PCB power plug connector, 3.5 mm pitch",
+                SymbolImportRules.SelectSymbolDescription(
+                    productDescription: "",
+                    componentDescription: "",
+                    packageTitle: "MR30PB-M30.A.G.Y",
+                    packageName: "CONN-TH_MR30PB-M30.A.G.Y",
+                    partNumber: "MR30PB-M30.A.G.Y",
+                    mounting: "through-hole",
+                    parameters: new Dictionary<string, string>
+                    {
+                        { "Manufacturer", "AMASS(艾迈斯)" },
+                        { "Manufacturer Part", "MR30PB-M30.A.G.Y" },
+                        { "LCSC Part Name", "AMASS(艾迈斯)三芯动力电池马达e电调航模插头连接器 PCB板立式插头公头 金 黄MR30PB-M30.A.G.Y" }
+                    },
+                    geometry: CreateMr30FootprintGeometry()),
+                "schematic description should synthesize key selection facts without manufacturer or part-number-only text",
+                failures);
+
+            AssertEqual(
+                "BM08B-GHS-TBT",
+                SymbolImportRules.SelectLibraryComment("BM08B-GHS-TBT"),
+                "symbol comment should equal design item ID instead of Altium default *",
+                failures);
+
+            AssertEqual(
+                "X?",
+                SymbolImportRules.SelectVisibleDesignator("X?"),
+                "visible schematic designator should use the selected GOST prefix instead of Altium default *",
+                failures);
+
+            AssertEqual(
+                "BM08B-GHS-TBT",
+                SymbolImportRules.SelectDesignItemId(
+                    manufacturerPart: "",
+                    symbolName: "*",
+                    componentTitle: "C123456",
+                    searchResultName: "C123456",
+                    searchPart: "BM08B-GHS-TBT",
+                    lcscNumber: "C123456",
+                    szlcscNumber: ""),
+                "design item ID must skip EasyEDA placeholder * and catalog IDs before falling back to manufacturer-style search part",
+                failures);
+
+            AssertEqual(
+                "DD?",
+                SymbolImportRules.SelectDesignator("*", "STM32F103C8T6", "", "LQFP-48"),
+                "placeholder source designator must not become the visible schematic designator",
+                failures);
+
+            AssertEqual(
+                "",
+                SymbolImportRules.SelectLibraryComment("*"),
+                "symbol comment selector must reject EasyEDA placeholder *",
+                failures);
 
             AssertEqual(
                 "BM08B-GHS-TBT",

@@ -26,6 +26,8 @@ namespace EasyEDA_Loader
         }
         public static ISch_Component CreateComponent(string name, string desc, string designator)
         {
+            string comment = SymbolImportRules.SelectLibraryComment(name);
+            string visibleDesignator = SymbolImportRules.SelectVisibleDesignator(designator);
             var schComponent = AltiumApi.GlobalVars.SCHServer.SchObjectFactory(SCH.TObjectId.eSchComponent, SCH.TObjectCreationMode.eCreate_Default) as ISch_Component;
             if (schComponent == null)
                 return null;
@@ -33,11 +35,12 @@ namespace EasyEDA_Loader
             schComponent.SetState_CurrentPartID(1);
             schComponent.SetState_DisplayMode(0);
             schComponent.SetState_LibReference(name);
+            schComponent.SetState_DesignItemId(comment);
             schComponent.SetState_ComponentDescription(desc);
-            SetComponentComment(schComponent, name);
-            SetComponentDesignator(schComponent, designator, CreateGostFontInfo());
-            SetComponentSpecialStringText(schComponent, "Comment", name);
-            SetComponentSpecialStringText(schComponent, "Designator", designator);
+            SetComponentComment(schComponent, comment);
+            SetComponentDesignator(schComponent, visibleDesignator, CreateGostFontInfo());
+            SetComponentSpecialStringText(schComponent, "Comment", comment);
+            SetComponentSpecialStringText(schComponent, "Designator", visibleDesignator);
             return schComponent;
         }
 

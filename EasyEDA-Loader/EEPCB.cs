@@ -571,8 +571,16 @@ namespace EasyEDA_Loader
                 : Path.GetFileNameWithoutExtension(fileName);
             SetComponentBodyIdentifier(stepModel, modelIdentifier);
             SetComponentBodyHeights(stepModel, z, overallHeightMm);
-            // Model is created at the bottom-left origin of the board, so we need to offset it
-            stepModel.MoveByXY(AltiumApi.MmToCoord(x) + c.GetState_Board().GetState_XOrigin(), AltiumApi.MmToCoord(y) + c.GetState_Board().GetState_YOrigin());
+            if (TryGetComponentBodyBoundsMm(c, stepModel, out StepSilhouetteBounds currentBounds))
+            {
+                FootprintModelMove move = FootprintModelPlacement.CalculateCenteringMoveMm(currentBounds, x, y);
+                stepModel.MoveByXY(AltiumApi.MmToCoord(move.XMm), AltiumApi.MmToCoord(move.YMm));
+            }
+            else
+            {
+                // Some Altium builds expose body bounds only after insertion; keep the legacy origin move as a fallback.
+                stepModel.MoveByXY(AltiumApi.MmToCoord(x) + c.GetState_Board().GetState_XOrigin(), AltiumApi.MmToCoord(y) + c.GetState_Board().GetState_YOrigin());
+            }
             return stepModel;
         }
 
@@ -628,6 +636,20 @@ namespace EasyEDA_Loader
                 body.SetOverallHeight(AltiumApi.MmToCoord(overallHeightMm));
         }
 
+        public static bool CenterComponentBodyMm(IPCB_LibComponent component, IPCB_ComponentBody body, double targetCenterX, double targetCenterY)
+        {
+            if (!TryGetComponentBodyBoundsMm(component, body, out StepSilhouetteBounds currentBounds))
+                return false;
+
+            FootprintModelMove move = FootprintModelPlacement.CalculateCenteringMoveMm(currentBounds, targetCenterX, targetCenterY);
+            if (Math.Abs(move.XMm) <= 0.000001 && Math.Abs(move.YMm) <= 0.000001)
+                return true;
+
+            body.MoveByXY(AltiumApi.MmToCoord(move.XMm), AltiumApi.MmToCoord(move.YMm));
+            body.GraphicallyInvalidate();
+            return true;
+        }
+
         public static StepSilhouetteBounds GetComponentBodyBoundsMm(IPCB_LibComponent component, IPCB_ComponentBody body, double fallbackCenterX, double fallbackCenterY, double fallbackWidth, double fallbackHeight)
         {
             StepSilhouetteBounds fallback = new StepSilhouetteBounds
@@ -638,18 +660,27 @@ namespace EasyEDA_Loader
                 Top = fallbackCenterY + fallbackHeight / 2.0
             };
 
-            if (component == null || body == null)
+            if (!TryGetComponentBodyBoundsMm(component, body, out StepSilhouetteBounds bounds))
                 return fallback;
+
+            return bounds;
+        }
+
+        private static bool TryGetComponentBodyBoundsMm(IPCB_LibComponent component, IPCB_ComponentBody body, out StepSilhouetteBounds bounds)
+        {
+            bounds = null;
+            if (component == null || body == null)
+                return false;
 
             object rect = TryInvokeResult(body, "Internal_BoundingRectangle");
             if (rect == null)
-                return fallback;
+                return false;
 
             if (!TryGetRectCoord(rect, "GetLeft", out int left)
                 || !TryGetRectCoord(rect, "GetRight", out int right)
                 || !TryGetRectCoord(rect, "GetBottom", out int bottom)
                 || !TryGetRectCoord(rect, "GetTop", out int top))
-                return fallback;
+                return false;
 
             int originX = 0;
             int originY = 0;
@@ -668,7 +699,7 @@ namespace EasyEDA_Loader
                 originY = 0;
             }
 
-            var bounds = new StepSilhouetteBounds
+            bounds = new StepSilhouetteBounds
             {
                 Left = AltiumApi.CoordToMm(left - originX),
                 Bottom = AltiumApi.CoordToMm(bottom - originY),
@@ -677,9 +708,9 @@ namespace EasyEDA_Loader
             };
 
             if (bounds.Right <= bounds.Left || bounds.Top <= bounds.Bottom)
-                return fallback;
+                return false;
 
-            return bounds;
+            return true;
         }
 
         private static bool TryGetRectCoord(object rect, string methodName, out int value)

@@ -181,8 +181,8 @@ namespace EasyEDA_Loader
             if (projection.Segments.Count == 0 || projection.SourceBounds == null)
                 return Array.Empty<StepSilhouettePrimitive>();
 
-            double placementRotation = NormalizeRotationDegrees(
-                ProjectionRotationFromModelState(state) + AltiumTopProjectionRotationCorrectionDeg);
+            double placementRotation = FootprintModelPlacement.ProjectionPlacementRotationDeg(
+                AltiumTopProjectionRotationCorrectionDeg);
 
             List<Segment2d> placed = PlaceSegmentsWithoutRescale(
                 projection.Segments,
