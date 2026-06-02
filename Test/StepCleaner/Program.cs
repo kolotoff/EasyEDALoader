@@ -183,6 +183,9 @@ namespace StepCleaner.Tests
             if (IsOption(args[0], "--footprint-placement"))
                 return RunFootprintPlacementTests();
 
+            if (IsOption(args[0], "--silhouette-cleanup"))
+                return RunSilhouetteCleanupTests();
+
             if (IsOption(args[0], "--silhouette"))
                 return SaveSilhouetteProjectionImage(args);
 
@@ -192,8 +195,49 @@ namespace StepCleaner.Tests
             Console.Error.WriteLine("Usage: StepCleaner.Tests --import-save-policy");
             Console.Error.WriteLine("Usage: StepCleaner.Tests --async-import");
             Console.Error.WriteLine("Usage: StepCleaner.Tests --footprint-placement");
+            Console.Error.WriteLine("Usage: StepCleaner.Tests --silhouette-cleanup");
             Console.Error.WriteLine("Usage: StepCleaner.Tests --silhouette <input.step> <output.png> [--rotx deg] [--roty deg] [--rotz deg] [--rotation2d deg] [--size pixels] [--padding pixels] [--no-grid] [--no-axes]");
             return 2;
+        }
+
+        private static int RunSilhouetteCleanupTests()
+        {
+            var failures = new List<string>();
+            string dataRoot = FindDataRoot();
+            string sot223Path = Path.Combine(dataRoot, "Original", "SOT-223-4P_L6.5-W3.5-H1.6-LS7.0-P2.30.step");
+            if (!File.Exists(sot223Path))
+                failures.Add("SOT-223 cleanup fixture is missing: " + sot223Path);
+
+            if (failures.Count == 0)
+            {
+                byte[] originalStep = File.ReadAllBytes(sot223Path);
+                byte[] cleanedStep = StepWatermarkCleaner.Clean(originalStep, new StepWatermarkCleanerOptions());
+                StepSilhouettePlacement placement = CreateDefaultSilhouettePlacement();
+
+                IReadOnlyList<StepSilhouettePrimitive> originalPrimitives = StepSilhouetteProjection.Generate(originalStep, placement);
+                IReadOnlyList<StepSilhouettePrimitive> cleanedPrimitives = StepSilhouetteProjection.Generate(cleanedStep, placement);
+
+                if (cleanedPrimitives.Count >= originalPrimitives.Count)
+                {
+                    failures.Add(
+                        "cleaned SOT-223 silhouette should drop inactive watermark topology: original=" +
+                        originalPrimitives.Count.ToString(CultureInfo.InvariantCulture) +
+                        ", cleaned=" +
+                        cleanedPrimitives.Count.ToString(CultureInfo.InvariantCulture) +
+                        ".");
+                }
+            }
+
+            if (failures.Count > 0)
+            {
+                Console.Error.WriteLine("Silhouette cleanup regression test failed.");
+                foreach (string failure in failures)
+                    Console.Error.WriteLine("  " + failure);
+                return 1;
+            }
+
+            Console.WriteLine("Silhouette cleanup regression test passed.");
+            return 0;
         }
 
         private static int RunImportSavePolicyTests()
@@ -675,20 +719,11 @@ namespace StepCleaner.Tests
             }
 
             byte[] stepData = File.ReadAllBytes(inputPath);
-            var placement = new StepSilhouettePlacement
-            {
-                TargetBounds = new StepSilhouetteBounds
-                {
-                    Left = -0.5,
-                    Bottom = -0.5,
-                    Right = 0.5,
-                    Top = 0.5
-                },
-                RotX = rotX,
-                RotY = rotY,
-                RotZ = rotZ,
-                Rotation2D = rotation2D
-            };
+            var placement = CreateDefaultSilhouettePlacement();
+            placement.RotX = rotX;
+            placement.RotY = rotY;
+            placement.RotZ = rotZ;
+            placement.Rotation2D = rotation2D;
 
             IReadOnlyList<StepSilhouettePrimitive> primitives = StepSilhouetteProjection.Generate(stepData, placement);
             var renderOptions = new StepSilhouetteImageRenderOptions
@@ -713,6 +748,24 @@ namespace StepCleaner.Tests
                 primitives.Count.ToString(CultureInfo.InvariantCulture) +
                 " total.");
             return 0;
+        }
+
+        private static StepSilhouettePlacement CreateDefaultSilhouettePlacement()
+        {
+            return new StepSilhouettePlacement
+            {
+                TargetBounds = new StepSilhouetteBounds
+                {
+                    Left = -0.5,
+                    Bottom = -0.5,
+                    Right = 0.5,
+                    Top = 0.5
+                },
+                RotX = 0.0,
+                RotY = 0.0,
+                RotZ = 0.0,
+                Rotation2D = 0.0
+            };
         }
 
         private static bool TryReadDoubleOption(string[] args, ref int index, string option, out double value)

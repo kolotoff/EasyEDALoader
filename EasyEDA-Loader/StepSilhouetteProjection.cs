@@ -156,6 +156,9 @@ namespace EasyEDA_Loader
         private static readonly Regex EdgeLoopRegex = new Regex(@"#(\d+)\s*=\s*EDGE_LOOP\s*\(\s*[^,]*,\s*\((.*?)\)\s*\)\s*;?$", RegexOptions.Compiled | RegexOptions.IgnoreCase);
         private static readonly Regex FaceBoundRegex = new Regex(@"#(\d+)\s*=\s*(FACE_OUTER_BOUND|FACE_BOUND)\s*\(\s*[^,]*,\s*#(\d+)\s*,\s*\.(T|F)\.\s*\)\s*;?$", RegexOptions.Compiled | RegexOptions.IgnoreCase);
         private static readonly Regex AdvancedFaceRegex = new Regex(@"#(\d+)\s*=\s*ADVANCED_FACE\s*\(\s*[^,]*,\s*\((.*?)\)\s*,\s*#(\d+)\s*,\s*\.(T|F)\.\s*\)\s*;?$", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+        private static readonly Regex ClosedShellRegex = new Regex(@"#(\d+)\s*=\s*CLOSED_SHELL\s*\(\s*[^,]*,\s*\((.*?)\)\s*\)\s*;?$", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+        private static readonly Regex ManifoldSolidBrepRegex = new Regex(@"#(\d+)\s*=\s*MANIFOLD_SOLID_BREP\s*\(\s*[^,]*,\s*#(\d+)\s*\)\s*;?$", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+        private static readonly Regex BrepShapeRepresentationRegex = new Regex(@"#(\d+)\s*=\s*ADVANCED_BREP_SHAPE_REPRESENTATION\s*\(\s*[^,]*,\s*\((.*?)\)\s*,", RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
         public static IReadOnlyList<StepSilhouettePrimitive> Generate(byte[] stepData, StepSilhouettePlacement placement)
         {
@@ -293,6 +296,27 @@ namespace EasyEDA_Loader
                         ParseRefList(match.Groups[2].Value),
                         ParseInt(match.Groups[3].Value),
                         string.Equals(match.Groups[4].Value, "T", StringComparison.OrdinalIgnoreCase));
+                    continue;
+                }
+
+                match = ClosedShellRegex.Match(record);
+                if (match.Success)
+                {
+                    geometry.ClosedShells[ParseInt(match.Groups[1].Value)] = ParseRefList(match.Groups[2].Value);
+                    continue;
+                }
+
+                match = ManifoldSolidBrepRegex.Match(record);
+                if (match.Success)
+                {
+                    geometry.SolidShellIds[ParseInt(match.Groups[1].Value)] = ParseInt(match.Groups[2].Value);
+                    continue;
+                }
+
+                match = BrepShapeRepresentationRegex.Match(record);
+                if (match.Success)
+                {
+                    geometry.ShapeRepresentationItemIds[ParseInt(match.Groups[1].Value)] = ParseRefList(match.Groups[2].Value);
                 }
             }
 
@@ -705,14 +729,18 @@ namespace EasyEDA_Loader
 
         private static VisibleProjection TopologicalHiddenLineProjectionForSide(StepGeometry geometry, ModelState state, int viewSign)
         {
-            List<int> allEdgeIds = geometry.Edges.Keys.OrderBy(id => id).ToList();
+            HashSet<int> activeFaceIds = ResolveActiveFaceIds(geometry);
+            List<int> allEdgeIds = BuildEdgeIdsForFaces(geometry, activeFaceIds);
+            if (allEdgeIds.Count == 0)
+                allEdgeIds = geometry.Edges.Keys.OrderBy(id => id).ToList();
+
             ProjectedSegmentsResult allProjection = ProjectedSegmentsForEdges(geometry, state, allEdgeIds, null, null, viewSign);
             if (allProjection.Segments.Count == 0)
                 return new VisibleProjection(new List<Segment2d>(), null, 0, 0, viewSign);
 
             StepSilhouetteBounds sourceBounds = BoundsForSegments(allProjection.Segments);
-            Dictionary<int, HashSet<int>> edgeFaceIds = BuildAdjacentFaceIdsByEdge(geometry);
-            List<FaceInfo> projectionFaces = BuildProjectionFaceInfos(geometry, state);
+            Dictionary<int, HashSet<int>> edgeFaceIds = BuildAdjacentFaceIdsByEdge(geometry, activeFaceIds);
+            List<FaceInfo> projectionFaces = BuildProjectionFaceInfos(geometry, state, activeFaceIds);
             ProjectedSegmentsResult visibleProjection = ProjectedSegmentsForEdges(
                 geometry,
                 state,
@@ -734,12 +762,105 @@ namespace EasyEDA_Loader
                 projectionFaces);
         }
 
-        private static Dictionary<int, HashSet<int>> BuildAdjacentFaceIdsByEdge(StepGeometry geometry)
+        private static HashSet<int> ResolveActiveFaceIds(StepGeometry geometry)
+        {
+            var activeFaceIds = new HashSet<int>();
+
+            if (geometry.ShapeRepresentationItemIds.Count > 0)
+            {
+                foreach (int itemId in geometry.ShapeRepresentationItemIds.Values.SelectMany(ids => ids))
+                    AddFacesForRepresentationItem(geometry, itemId, activeFaceIds);
+
+                if (activeFaceIds.Count > 0)
+                    return activeFaceIds;
+            }
+
+            if (geometry.SolidShellIds.Count > 0)
+            {
+                foreach (int shellId in geometry.SolidShellIds.Values)
+                    AddFacesForShell(geometry, shellId, activeFaceIds);
+
+                if (activeFaceIds.Count > 0)
+                    return activeFaceIds;
+            }
+
+            if (geometry.ClosedShells.Count > 0)
+            {
+                foreach (int shellId in geometry.ClosedShells.Keys)
+                    AddFacesForShell(geometry, shellId, activeFaceIds);
+
+                if (activeFaceIds.Count > 0)
+                    return activeFaceIds;
+            }
+
+            return new HashSet<int>(geometry.Faces.Keys);
+        }
+
+        private static void AddFacesForRepresentationItem(StepGeometry geometry, int itemId, HashSet<int> activeFaceIds)
+        {
+            if (geometry.SolidShellIds.TryGetValue(itemId, out int shellId))
+            {
+                AddFacesForShell(geometry, shellId, activeFaceIds);
+                return;
+            }
+
+            if (geometry.ClosedShells.ContainsKey(itemId))
+            {
+                AddFacesForShell(geometry, itemId, activeFaceIds);
+                return;
+            }
+
+            if (geometry.Faces.ContainsKey(itemId))
+                activeFaceIds.Add(itemId);
+        }
+
+        private static void AddFacesForShell(StepGeometry geometry, int shellId, HashSet<int> activeFaceIds)
+        {
+            if (!geometry.ClosedShells.TryGetValue(shellId, out List<int> faceIds))
+                return;
+
+            foreach (int faceId in faceIds)
+            {
+                if (geometry.Faces.ContainsKey(faceId))
+                    activeFaceIds.Add(faceId);
+            }
+        }
+
+        private static List<int> BuildEdgeIdsForFaces(StepGeometry geometry, HashSet<int> faceIds)
+        {
+            var edgeIds = new HashSet<int>();
+            foreach (int faceId in faceIds)
+            {
+                if (!geometry.Faces.TryGetValue(faceId, out AdvancedFace face))
+                    continue;
+
+                foreach (int boundId in face.BoundIds)
+                {
+                    if (!geometry.FaceBounds.TryGetValue(boundId, out FaceBound bound))
+                        continue;
+                    if (!geometry.EdgeLoops.TryGetValue(bound.LoopId, out List<int> orientedEdgeIds))
+                        continue;
+
+                    foreach (int orientedEdgeId in orientedEdgeIds)
+                    {
+                        if (geometry.OrientedEdges.TryGetValue(orientedEdgeId, out OrientedEdge orientedEdge))
+                            edgeIds.Add(orientedEdge.EdgeId);
+                    }
+                }
+            }
+
+            return edgeIds.OrderBy(id => id).ToList();
+        }
+
+        private static Dictionary<int, HashSet<int>> BuildAdjacentFaceIdsByEdge(StepGeometry geometry, HashSet<int> activeFaceIds)
         {
             var result = new Dictionary<int, HashSet<int>>();
             foreach (KeyValuePair<int, AdvancedFace> item in geometry.Faces)
             {
                 int faceId = item.Key;
+                if (!activeFaceIds.Contains(faceId))
+                    continue;
+
                 foreach (int boundId in item.Value.BoundIds)
                 {
                     if (!geometry.FaceBounds.TryGetValue(boundId, out FaceBound bound))
@@ -765,12 +886,15 @@ namespace EasyEDA_Loader
             return result;
         }
 
-        private static List<FaceInfo> BuildProjectionFaceInfos(StepGeometry geometry, ModelState state)
+        private static List<FaceInfo> BuildProjectionFaceInfos(StepGeometry geometry, ModelState state, HashSet<int> activeFaceIds)
         {
             var result = new List<FaceInfo>();
             foreach (KeyValuePair<int, AdvancedFace> item in geometry.Faces)
             {
                 int faceId = item.Key;
+                if (!activeFaceIds.Contains(faceId))
+                    continue;
+
                 AdvancedFace face = item.Value;
                 Vec3d? normal = FaceNormal(geometry, face, state);
                 Vec3d? planePoint = FacePlanePoint(geometry, face, state);
@@ -3493,6 +3617,9 @@ namespace EasyEDA_Loader
             public Dictionary<int, List<int>> EdgeLoops { get; } = new Dictionary<int, List<int>>();
             public Dictionary<int, FaceBound> FaceBounds { get; } = new Dictionary<int, FaceBound>();
             public Dictionary<int, AdvancedFace> Faces { get; } = new Dictionary<int, AdvancedFace>();
+            public Dictionary<int, List<int>> ClosedShells { get; } = new Dictionary<int, List<int>>();
+            public Dictionary<int, int> SolidShellIds { get; } = new Dictionary<int, int>();
+            public Dictionary<int, List<int>> ShapeRepresentationItemIds { get; } = new Dictionary<int, List<int>>();
         }
 
         private sealed class ModelState
