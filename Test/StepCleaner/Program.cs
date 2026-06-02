@@ -196,7 +196,7 @@ namespace StepCleaner.Tests
             Console.Error.WriteLine("Usage: StepCleaner.Tests --async-import");
             Console.Error.WriteLine("Usage: StepCleaner.Tests --footprint-placement");
             Console.Error.WriteLine("Usage: StepCleaner.Tests --silhouette-cleanup");
-            Console.Error.WriteLine("Usage: StepCleaner.Tests --silhouette <input.step> <output.png> [--rotx deg] [--roty deg] [--rotz deg] [--rotation2d deg] [--size pixels] [--padding pixels] [--no-grid] [--no-axes]");
+            Console.Error.WriteLine("Usage: StepCleaner.Tests --silhouette <input.step> <output.png> [--rotx deg] [--roty deg] [--rotz deg] [--rotation2d deg] [--size pixels] [--padding pixels] [--no-grid] [--no-axes] [--include-inactive-topology]");
             return 2;
         }
 
@@ -216,6 +216,13 @@ namespace StepCleaner.Tests
 
                 IReadOnlyList<StepSilhouettePrimitive> originalPrimitives = StepSilhouetteProjection.Generate(originalStep, placement);
                 IReadOnlyList<StepSilhouettePrimitive> cleanedPrimitives = StepSilhouetteProjection.Generate(cleanedStep, placement);
+                IReadOnlyList<StepSilhouettePrimitive> allTopologyCleanedPrimitives = StepSilhouetteProjection.Generate(
+                    cleanedStep,
+                    placement,
+                    new StepSilhouetteProjectionOptions
+                    {
+                        IncludeInactiveTopology = true
+                    });
 
                 if (cleanedPrimitives.Count >= originalPrimitives.Count)
                 {
@@ -224,6 +231,16 @@ namespace StepCleaner.Tests
                         originalPrimitives.Count.ToString(CultureInfo.InvariantCulture) +
                         ", cleaned=" +
                         cleanedPrimitives.Count.ToString(CultureInfo.InvariantCulture) +
+                        ".");
+                }
+
+                if (allTopologyCleanedPrimitives.Count != cleanedPrimitives.Count)
+                {
+                    failures.Add(
+                        "cleaned SOT-223 STEP should remove inactive watermark definitions: active=" +
+                        cleanedPrimitives.Count.ToString(CultureInfo.InvariantCulture) +
+                        ", allTopology=" +
+                        allTopologyCleanedPrimitives.Count.ToString(CultureInfo.InvariantCulture) +
                         ".");
                 }
             }
@@ -636,7 +653,7 @@ namespace StepCleaner.Tests
         {
             if (args.Length < 3)
             {
-                Console.Error.WriteLine("Usage: StepCleaner.Tests --silhouette <input.step> <output.png> [--rotx deg] [--roty deg] [--rotz deg] [--rotation2d deg] [--size pixels] [--padding pixels] [--no-grid] [--no-axes]");
+                Console.Error.WriteLine("Usage: StepCleaner.Tests --silhouette <input.step> <output.png> [--rotx deg] [--roty deg] [--rotz deg] [--rotation2d deg] [--size pixels] [--padding pixels] [--no-grid] [--no-axes] [--include-inactive-topology]");
                 return 2;
             }
 
@@ -650,6 +667,7 @@ namespace StepCleaner.Tests
             int paddingPixels = 90;
             bool drawGrid = true;
             bool drawAxes = true;
+            bool includeInactiveTopology = false;
 
             for (int index = 3; index < args.Length; index++)
             {
@@ -663,6 +681,12 @@ namespace StepCleaner.Tests
                 if (IsOption(option, "--no-axes"))
                 {
                     drawAxes = false;
+                    continue;
+                }
+
+                if (IsOption(option, "--include-inactive-topology") || IsOption(option, "--all-topology"))
+                {
+                    includeInactiveTopology = true;
                     continue;
                 }
 
@@ -725,7 +749,13 @@ namespace StepCleaner.Tests
             placement.RotZ = rotZ;
             placement.Rotation2D = rotation2D;
 
-            IReadOnlyList<StepSilhouettePrimitive> primitives = StepSilhouetteProjection.Generate(stepData, placement);
+            IReadOnlyList<StepSilhouettePrimitive> primitives = StepSilhouetteProjection.Generate(
+                stepData,
+                placement,
+                new StepSilhouetteProjectionOptions
+                {
+                    IncludeInactiveTopology = includeInactiveTopology
+                });
             var renderOptions = new StepSilhouetteImageRenderOptions
             {
                 ImageSizePixels = imageSizePixels,

@@ -77,6 +77,11 @@ namespace EasyEDA_Loader
         public double Rotation2D { get; set; }
     }
 
+    internal sealed class StepSilhouetteProjectionOptions
+    {
+        public bool IncludeInactiveTopology { get; set; }
+    }
+
     internal static class StepSilhouetteProjection
     {
         private const double AltiumTopProjectionZBaselineDeg = 180.0;
@@ -160,7 +165,10 @@ namespace EasyEDA_Loader
         private static readonly Regex ManifoldSolidBrepRegex = new Regex(@"#(\d+)\s*=\s*MANIFOLD_SOLID_BREP\s*\(\s*[^,]*,\s*#(\d+)\s*\)\s*;?$", RegexOptions.Compiled | RegexOptions.IgnoreCase);
         private static readonly Regex BrepShapeRepresentationRegex = new Regex(@"#(\d+)\s*=\s*ADVANCED_BREP_SHAPE_REPRESENTATION\s*\(\s*[^,]*,\s*\((.*?)\)\s*,", RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
-        public static IReadOnlyList<StepSilhouettePrimitive> Generate(byte[] stepData, StepSilhouettePlacement placement)
+        public static IReadOnlyList<StepSilhouettePrimitive> Generate(
+            byte[] stepData,
+            StepSilhouettePlacement placement,
+            StepSilhouetteProjectionOptions options = null)
         {
             if (stepData == null || stepData.Length == 0)
                 return Array.Empty<StepSilhouettePrimitive>();
@@ -180,7 +188,7 @@ namespace EasyEDA_Loader
                 Rotation2D = placement.Rotation2D
             };
 
-            VisibleProjection projection = TopologicalHiddenLineProjection(geometry, state);
+            VisibleProjection projection = TopologicalHiddenLineProjection(geometry, state, options);
             if (projection.Segments.Count == 0 || projection.SourceBounds == null)
                 return Array.Empty<StepSilhouettePrimitive>();
 
@@ -716,10 +724,13 @@ namespace EasyEDA_Loader
             return top;
         }
 
-        private static VisibleProjection TopologicalHiddenLineProjection(StepGeometry geometry, ModelState state)
+        private static VisibleProjection TopologicalHiddenLineProjection(
+            StepGeometry geometry,
+            ModelState state,
+            StepSilhouetteProjectionOptions options)
         {
-            VisibleProjection top = TopologicalHiddenLineProjectionForSide(geometry, state, 1);
-            VisibleProjection bottom = TopologicalHiddenLineProjectionForSide(geometry, state, -1);
+            VisibleProjection top = TopologicalHiddenLineProjectionForSide(geometry, state, 1, options);
+            VisibleProjection bottom = TopologicalHiddenLineProjectionForSide(geometry, state, -1, options);
             if (bottom.VisibleProjectedSegments > top.VisibleProjectedSegments)
                 return bottom;
             if (bottom.VisibleProjectedSegments == top.VisibleProjectedSegments && bottom.VisibleEdges > top.VisibleEdges)
@@ -727,10 +738,16 @@ namespace EasyEDA_Loader
             return top;
         }
 
-        private static VisibleProjection TopologicalHiddenLineProjectionForSide(StepGeometry geometry, ModelState state, int viewSign)
+        private static VisibleProjection TopologicalHiddenLineProjectionForSide(
+            StepGeometry geometry,
+            ModelState state,
+            int viewSign,
+            StepSilhouetteProjectionOptions options)
         {
             HashSet<int> activeFaceIds = ResolveActiveFaceIds(geometry);
-            List<int> allEdgeIds = BuildEdgeIdsForFaces(geometry, activeFaceIds);
+            List<int> allEdgeIds = options != null && options.IncludeInactiveTopology
+                ? geometry.Edges.Keys.OrderBy(id => id).ToList()
+                : BuildEdgeIdsForFaces(geometry, activeFaceIds);
             if (allEdgeIds.Count == 0)
                 allEdgeIds = geometry.Edges.Keys.OrderBy(id => id).ToList();
 

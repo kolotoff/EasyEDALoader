@@ -201,6 +201,7 @@ namespace EasyEDA_Loader
             var edits = new Dictionary<int, string>();
             var data = context.Data;
             var options = context.Options;
+            var inactiveDefinitionRoots = new HashSet<int>(detection.RemovableSolidIds);
 
             RemoveSolidsFromShapeRepresentations(data, detection.RemovableSolidIds, edits);
 
@@ -247,9 +248,15 @@ namespace EasyEDA_Loader
 
             int removedEmbeddedFaces = 0;
             int removedHostLoops = 0;
+            int removedInactiveDefinitions = 0;
             int recoloredCount = 0;
             if (options.RemoveEmbeddedWatermarkTopology)
             {
+                foreach (int faceId in flattenResult.FlattenedFaces)
+                    inactiveDefinitionRoots.Add(faceId);
+                foreach (int boundId in flattenResult.HostFaceBoundsToRemove.Values.SelectMany(boundIds => boundIds))
+                    inactiveDefinitionRoots.Add(boundId);
+
                 removedEmbeddedFaces = RemoveFacesFromClosedShells(data, flattenResult.FlattenedFaces, edits);
                 removedHostLoops = RemoveFaceBounds(data, flattenResult.HostFaceBoundsToRemove, edits);
                 recoloredCount = RecolorFlattenedFaces(
@@ -261,10 +268,16 @@ namespace EasyEDA_Loader
                     context.StyledItems,
                     context.StyledByTarget,
                     edits);
-                RemoveStyledItemsForRemovedFaces(data, context.StyledItems, flattenResult.FlattenedFaces, edits);
+                var removedFaceStyleTargets = new HashSet<int>(flattenResult.FlattenedFaces);
+                foreach (int solidId in detection.RemovableSolidIds)
+                    removedFaceStyleTargets.Add(solidId);
+                foreach (int faceId in GetSolidFaceIds(context.SolidInfo, detection.RemovableSolidIds))
+                    removedFaceStyleTargets.Add(faceId);
+                foreach (int styledItemId in RemoveStyledItemsForRemovedFaces(data, context.StyledItems, removedFaceStyleTargets, edits))
+                    inactiveDefinitionRoots.Add(styledItemId);
             }
 
-            string cleaned = data.ApplyDefinitionEdits(edits);
+            string cleaned = ApplyCleanupDefinitionEdits(data, edits, inactiveDefinitionRoots, out removedInactiveDefinitions);
             var diagnostics = new List<string>();
 
             diagnostics.Add("Approach: remove thin neutral watermark solids, then flatten embedded neutral relief faces and merge their host-plane cut loops.");
@@ -275,6 +288,7 @@ namespace EasyEDA_Loader
             diagnostics.Add($"Embedded topology removal enabled: {options.RemoveEmbeddedWatermarkTopology}");
             diagnostics.Add($"Removed embedded watermark faces from shells: {removedEmbeddedFaces}");
             diagnostics.Add($"Removed host-face inner loops: {removedHostLoops}");
+            diagnostics.Add($"Removed inactive cleanup definitions: {removedInactiveDefinitions}");
             diagnostics.Add($"Automatic removable-solid host-face loops: {detection.RemovableSolidHostLoopCount}");
             diagnostics.Add($"Automatic removable-solid host-face candidates: {detection.RemovableSolidHostLoopCandidateCount}");
             diagnostics.Add($"Automatic embedded host-face loops: {detection.EmbeddedHostLoopCount}");
@@ -749,6 +763,7 @@ namespace EasyEDA_Loader
             }
 
             var removableSolids = FindMarkedRemovableWatermarkSolids(data, solidInfo, styledByTarget, markedRegions, options);
+            var inactiveDefinitionRoots = new HashSet<int>(removableSolids);
             RemoveSolidsFromShapeRepresentations(data, removableSolids, edits);
 
             var embeddedFaces = FindMarkedEmbeddedWatermarkFaces(
@@ -779,22 +794,35 @@ namespace EasyEDA_Loader
 
             int removedEmbeddedFaces = 0;
             int removedHostLoops = 0;
+            int removedInactiveDefinitions = 0;
             if (options.RemoveEmbeddedWatermarkTopology)
             {
+                foreach (int faceId in flattenResult.FlattenedFaces)
+                    inactiveDefinitionRoots.Add(faceId);
+                foreach (int boundId in flattenResult.HostFaceBoundsToRemove.Values.SelectMany(boundIds => boundIds))
+                    inactiveDefinitionRoots.Add(boundId);
+
                 removedEmbeddedFaces = RemoveFacesFromClosedShells(data, flattenResult.FlattenedFaces, edits);
                 removedHostLoops = RemoveFaceBounds(data, flattenResult.HostFaceBoundsToRemove, edits);
-                RemoveStyledItemsForRemovedFaces(data, styledItems, flattenResult.FlattenedFaces, edits);
+                var removedFaceStyleTargets = new HashSet<int>(flattenResult.FlattenedFaces);
+                foreach (int solidId in removableSolids)
+                    removedFaceStyleTargets.Add(solidId);
+                foreach (int faceId in GetSolidFaceIds(solidInfo, removableSolids))
+                    removedFaceStyleTargets.Add(faceId);
+                foreach (int styledItemId in RemoveStyledItemsForRemovedFaces(data, styledItems, removedFaceStyleTargets, edits))
+                    inactiveDefinitionRoots.Add(styledItemId);
             }
 
             int recoloredCount = 0;
 
-            string cleaned = data.ApplyDefinitionEdits(edits);
+            string cleaned = ApplyCleanupDefinitionEdits(data, edits, inactiveDefinitionRoots, out removedInactiveDefinitions);
 
             diagnostics.Add("Removed marked thin watermark solids: " + removableSolids.Count.ToString(CultureInfo.InvariantCulture));
             diagnostics.Add("Marked styled watermark faces: " + embeddedFaces.Count.ToString(CultureInfo.InvariantCulture));
             diagnostics.Add("Marked host loops selected: " + markedHostLoopCount.ToString(CultureInfo.InvariantCulture));
             diagnostics.Add("Removed embedded watermark faces from shells: " + removedEmbeddedFaces.ToString(CultureInfo.InvariantCulture));
             diagnostics.Add("Removed host-face inner loops: " + removedHostLoops.ToString(CultureInfo.InvariantCulture));
+            diagnostics.Add("Removed inactive cleanup definitions: " + removedInactiveDefinitions.ToString(CultureInfo.InvariantCulture));
             diagnostics.Add("Preserved original face colors: no marked-mode STYLED_ITEM recolor edits were applied.");
             if (removableSolids.Count > 0)
                 diagnostics.Add("Removed solid ids: " + string.Join(", ", removableSolids.OrderBy(id => id).Select(id => "#" + id.ToString(CultureInfo.InvariantCulture))));
@@ -4296,21 +4324,21 @@ namespace EasyEDA_Loader
             }
         }
 
-        private static void RemoveStyledItemsForRemovedFaces(
+        private static HashSet<int> RemoveStyledItemsForRemovedFaces(
             StepData data,
             List<StyledItemInfo> styledItems,
             HashSet<int> removedFaceIds,
             Dictionary<int, string> edits)
         {
+            var styledItemIds = new HashSet<int>();
             if (removedFaceIds.Count == 0)
-                return;
+                return styledItemIds;
 
-            var styledItemIds = new HashSet<int>(
-                styledItems
-                    .Where(item => removedFaceIds.Contains(item.TargetId))
-                    .Select(item => item.Entity.Id));
+            foreach (var styledItem in styledItems.Where(item => removedFaceIds.Contains(item.TargetId)))
+                styledItemIds.Add(styledItem.Entity.Id);
+
             if (styledItemIds.Count == 0)
-                return;
+                return styledItemIds;
 
             foreach (var styledItem in styledItems)
             {
@@ -4335,6 +4363,130 @@ namespace EasyEDA_Loader
                 if (definition != entity.Definition)
                     edits[entity.Id] = definition;
             }
+
+            return styledItemIds;
+        }
+
+        private static IEnumerable<int> GetSolidFaceIds(
+            Dictionary<int, SolidInfo> solidInfo,
+            IEnumerable<int> solidIds)
+        {
+            foreach (int solidId in solidIds)
+            {
+                if (!solidInfo.TryGetValue(solidId, out SolidInfo info))
+                    continue;
+
+                foreach (int faceId in info.FaceIds)
+                    yield return faceId;
+            }
+        }
+
+        private static string ApplyCleanupDefinitionEdits(
+            StepData data,
+            Dictionary<int, string> edits,
+            HashSet<int> inactiveDefinitionRoots,
+            out int removedDefinitionCount)
+        {
+            string edited = data.ApplyDefinitionEdits(edits);
+            removedDefinitionCount = 0;
+
+            if (inactiveDefinitionRoots == null || inactiveDefinitionRoots.Count == 0)
+                return edited;
+
+            StepData editedData = StepData.Parse(edited);
+            editedData.BuildIndexes();
+
+            var candidates = new HashSet<int>();
+            foreach (int rootId in inactiveDefinitionRoots)
+            {
+                if (!editedData.Entities.ContainsKey(rootId))
+                    continue;
+
+                foreach (int id in editedData.TraverseReferences(rootId))
+                    candidates.Add(id);
+            }
+
+            if (candidates.Count == 0)
+                return edited;
+
+            HashSet<int> removable = FindInactiveCleanupDefinitions(editedData, candidates);
+            removedDefinitionCount = removable.Count;
+            return removedDefinitionCount == 0
+                ? edited
+                : editedData.ApplyDefinitionEdits(null, removable);
+        }
+
+        private static HashSet<int> FindInactiveCleanupDefinitions(StepData data, HashSet<int> candidates)
+        {
+            var removable = new HashSet<int>(candidates.Where(id => data.Entities.ContainsKey(id)));
+            if (removable.Count == 0)
+                return removable;
+
+            Dictionary<int, List<int>> referrersByTarget = BuildReferrersByTarget(data, removable);
+            var preserveQueue = new Queue<int>();
+            foreach (int candidateId in removable)
+            {
+                if (HasReferrerOutsideCandidateSet(referrersByTarget, candidateId, removable))
+                    preserveQueue.Enqueue(candidateId);
+            }
+
+            while (preserveQueue.Count > 0)
+            {
+                int preservedId = preserveQueue.Dequeue();
+                if (!removable.Remove(preservedId))
+                    continue;
+
+                if (!data.Entities.TryGetValue(preservedId, out StepEntity preservedEntity))
+                    continue;
+
+                foreach (int referencedId in preservedEntity.References)
+                {
+                    if (removable.Contains(referencedId))
+                        preserveQueue.Enqueue(referencedId);
+                }
+            }
+
+            return removable;
+        }
+
+        private static Dictionary<int, List<int>> BuildReferrersByTarget(StepData data, HashSet<int> candidates)
+        {
+            var result = new Dictionary<int, List<int>>();
+            foreach (StepEntity entity in data.Entities.Values)
+            {
+                foreach (int referenceId in entity.References)
+                {
+                    if (!candidates.Contains(referenceId))
+                        continue;
+
+                    if (!result.TryGetValue(referenceId, out List<int> referrers))
+                    {
+                        referrers = new List<int>();
+                        result.Add(referenceId, referrers);
+                    }
+
+                    referrers.Add(entity.Id);
+                }
+            }
+
+            return result;
+        }
+
+        private static bool HasReferrerOutsideCandidateSet(
+            Dictionary<int, List<int>> referrersByTarget,
+            int candidateId,
+            HashSet<int> candidates)
+        {
+            if (!referrersByTarget.TryGetValue(candidateId, out List<int> referrers))
+                return false;
+
+            foreach (int referrerId in referrers)
+            {
+                if (!candidates.Contains(referrerId))
+                    return true;
+            }
+
+            return false;
         }
 
         private static string ReplaceStyledItemTargetWithNull(string definition, int targetId)
@@ -5170,7 +5322,14 @@ namespace EasyEDA_Loader
 
             public string ApplyDefinitionEdits(Dictionary<int, string> edits)
             {
-                if (edits == null || edits.Count == 0)
+                return ApplyDefinitionEdits(edits, null);
+            }
+
+            public string ApplyDefinitionEdits(Dictionary<int, string> edits, HashSet<int> removedEntityIds)
+            {
+                bool hasEdits = edits != null && edits.Count > 0;
+                bool hasRemovals = removedEntityIds != null && removedEntityIds.Count > 0;
+                if (!hasEdits && !hasRemovals)
                     return Text;
 
                 var builder = new StringBuilder(Text.Length);
@@ -5178,7 +5337,14 @@ namespace EasyEDA_Loader
 
                 foreach (var entity in Entities.Values.OrderBy(e => e.StartIndex))
                 {
-                    if (!edits.TryGetValue(entity.Id, out string newDefinition))
+                    if (hasRemovals && removedEntityIds.Contains(entity.Id))
+                    {
+                        builder.Append(Text, cursor, entity.StartIndex - cursor);
+                        cursor = entity.EndIndex;
+                        continue;
+                    }
+
+                    if (!hasEdits || !edits.TryGetValue(entity.Id, out string newDefinition))
                         continue;
 
                     builder.Append(Text, cursor, entity.StartIndex - cursor);
