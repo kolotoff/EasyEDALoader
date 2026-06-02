@@ -99,7 +99,8 @@ namespace EasyEDA_Loader
             string description,
             string footprintName,
             string package,
-            string pcbLibraryPath)
+            string pcbLibraryPath,
+            string mounting)
         {
             SymbolParameters symbolParameters = symbolData?.Head?.Parameters;
             string manufacturer = FirstNonEmpty(
@@ -115,7 +116,7 @@ namespace EasyEDA_Loader
                 Footprint = CleanPropertyValue(footprintName),
                 FootprintLibrary = CleanPropertyValue(pcbLibraryPath),
                 Package = CleanPropertyValue(package),
-                Mounting = InferMounting(footprintData)
+                Mounting = CleanPropertyValue(mounting)
             };
         }
 
@@ -131,20 +132,92 @@ namespace EasyEDA_Loader
                 component?.Szlcsc?.Number);
         }
 
-        private static string SelectFootprintDescription(ComponentInfo component, EasyedaApi.ProductInfo productInfo, string partNumber, string package)
+        private static string SelectFootprintDescription(ComponentInfo component, EasyedaApi.ProductInfo productInfo, string partNumber, string package, string mounting)
         {
-            return FirstNonEmpty(
+            return FootprintMetadataSelector.SelectDescription(
                 productInfo?.Description,
                 component?.Description,
                 component?.PackageDetail?.Title,
                 package,
-                partNumber);
+                partNumber,
+                mounting,
+                productInfo?.Parameters,
+                BuildFootprintDescriptionGeometry(component?.PackageDetail?.Footprint));
         }
 
         private static double SelectFootprintHeightMm(EasyedaApi.ProductInfo productInfo)
         {
             double height = productInfo?.Size?.Z ?? 0;
             return height > 0 ? height : 0;
+        }
+
+        private static FootprintDescriptionGeometry BuildFootprintDescriptionGeometry(FootprintData footprintData)
+        {
+            if (footprintData == null)
+                return null;
+
+            var padCenters = new List<Tuple<double, double>>();
+            if (footprintData.Shapes != null)
+            {
+                foreach (var shape in footprintData.Shapes)
+                {
+                    if (shape is EeFootprintPad pad && IsNumberedElectricalPad(pad))
+                        padCenters.Add(Tuple.Create(pad.CenterX, pad.CenterY));
+                }
+            }
+
+            return new FootprintDescriptionGeometry
+            {
+                PositionCount = padCenters.Count,
+                PitchMm = EstimatePitchMm(padCenters),
+                BodyWidthMm = footprintData.BoundingBox?.Width ?? 0,
+                BodyHeightMm = footprintData.BoundingBox?.Height ?? 0
+            };
+        }
+
+        private static bool IsNumberedElectricalPad(EeFootprintPad pad)
+        {
+            if (pad == null || string.IsNullOrWhiteSpace(pad.Number))
+                return false;
+
+            return int.TryParse(pad.Number.Trim(), out _);
+        }
+
+        private static double EstimatePitchMm(List<Tuple<double, double>> padCenters)
+        {
+            if (padCenters == null || padCenters.Count < 2)
+                return 0;
+
+            double minX = padCenters[0].Item1;
+            double maxX = padCenters[0].Item1;
+            double minY = padCenters[0].Item2;
+            double maxY = padCenters[0].Item2;
+            foreach (var center in padCenters)
+            {
+                minX = Math.Min(minX, center.Item1);
+                maxX = Math.Max(maxX, center.Item1);
+                minY = Math.Min(minY, center.Item2);
+                maxY = Math.Max(maxY, center.Item2);
+            }
+
+            bool useX = (maxX - minX) >= (maxY - minY);
+            var coordinates = new List<double>();
+            foreach (var center in padCenters)
+                coordinates.Add(useX ? center.Item1 : center.Item2);
+
+            coordinates.Sort();
+            double pitch = 0;
+            for (int i = 1; i < coordinates.Count; i++)
+            {
+                double delta = Math.Abs(coordinates[i] - coordinates[i - 1]);
+                if (delta <= 0.001)
+                    continue;
+
+                if (pitch <= 0 || delta < pitch)
+                    pitch = delta;
+            }
+
+            return pitch;
         }
 
         private static string InferMounting(FootprintData footprintData)
@@ -287,6 +360,7 @@ namespace EasyEDA_Loader
                     string package = FirstNonEmpty(ee_footprint?.Head?.Parameters?.Package, selection.PartInfo?.Name, selection.PartInfo?.Part);
                     string partName = FirstNonEmpty(ee_symbol?.Head?.Parameters?.Name, root.Component.Title, selection.PartInfo?.Name, selection.PartInfo?.Part);
                     string partNumber = SelectPartNumber(selection, root.Component, ee_symbol);
+                    string mounting = InferMounting(ee_footprint);
                     EeFootprint3dModel model = selection.Include3dModel ? ee_footprint?.GetModel() : null;
 
                     // Prefetch model if we can
@@ -296,7 +370,7 @@ namespace EasyEDA_Loader
                     // Get product info (use cached from search if available)
                     EasyedaApi.ProductInfo productInfo = selection.PartInfo?.Info;
                     string footprintName = FirstNonEmpty(partNumber, package);
-                    string footprintDescription = SelectFootprintDescription(root.Component, productInfo, partNumber, package);
+                    string footprintDescription = SelectFootprintDescription(root.Component, productInfo, partNumber, package, mounting);
                     double footprintHeight = SelectFootprintHeightMm(productInfo);
 
                     IPCB_Library targetPcbLib = null;
@@ -396,7 +470,7 @@ namespace EasyEDA_Loader
                                 AltiumApi.GlobalVars.PCBServer.PreProcess();
                                 SymbolDrawing.CreateComponent(targetSchLib, component, pcbLibraryPath, footprintName, ee_symbol);
 
-                                EESCH.ApplyGostPropertySet(component, BuildSchematicPropertySet(ee_symbol, ee_footprint, productInfo, designator, partName, description, footprintName, package, pcbLibraryPath));
+                                EESCH.ApplyGostPropertySet(component, BuildSchematicPropertySet(ee_symbol, ee_footprint, productInfo, designator, partName, description, footprintName, package, pcbLibraryPath, mounting));
                                 AltiumApi.GlobalVars.PCBServer.PostProcess();
                                 targetSchLib.SetState_Current_SchComponent(component);
                                 targetSchLib.GraphicallyInvalidate();

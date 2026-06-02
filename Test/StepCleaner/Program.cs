@@ -168,12 +168,99 @@ namespace StepCleaner.Tests
 
         private static int RunCommand(string[] args)
         {
+            if (IsOption(args[0], "--metadata"))
+                return RunMetadataTests();
+
             if (IsOption(args[0], "--silhouette"))
                 return SaveSilhouetteProjectionImage(args);
 
             Console.Error.WriteLine("Unknown command: " + args[0]);
+            Console.Error.WriteLine("Usage: StepCleaner.Tests --metadata");
             Console.Error.WriteLine("Usage: StepCleaner.Tests --silhouette <input.step> <output.png> [--rotx deg] [--roty deg] [--rotz deg] [--rotation2d deg] [--size pixels] [--padding pixels] [--no-grid] [--no-axes]");
             return 2;
+        }
+
+        private static int RunMetadataTests()
+        {
+            var failures = new List<string>();
+
+            string synthesizedDescription = FootprintMetadataSelector.SelectDescription(
+                productDescription: "MR30PB-M30.A.G.Y",
+                componentDescription: "MR30PB-M30.A.G.Y",
+                packageTitle: "MR30PB-M30.A.G.Y",
+                packageName: "CONN-TH_MR30PB-M30.A.G.Y",
+                partNumber: "MR30PB-M30.A.G.Y",
+                mounting: "through-hole");
+
+            AssertEqual(
+                "CONN-TH package, through-hole",
+                synthesizedDescription,
+                "part-number-only candidates should be ignored when selecting the footprint description",
+                failures);
+
+            string usefulDescription = FootprintMetadataSelector.SelectDescription(
+                productDescription: "Amass MR30PB connector, 3 position plug, through-hole",
+                componentDescription: "MR30PB-M30.A.G.Y",
+                packageTitle: "MR30PB-M30.A.G.Y",
+                packageName: "CONN-TH_MR30PB-M30.A.G.Y",
+                partNumber: "MR30PB-M30.A.G.Y",
+                mounting: "through-hole");
+
+            AssertEqual(
+                "Amass MR30PB connector, 3 position plug, through-hole",
+                usefulDescription,
+                "descriptive product text should be kept",
+                failures);
+
+            string richDescription = FootprintMetadataSelector.SelectDescription(
+                productDescription: "",
+                componentDescription: "",
+                packageTitle: "CONN-TH_MR30PB-M30.A.G.Y",
+                packageName: "CONN-TH_MR30PB-M30.A.G.Y",
+                partNumber: "MR30PB-M30.A.G.Y",
+                mounting: "through-hole",
+                parameters: new Dictionary<string, string>
+                {
+                    { "Manufacturer", "AMASS(艾迈斯)" },
+                    { "Manufacturer Part", "MR30PB-M30.A.G.Y" },
+                    { "LCSC Part Name", "AMASS(艾迈斯)三芯动力电池马达e电调航模插头连接器 PCB板立式插头公头 金 黄MR30PB-M30.A.G.Y" }
+                },
+                geometry: CreateMr30FootprintGeometry());
+
+            AssertEqual(
+                "AMASS MR30PB, 3-position vertical through-hole male PCB power plug connector, 3.5 mm pitch, 11.9 x 5.3 mm body",
+                richDescription,
+                "C30170185-style metadata should synthesize a detailed footprint description",
+                failures);
+
+            if (failures.Count > 0)
+            {
+                Console.Error.WriteLine("Metadata regression test failed.");
+                foreach (string failure in failures)
+                    Console.Error.WriteLine("  " + failure);
+
+                return 1;
+            }
+
+            Console.WriteLine("Metadata regression test passed.");
+            return 0;
+        }
+
+        private static FootprintDescriptionGeometry CreateMr30FootprintGeometry()
+        {
+            return new FootprintDescriptionGeometry
+            {
+                PositionCount = 3,
+                PitchMm = 3.5,
+                BodyWidthMm = 11.9,
+                BodyHeightMm = 5.3
+            };
+        }
+
+        private static void AssertEqual(string expected, string actual, string message, List<string> failures)
+        {
+            if (!string.Equals(expected, actual, StringComparison.Ordinal))
+                failures.Add(message + ": expected '" + expected + "', got '" + actual + "'.");
         }
 
         private static int SaveSilhouetteProjectionImage(string[] args)
