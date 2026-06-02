@@ -4,6 +4,7 @@ using System.Globalization;
 using System.Linq;
 using System.Text;
 using System.Text.RegularExpressions;
+using SkiaSharp;
 
 namespace EasyEDA_Loader
 {
@@ -122,6 +123,9 @@ namespace EasyEDA_Loader
         private const int SegmentedArcMinPointCount = 5;
         private const double ShortDisconnectedLineLengthMm = 0.25;
         private const double PrimitiveConnectionToleranceMm = 0.08;
+        private const double InternalDetailMaxArcRadiusMm = 1.95;
+        private const double InternalDetailMaxLineLengthMm = 4.0;
+        private const double InternalDetailExteriorClearanceMm = 0.16;
         private const string NumPattern = @"[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[Ee][+-]?\d+)?";
 
         private static readonly Regex NumberRegex = new Regex(NumPattern, RegexOptions.Compiled);
@@ -170,7 +174,17 @@ namespace EasyEDA_Loader
                 projection.SourceBounds,
                 placementRotation);
 
-            return OptimizeSegmentsToPrimitives(placed);
+            IReadOnlyList<StepSilhouettePrimitive> edgePrimitives = OptimizeSegmentsToPrimitives(placed);
+            List<StepSilhouettePrimitive> faceContourPrimitives = BuildFaceUnionContourPrimitives(
+                projection.ProjectionFaces,
+                placement.TargetBounds,
+                projection.SourceBounds,
+                placementRotation);
+
+            if (faceContourPrimitives.Count == 0)
+                return edgePrimitives;
+
+            return MergeFaceContoursWithInternalDetails(faceContourPrimitives, edgePrimitives);
         }
 
         private static StepGeometry ParseStepGeometry(string text)
@@ -663,6 +677,7 @@ namespace EasyEDA_Loader
             var edgeFaceIds = new Dictionary<int, HashSet<int>>();
             var visibleEdgeFaceIds = new Dictionary<int, HashSet<int>>();
             var faceInfos = new Dictionary<int, FaceInfo>();
+            var projectionFaces = new List<FaceInfo>();
 
             foreach (KeyValuePair<int, AdvancedFace> item in geometry.Faces)
             {
@@ -695,10 +710,13 @@ namespace EasyEDA_Loader
                     }
                 }
 
+                FacePolygons polygons = FacePolygonsFor(geometry, face, state);
+                if (polygons.Outers.Count > 0)
+                    projectionFaces.Add(new FaceInfo(faceId, normal.Value, planePoint.Value, polygons.Outers, polygons.Holes));
+
                 if (viewSign * normal.Value.Z <= FaceVisibleEpsilon)
                     continue;
 
-                FacePolygons polygons = FacePolygonsFor(geometry, face, state);
                 faceInfos[faceId] = new FaceInfo(faceId, normal.Value, planePoint.Value, polygons.Outers, polygons.Holes);
                 foreach (int edgeId in faceEdgeIds)
                 {
@@ -748,7 +766,7 @@ namespace EasyEDA_Loader
                 ? visibleProjection.Segments
                 : allProjection.Segments;
 
-            return new VisibleProjection(visibleSegments, sourceBounds, visibleSegments.Count, visibleEdgeIds.Count);
+            return new VisibleProjection(visibleSegments, sourceBounds, visibleSegments.Count, visibleEdgeIds.Count, projectionFaces);
         }
 
         private static List<Segment2d> PlaceSegmentsWithoutRescale(
@@ -856,6 +874,402 @@ namespace EasyEDA_Loader
             }
 
             return result;
+        }
+
+        private static IReadOnlyList<StepSilhouettePrimitive> OptimizePrimitiveList(List<StepSilhouettePrimitive> primitives)
+        {
+            primitives = MergeLinePrimitives(primitives);
+            primitives = MergeArcPrimitives(primitives);
+            primitives = CompleteNearlyClosedCircularArcs(primitives);
+            primitives = RemoveSmallVisiblePrimitives(primitives);
+            primitives = RemoveStrokeCoveredPrimitives(primitives);
+            primitives = AddLineGapBridges(primitives);
+            primitives = RemoveLinesInsideCompleteCircularRings(primitives);
+            primitives = RemoveShortDisconnectedLines(primitives);
+            primitives = SnapPrimitiveEndpoints(primitives);
+
+            var result = new List<StepSilhouettePrimitive>();
+            var lineKeys = new HashSet<SegmentKey>();
+            var arcKeys = new HashSet<string>();
+            foreach (StepSilhouettePrimitive primitive in primitives)
+            {
+                if (primitive.Kind == StepSilhouettePrimitiveKind.Line)
+                {
+                    SegmentKey key = CanonicalSegmentKey(new Segment2d(primitive.X1, primitive.Y1, primitive.X2, primitive.Y2));
+                    if (!lineKeys.Add(key))
+                        continue;
+                }
+                else
+                {
+                    string key = string.Join("|",
+                        (int)Math.Round(primitive.CenterX * 1000.0),
+                        (int)Math.Round(primitive.CenterY * 1000.0),
+                        (int)Math.Round(primitive.Radius * 1000.0),
+                        (int)Math.Round(primitive.StartAngle * 1000.0),
+                        (int)Math.Round(primitive.EndAngle * 1000.0));
+                    if (!arcKeys.Add(key))
+                        continue;
+                }
+
+                result.Add(primitive);
+            }
+
+            return result;
+        }
+
+        private static List<StepSilhouettePrimitive> BuildFaceUnionContourPrimitives(
+            List<FaceInfo> visibleFaces,
+            StepSilhouetteBounds targetBounds,
+            StepSilhouetteBounds sourceBounds,
+            double rotationDeg)
+        {
+            if (visibleFaces == null || visibleFaces.Count == 0 || sourceBounds == null || targetBounds == null)
+                return new List<StepSilhouettePrimitive>();
+
+            double sourceCenterX = sourceBounds.CenterX;
+            double sourceCenterY = sourceBounds.CenterY;
+            double targetCenterX = targetBounds.CenterX;
+            double targetCenterY = targetBounds.CenterY;
+            rotationDeg = NormalizeRotationDegrees(rotationDeg);
+            double radians = DegreesToRadians(rotationDeg);
+            double cos = Math.Cos(radians);
+            double sin = Math.Sin(radians);
+
+            SKPath unionPath = null;
+            try
+            {
+                foreach (FaceInfo face in visibleFaces)
+                {
+                    using (SKPath facePath = BuildPlacedFacePath(face, sourceCenterX, sourceCenterY, targetCenterX, targetCenterY, cos, sin))
+                    {
+                        if (facePath == null || facePath.IsEmpty)
+                            continue;
+
+                        if (unionPath == null)
+                        {
+                            unionPath = new SKPath();
+                            unionPath.AddPath(facePath);
+                            continue;
+                        }
+
+                        SKPath merged = unionPath.Op(facePath, SKPathOp.Union);
+                        if (merged == null || merged.IsEmpty)
+                        {
+                            if (merged != null)
+                                merged.Dispose();
+                            continue;
+                        }
+
+                        unionPath.Dispose();
+                        unionPath = merged;
+                    }
+                }
+
+                if (unionPath == null || unionPath.IsEmpty)
+                    return new List<StepSilhouettePrimitive>();
+
+                using (SKPath simplifiedPath = unionPath.Simplify())
+                {
+                    if (simplifiedPath != null && !simplifiedPath.IsEmpty)
+                    {
+                        unionPath.Dispose();
+                        unionPath = new SKPath();
+                        unionPath.AddPath(simplifiedPath);
+                    }
+                }
+
+                List<List<Point2d>> contours = ExtractContoursFromPath(unionPath);
+                var primitives = new List<StepSilhouettePrimitive>();
+                if (!TryBuildCapsuleEnvelope(contours, out primitives))
+                {
+                    List<Point2d> exterior = SelectDominantContour(contours);
+                    if (exterior.Count >= 3)
+                    {
+                        if (Distance(exterior[0], exterior[exterior.Count - 1]) > ClosedPathEndpointToleranceMm)
+                            exterior.Add(exterior[0]);
+                        primitives.AddRange(PrimitivesFromContourPath(exterior));
+                    }
+                }
+
+                return OptimizePrimitiveList(primitives).ToList();
+            }
+            finally
+            {
+                unionPath?.Dispose();
+            }
+        }
+
+        private static SKPath BuildPlacedFacePath(
+            FaceInfo face,
+            double sourceCenterX,
+            double sourceCenterY,
+            double targetCenterX,
+            double targetCenterY,
+            double cos,
+            double sin)
+        {
+            var path = new SKPath { FillType = SKPathFillType.EvenOdd };
+            foreach (List<Point2d> polygon in face.Outers)
+                AddPlacedPolygon(path, polygon, sourceCenterX, sourceCenterY, targetCenterX, targetCenterY, cos, sin);
+            foreach (List<Point2d> polygon in face.Holes)
+                AddPlacedPolygon(path, polygon, sourceCenterX, sourceCenterY, targetCenterX, targetCenterY, cos, sin);
+            return path;
+        }
+
+        private static void AddPlacedPolygon(
+            SKPath path,
+            List<Point2d> polygon,
+            double sourceCenterX,
+            double sourceCenterY,
+            double targetCenterX,
+            double targetCenterY,
+            double cos,
+            double sin)
+        {
+            if (polygon == null || polygon.Count < 3)
+                return;
+
+            Point2d first = MapPlacedPoint(polygon[0].X, polygon[0].Y, sourceCenterX, sourceCenterY, targetCenterX, targetCenterY, cos, sin);
+            path.MoveTo((float)first.X, (float)first.Y);
+            for (int index = 1; index < polygon.Count; index++)
+            {
+                Point2d point = MapPlacedPoint(polygon[index].X, polygon[index].Y, sourceCenterX, sourceCenterY, targetCenterX, targetCenterY, cos, sin);
+                path.LineTo((float)point.X, (float)point.Y);
+            }
+            path.Close();
+        }
+
+        private static List<List<Point2d>> ExtractContoursFromPath(SKPath path)
+        {
+            var contours = new List<List<Point2d>>();
+            List<Point2d> current = null;
+            Point2d? currentStart = null;
+            using (SKPath.Iterator iterator = path.CreateIterator(forceClose: true))
+            {
+                var points = new SKPoint[4];
+                while (true)
+                {
+                    SKPathVerb verb = iterator.Next(points);
+                    if (verb == SKPathVerb.Done)
+                        break;
+
+                    if (verb == SKPathVerb.Move)
+                    {
+                        AddFinishedContour(contours, current);
+                        current = new List<Point2d>();
+                        Point2d point = RoundedPoint(new Point2d(points[0].X, points[0].Y));
+                        current.Add(point);
+                        currentStart = point;
+                        continue;
+                    }
+
+                    if (current == null)
+                        continue;
+
+                    if (verb == SKPathVerb.Line)
+                    {
+                        AddContourPoint(current, RoundedPoint(new Point2d(points[1].X, points[1].Y)));
+                        continue;
+                    }
+
+                    if (verb == SKPathVerb.Quad)
+                    {
+                        AddQuadraticSamples(current, points[0], points[1], points[2]);
+                        continue;
+                    }
+
+                    if (verb == SKPathVerb.Conic)
+                    {
+                        AddQuadraticSamples(current, points[0], points[1], points[2]);
+                        continue;
+                    }
+
+                    if (verb == SKPathVerb.Cubic)
+                    {
+                        AddCubicSamples(current, points[0], points[1], points[2], points[3]);
+                        continue;
+                    }
+
+                    if (verb == SKPathVerb.Close)
+                    {
+                        if (currentStart.HasValue)
+                            AddContourPoint(current, currentStart.Value);
+                        AddFinishedContour(contours, current);
+                        current = null;
+                        currentStart = null;
+                    }
+                }
+            }
+
+            AddFinishedContour(contours, current);
+            return contours;
+        }
+
+        private static void AddFinishedContour(List<List<Point2d>> contours, List<Point2d> contour)
+        {
+            if (contour == null || contour.Count < 3)
+                return;
+            contours.Add(contour);
+        }
+
+        private static List<Point2d> SelectDominantContour(List<List<Point2d>> contours)
+        {
+            if (contours == null || contours.Count == 0)
+                return new List<Point2d>();
+
+            return contours
+                .Where(contour => contour.Count >= 3)
+                .OrderByDescending(contour => Math.Abs(PolygonArea(contour)))
+                .FirstOrDefault() ?? new List<Point2d>();
+        }
+
+        private static bool TryBuildCapsuleEnvelope(
+            List<List<Point2d>> contours,
+            out List<StepSilhouettePrimitive> primitives)
+        {
+            primitives = new List<StepSilhouettePrimitive>();
+            if (contours == null || contours.Count == 0)
+                return false;
+
+            List<Point2d> points = contours.SelectMany(contour => contour).ToList();
+            if (points.Count < 8)
+                return false;
+
+            StepSilhouetteBounds bounds = BoundsForPoints(points);
+            double width = bounds.Width;
+            double height = bounds.Height;
+            if (width <= 0.0 || height <= 0.0 || width / height < 1.45)
+                return false;
+
+            double radius = height / 2.0;
+            double centerY = bounds.CenterY;
+            double leftCenterX = bounds.Left + radius;
+            double rightCenterX = bounds.Right - radius;
+            if (rightCenterX <= leftCenterX + OutputMinLineLengthMm)
+                return false;
+
+            primitives.Add(StepSilhouettePrimitive.Arc(
+                RoundCoord(leftCenterX),
+                RoundCoord(centerY),
+                RoundCoord(radius),
+                90.0,
+                270.0));
+            primitives.Add(LinePrimitive(
+                new Point2d(leftCenterX, bounds.Bottom),
+                new Point2d(rightCenterX, bounds.Bottom)));
+            primitives.Add(StepSilhouettePrimitive.Arc(
+                RoundCoord(rightCenterX),
+                RoundCoord(centerY),
+                RoundCoord(radius),
+                270.0,
+                450.0));
+            primitives.Add(LinePrimitive(
+                new Point2d(rightCenterX, bounds.Top),
+                new Point2d(leftCenterX, bounds.Top)));
+
+            primitives = primitives.Where(primitive => primitive != null).ToList();
+            return primitives.Count >= 3;
+        }
+
+        private static List<StepSilhouettePrimitive> PrimitivesFromContourPath(List<Point2d> path)
+        {
+            if (path == null || path.Count < 2)
+                return new List<StepSilhouettePrimitive>();
+
+            if (TryFitClosedCircularPath(path, out List<StepSilhouettePrimitive> circularArcs))
+                return circularArcs;
+
+            return SegmentedPrimitivesFromPath(path);
+        }
+
+        private static double PolygonArea(List<Point2d> points)
+        {
+            if (points == null || points.Count < 3)
+                return 0.0;
+
+            double area = 0.0;
+            for (int index = 0; index < points.Count; index++)
+            {
+                Point2d a = points[index];
+                Point2d b = points[(index + 1) % points.Count];
+                area += a.X * b.Y - b.X * a.Y;
+            }
+
+            return area / 2.0;
+        }
+
+        private static void AddContourPoint(List<Point2d> contour, Point2d point)
+        {
+            if (contour.Count == 0 || Distance(contour[contour.Count - 1], point) > PointEpsilonMm)
+                contour.Add(point);
+        }
+
+        private static void AddQuadraticSamples(List<Point2d> contour, SKPoint p0, SKPoint p1, SKPoint p2)
+        {
+            for (int index = 1; index <= 8; index++)
+            {
+                double t = index / 8.0;
+                double u = 1.0 - t;
+                AddContourPoint(contour, RoundedPoint(new Point2d(
+                    u * u * p0.X + 2.0 * u * t * p1.X + t * t * p2.X,
+                    u * u * p0.Y + 2.0 * u * t * p1.Y + t * t * p2.Y)));
+            }
+        }
+
+        private static void AddCubicSamples(List<Point2d> contour, SKPoint p0, SKPoint p1, SKPoint p2, SKPoint p3)
+        {
+            for (int index = 1; index <= 12; index++)
+            {
+                double t = index / 12.0;
+                double u = 1.0 - t;
+                AddContourPoint(contour, RoundedPoint(new Point2d(
+                    u * u * u * p0.X + 3.0 * u * u * t * p1.X + 3.0 * u * t * t * p2.X + t * t * t * p3.X,
+                    u * u * u * p0.Y + 3.0 * u * u * t * p1.Y + 3.0 * u * t * t * p2.Y + t * t * t * p3.Y)));
+            }
+        }
+
+        private static IReadOnlyList<StepSilhouettePrimitive> MergeFaceContoursWithInternalDetails(
+            List<StepSilhouettePrimitive> faceContours,
+            IReadOnlyList<StepSilhouettePrimitive> edgePrimitives)
+        {
+            var merged = new List<StepSilhouettePrimitive>(faceContours);
+            foreach (StepSilhouettePrimitive primitive in edgePrimitives)
+            {
+                if (IsInternalDetailPrimitive(primitive) &&
+                    !PrimitiveIsNearAny(primitive, faceContours, InternalDetailExteriorClearanceMm))
+                {
+                    merged.Add(primitive);
+                }
+            }
+
+            return OptimizePrimitiveList(merged);
+        }
+
+        private static bool IsInternalDetailPrimitive(StepSilhouettePrimitive primitive)
+        {
+            if (primitive.Kind == StepSilhouettePrimitiveKind.Arc)
+                return primitive.Radius <= InternalDetailMaxArcRadiusMm;
+
+            return PrimitiveLength(primitive) <= InternalDetailMaxLineLengthMm;
+        }
+
+        private static bool PrimitiveIsNearAny(
+            StepSilhouettePrimitive primitive,
+            List<StepSilhouettePrimitive> otherPrimitives,
+            double clearanceMm)
+        {
+            double sampleStep = Math.Max(ProjectionLineWidthMm, clearanceMm / 2.0);
+            List<Point2d> samples = PrimitiveSamplePoints(primitive, sampleStep);
+            foreach (Point2d sample in samples)
+            {
+                foreach (StepSilhouettePrimitive other in otherPrimitives)
+                {
+                    if (DistancePointToPrimitive(sample, other) <= clearanceMm)
+                        return true;
+                }
+            }
+
+            return false;
         }
 
         private static List<Segment2d> DedupeSegments(List<Segment2d> segments)
@@ -2406,18 +2820,25 @@ namespace EasyEDA_Loader
 
         private sealed class VisibleProjection
         {
-            public VisibleProjection(List<Segment2d> segments, StepSilhouetteBounds sourceBounds, int visibleProjectedSegments, int visibleEdges)
+            public VisibleProjection(
+                List<Segment2d> segments,
+                StepSilhouetteBounds sourceBounds,
+                int visibleProjectedSegments,
+                int visibleEdges,
+                List<FaceInfo> projectionFaces = null)
             {
                 Segments = segments;
                 SourceBounds = sourceBounds;
                 VisibleProjectedSegments = visibleProjectedSegments;
                 VisibleEdges = visibleEdges;
+                ProjectionFaces = projectionFaces ?? new List<FaceInfo>();
             }
 
             public List<Segment2d> Segments { get; }
             public StepSilhouetteBounds SourceBounds { get; }
             public int VisibleProjectedSegments { get; }
             public int VisibleEdges { get; }
+            public List<FaceInfo> ProjectionFaces { get; }
         }
 
         private sealed class ProjectedSegmentsResult
