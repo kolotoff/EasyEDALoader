@@ -28,6 +28,8 @@ namespace EasyEDA_Loader
         public double PlaneTolerance { get; set; } = 0.0002;
         public bool RequireDarkOwner { get; set; } = true;
         public bool RemoveEmbeddedWatermarkTopology { get; set; } = true;
+        public bool CleanText { get; set; }
+        public int CleanTextMinCandidateFaceCount { get; set; } = 80;
         public bool UseMarkedRegionsOnly { get; set; }
         public double MarkedRegionPaddingPixels { get; set; } = 8.0;
         public double MarkedCandidateMinOverlap { get; set; } = 0.05;
@@ -282,9 +284,13 @@ namespace EasyEDA_Loader
 
             diagnostics.Add("Approach: remove thin neutral watermark solids, then flatten embedded neutral relief faces and merge their host-plane cut loops.");
             diagnostics.Add("Stage 1 detection: pattern-gated automatic detection; marked rectangles are not used.");
+            diagnostics.Add($"Clean text enabled: {options.CleanText}");
             diagnostics.Add($"Detected thin watermark solids: {detection.RemovableSolidIds.Count}");
             diagnostics.Add($"Detected embedded watermark faces: {detection.EmbeddedFaceIds.Count}");
             diagnostics.Add($"Detected coplanar watermark faces: {detection.CoplanarFaceIds.Count}");
+            diagnostics.Add($"Text cleanup candidates: {detection.TextCandidateCount}");
+            diagnostics.Add($"Text cleanup clusters: {detection.TextClusterCount}");
+            diagnostics.Add($"Detected text faces: {detection.TextFaceIds.Count}");
             diagnostics.Add($"Embedded topology removal enabled: {options.RemoveEmbeddedWatermarkTopology}");
             diagnostics.Add($"Removed embedded watermark faces from shells: {removedEmbeddedFaces}");
             diagnostics.Add($"Removed host-face inner loops: {removedHostLoops}");
@@ -429,6 +435,28 @@ namespace EasyEDA_Loader
                 .Distinct()
                 .OrderBy(id => id)
                 .ToList();
+            if (options.CleanText)
+            {
+                var textDetection = FindAutomaticTextStringFaces(
+                    data,
+                    context.StyledItems,
+                    context.FaceOwners,
+                    context.SolidInfo,
+                    context.StyledByTarget,
+                    detection.RemovableSolidIds,
+                    detection.EmbeddedFaceIds,
+                    detection.CoplanarFaceIds,
+                    options);
+                detection.TextFaceIds = textDetection.FaceIds;
+                detection.TextCandidateCount = textDetection.CandidateCount;
+                detection.TextClusterCount = textDetection.ClusterCount;
+                detection.CoplanarFaceIds = detection.CoplanarFaceIds
+                    .Concat(detection.TextFaceIds)
+                    .Distinct()
+                    .OrderBy(id => id)
+                    .ToList();
+            }
+
             detection.HostLoopCount = CountHostLoopBounds(detection.HostFaceBoundsToRemove);
 
             return detection;
@@ -2641,6 +2669,289 @@ namespace EasyEDA_Loader
             }
 
             return result.OrderBy(id => id).ToList();
+        }
+
+        private static TextStringDetectionResult FindAutomaticTextStringFaces(
+            StepData data,
+            List<StyledItemInfo> styledItems,
+            Dictionary<int, int> faceOwners,
+            Dictionary<int, SolidInfo> solidInfo,
+            Dictionary<int, List<StyledItemInfo>> styledByTarget,
+            HashSet<int> removableSolids,
+            List<int> embeddedFaces,
+            List<int> coplanarFaces,
+            StepWatermarkCleanerOptions options)
+        {
+            var candidates = new List<WatermarkFaceCandidate>();
+            var excludedFaces = new HashSet<int>(embeddedFaces);
+            var seenCandidateFaces = new HashSet<int>();
+            foreach (int faceId in coplanarFaces)
+                excludedFaces.Add(faceId);
+
+            foreach (var styledItem in styledItems)
+            {
+                seenCandidateFaces.Add(styledItem.TargetId);
+
+                if (data.GetTypeName(styledItem.TargetId) != "ADVANCED_FACE")
+                    continue;
+
+                if (excludedFaces.Contains(styledItem.TargetId))
+                    continue;
+
+                if (!LooksLikeTextMarkColor(styledItem.Color, options))
+                    continue;
+
+                if (!faceOwners.TryGetValue(styledItem.TargetId, out int ownerId))
+                    continue;
+
+                if (removableSolids.Contains(ownerId))
+                    continue;
+
+                if (!solidInfo.TryGetValue(ownerId, out var ownerInfo) || !ownerInfo.Bounds.HasValue)
+                    continue;
+
+                if (HasProtectedNonWatermarkColor(styledItem.TargetId, styledByTarget, options))
+                    continue;
+
+                var faceBounds = data.GetBounds(styledItem.TargetId);
+                if (!faceBounds.HasValue)
+                    continue;
+
+                if (!LooksLikeSmallMark(faceBounds.Value, ownerInfo.Bounds.Value, options))
+                    continue;
+
+                var singleFace = new HashSet<int> { styledItem.TargetId };
+                var host = ChooseHostPlane(
+                    data,
+                    ownerInfo,
+                    singleFace,
+                    faceBounds.Value,
+                    styledByTarget,
+                    allowLightHost: true,
+                    options);
+                if (host == null)
+                    continue;
+
+                Bounds hostBounds = ownerInfo.Bounds.Value;
+                if (host.HostFaceId.HasValue)
+                {
+                    var detectedHostBounds = data.GetBounds(host.HostFaceId.Value);
+                    if (detectedHostBounds.HasValue)
+                        hostBounds = detectedHostBounds.Value;
+                }
+
+                if (TouchesProjectedBoundary(
+                    faceBounds.Value,
+                    hostBounds,
+                    host.Axis,
+                    GetAutomaticEdgeMargin(hostBounds, host.Axis) * 2.0))
+                    continue;
+
+                candidates.Add(new WatermarkFaceCandidate
+                {
+                    FaceId = styledItem.TargetId,
+                    OwnerId = ownerId,
+                    Bounds = faceBounds.Value,
+                    PointCount = data.GetPointIds(styledItem.TargetId, includeSurface: false).Count,
+                    Host = host,
+                    HostBounds = hostBounds,
+                    HasColorCue = true,
+                    ColorClass = 0
+                });
+            }
+
+            foreach (var faceOwner in faceOwners)
+            {
+                int faceId = faceOwner.Key;
+                int ownerId = faceOwner.Value;
+                if (seenCandidateFaces.Contains(faceId) || excludedFaces.Contains(faceId))
+                    continue;
+
+                if (data.GetTypeName(faceId) != "ADVANCED_FACE")
+                    continue;
+
+                if (removableSolids.Contains(ownerId))
+                    continue;
+
+                if (!solidInfo.TryGetValue(ownerId, out var ownerInfo) || !ownerInfo.Bounds.HasValue)
+                    continue;
+
+                if (HasProtectedNonWatermarkColor(faceId, styledByTarget, options))
+                    continue;
+
+                var faceBounds = data.GetBounds(faceId);
+                if (!faceBounds.HasValue)
+                    continue;
+
+                if (!LooksLikeSmallMark(faceBounds.Value, ownerInfo.Bounds.Value, options))
+                    continue;
+
+                var singleFace = new HashSet<int> { faceId };
+                var host = ChooseHostPlane(
+                    data,
+                    ownerInfo,
+                    singleFace,
+                    faceBounds.Value,
+                    styledByTarget,
+                    allowLightHost: true,
+                    options);
+                if (host == null)
+                    continue;
+
+                Bounds hostBounds = ownerInfo.Bounds.Value;
+                if (host.HostFaceId.HasValue)
+                {
+                    var detectedHostBounds = data.GetBounds(host.HostFaceId.Value);
+                    if (detectedHostBounds.HasValue)
+                        hostBounds = detectedHostBounds.Value;
+                }
+
+                if (TouchesProjectedBoundary(
+                    faceBounds.Value,
+                    hostBounds,
+                    host.Axis,
+                    GetAutomaticEdgeMargin(hostBounds, host.Axis) * 2.0))
+                    continue;
+
+                candidates.Add(new WatermarkFaceCandidate
+                {
+                    FaceId = faceId,
+                    OwnerId = ownerId,
+                    Bounds = faceBounds.Value,
+                    PointCount = data.GetPointIds(faceId, includeSurface: false).Count,
+                    Host = host,
+                    HostBounds = hostBounds,
+                    HasColorCue = false,
+                    ColorClass = 0
+                });
+            }
+
+            var detection = new TextStringDetectionResult
+            {
+                CandidateCount = candidates.Count
+            };
+            if (candidates.Count < options.CleanTextMinCandidateFaceCount)
+                return detection;
+
+            var textFaceIds = new HashSet<int>();
+            foreach (var group in candidates.GroupBy(candidate => new
+            {
+                Axis = candidate.Host.Axis
+            }))
+            {
+                var groupCandidates = group.ToList();
+                double gap = GetAutomaticClusterGap(groupCandidates[0].HostBounds, group.Key.Axis, options);
+                bool acceptedAnyCluster = false;
+
+                foreach (var cluster in BuildProjectedCandidateClusters(groupCandidates, group.Key.Axis, gap))
+                {
+                    if (!LooksLikeTextStringCluster(cluster, group.Key.Axis, options))
+                        continue;
+
+                    acceptedAnyCluster = true;
+                    detection.ClusterCount++;
+                    foreach (var candidate in cluster)
+                        textFaceIds.Add(candidate.FaceId);
+                }
+
+                if (!acceptedAnyCluster && LooksLikeDenseTextStringGroup(groupCandidates, group.Key.Axis, options))
+                {
+                    detection.ClusterCount++;
+                    foreach (var candidate in groupCandidates)
+                        textFaceIds.Add(candidate.FaceId);
+                }
+            }
+
+            detection.FaceIds = textFaceIds
+                .OrderBy(id => id)
+                .ToList();
+            return detection;
+        }
+
+        private static bool LooksLikeTextMarkColor(
+            StepColor? color,
+            StepWatermarkCleanerOptions options)
+        {
+            if (!color.HasValue)
+                return true;
+
+            return color.Value.ChannelSpread <= options.NeutralMaxChannelSpread &&
+                color.Value.Luminance > options.DarkWatermarkMaxLuminance &&
+                color.Value.Luminance <= options.NeutralBodyMaxLuminance;
+        }
+
+        private static bool LooksLikeTextStringCluster(
+            List<WatermarkFaceCandidate> cluster,
+            int axis,
+            StepWatermarkCleanerOptions options)
+        {
+            if (cluster.Count < 5)
+                return false;
+
+            int pointCount = cluster.Sum(candidate => candidate.PointCount);
+            if (pointCount < 24)
+                return false;
+
+            Bounds clusterBounds = new Bounds();
+            foreach (var candidate in cluster)
+                clusterBounds.Include(candidate.Bounds);
+
+            Bounds hostBounds = cluster[0].HostBounds;
+            if (!LooksLikeSmallMark(clusterBounds, hostBounds, options))
+                return false;
+
+            if (TouchesProjectedBoundary(
+                clusterBounds,
+                hostBounds,
+                axis,
+                GetAutomaticEdgeMargin(hostBounds, axis) * 2.0))
+                return false;
+
+            int uAxis;
+            int vAxis;
+            GetProjectedAxes(axis, out uAxis, out vAxis);
+
+            double width = Math.Abs(clusterBounds.Size.Get(uAxis));
+            double height = Math.Abs(clusterBounds.Size.Get(vAxis));
+            if (width <= 0.000001 || height <= 0.000001)
+                return false;
+
+            double hostWidth = Math.Max(Math.Abs(hostBounds.Size.Get(uAxis)), 0.000001);
+            double hostHeight = Math.Max(Math.Abs(hostBounds.Size.Get(vAxis)), 0.000001);
+            double widthRatio = width / hostWidth;
+            double heightRatio = height / hostHeight;
+            double areaRatio = (width * height) / Math.Max(hostWidth * hostHeight, 0.000001);
+            if (widthRatio > 0.65 || heightRatio > 0.65 || areaRatio > 0.16)
+                return false;
+
+            double aspect = width >= height ? width / height : height / width;
+            if (aspect < 1.35 || aspect > 12.0)
+                return false;
+
+            var componentBounds = cluster.Select(candidate => candidate.Bounds).ToList();
+            int columnCount = CountProjectedBands(componentBounds, uAxis, Math.Max(width * 0.06, 0.000001));
+            int rowCount = CountProjectedBands(componentBounds, vAxis, Math.Max(height * 0.10, 0.000001));
+
+            bool horizontalString = columnCount >= 4 && rowCount <= 3;
+            bool verticalString = rowCount >= 4 && columnCount <= 3;
+            bool stackedString = columnCount >= 4 && rowCount >= 2 && rowCount <= 5 && aspect <= 4.0;
+
+            return horizontalString || verticalString || stackedString;
+        }
+
+        private static bool LooksLikeDenseTextStringGroup(
+            List<WatermarkFaceCandidate> group,
+            int axis,
+            StepWatermarkCleanerOptions options)
+        {
+            if (group.Count < options.CleanTextMinCandidateFaceCount)
+                return false;
+
+            int pointCount = group.Sum(candidate => candidate.PointCount);
+            if (pointCount < options.AutomaticClusterMinPointCount * 4)
+                return false;
+
+            return true;
         }
 
         private static void AddCoplanarCompanionFaces(
@@ -4885,6 +5196,9 @@ namespace EasyEDA_Loader
             public HashSet<int> RemovableSolidIds { get; set; } = new HashSet<int>();
             public List<int> EmbeddedFaceIds { get; set; } = new List<int>();
             public List<int> CoplanarFaceIds { get; set; } = new List<int>();
+            public List<int> TextFaceIds { get; set; } = new List<int>();
+            public int TextCandidateCount { get; set; }
+            public int TextClusterCount { get; set; }
             public Dictionary<int, HashSet<int>> HostFaceBoundsToRemove { get; } = new Dictionary<int, HashSet<int>>();
             public List<AutomaticWatermarkRegion> AutomaticRegions { get; } = new List<AutomaticWatermarkRegion>();
             public int RemovableSolidHostLoopCount { get; set; }
@@ -4900,6 +5214,13 @@ namespace EasyEDA_Loader
             public int StyleId { get; set; }
             public int TargetId { get; set; }
             public StepColor? Color { get; set; }
+        }
+
+        private sealed class TextStringDetectionResult
+        {
+            public List<int> FaceIds { get; set; } = new List<int>();
+            public int CandidateCount { get; set; }
+            public int ClusterCount { get; set; }
         }
 
         private sealed class StyleUse

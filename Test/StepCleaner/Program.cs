@@ -183,8 +183,14 @@ namespace StepCleaner.Tests
             if (IsOption(args[0], "--footprint-placement"))
                 return RunFootprintPlacementTests();
 
+            if (IsOption(args[0], "--footprint-layers"))
+                return RunFootprintLayerTests();
+
             if (IsOption(args[0], "--silhouette-cleanup"))
                 return RunSilhouetteCleanupTests();
+
+            if (IsOption(args[0], "--clean-text"))
+                return RunCleanTextTests();
 
             if (IsOption(args[0], "--silhouette"))
                 return SaveSilhouetteProjectionImage(args);
@@ -195,9 +201,150 @@ namespace StepCleaner.Tests
             Console.Error.WriteLine("Usage: StepCleaner.Tests --import-save-policy");
             Console.Error.WriteLine("Usage: StepCleaner.Tests --async-import");
             Console.Error.WriteLine("Usage: StepCleaner.Tests --footprint-placement");
+            Console.Error.WriteLine("Usage: StepCleaner.Tests --footprint-layers");
             Console.Error.WriteLine("Usage: StepCleaner.Tests --silhouette-cleanup");
+            Console.Error.WriteLine("Usage: StepCleaner.Tests --clean-text");
             Console.Error.WriteLine("Usage: StepCleaner.Tests --silhouette <input.step> <output.png> [--rotx deg] [--roty deg] [--rotz deg] [--rotation2d deg] [--size pixels] [--padding pixels] [--no-grid] [--no-axes] [--include-inactive-topology]");
             return 2;
+        }
+
+        private static int RunCleanTextTests()
+        {
+            var failures = new List<string>();
+            var visualFailures = new List<ProjectionVisualFailure>();
+            string dataRoot = FindDataRoot();
+            string originalDirectory = Path.Combine(dataRoot, "Original");
+            string cachedOriginalProjectionDirectory = Path.Combine(dataRoot, "OriginalCleanCompareProjection");
+            string cleanTextDirectory = Path.Combine(dataRoot, "CleanText");
+            string cleanTextProjectionDirectory = Path.Combine(dataRoot, "CleanTextProjection");
+            var originalFiles = GetStepFiles(originalDirectory);
+            string expectedTextCleanFileName = "SOT-223-4P_L6.5-W3.5-H1.6-LS7.0-P2.30.step";
+
+            if (originalFiles.Count == 0)
+                failures.Add("No STEP files were found in Original.");
+
+            foreach (string originalFile in originalFiles)
+            {
+                byte[] originalStep = File.ReadAllBytes(originalFile);
+                byte[] watermarkOnly = StepWatermarkCleaner.Clean(
+                    originalStep,
+                    new StepWatermarkCleanerOptions());
+                var textCleanReport = StepWatermarkCleaner.CleanWithReport(
+                    Encoding.Latin1.GetString(originalStep),
+                    new StepWatermarkCleanerOptions
+                    {
+                        CleanText = true
+                    });
+                byte[] textCleaned = Encoding.Latin1.GetBytes(textCleanReport.CleanedStep);
+
+                bool changedByTextCleaning = !BytesEqual(watermarkOnly, textCleaned);
+                bool shouldChange = string.Equals(
+                    Path.GetFileName(originalFile),
+                    expectedTextCleanFileName,
+                    StringComparison.OrdinalIgnoreCase);
+
+                if (changedByTextCleaning != shouldChange)
+                {
+                    failures.Add(
+                        Path.GetFileName(originalFile) +
+                        (shouldChange
+                            ? " should be additionally cleaned by CleanText."
+                            : " should not be changed by CleanText."));
+                }
+
+                if (shouldChange && changedByTextCleaning)
+                {
+                    Directory.CreateDirectory(cleanTextDirectory);
+                    string textCleanOutputPath = Path.Combine(cleanTextDirectory, Path.GetFileName(originalFile));
+                    File.WriteAllBytes(textCleanOutputPath, textCleaned);
+                    VerifyCleanTextPostProcessProjectionUsesCachedOriginal(
+                        originalFile,
+                        textCleanOutputPath,
+                        textCleanReport.DetectionReport,
+                        cachedOriginalProjectionDirectory,
+                        cleanTextProjectionDirectory,
+                        failures,
+                        visualFailures);
+                }
+            }
+
+            if (failures.Count > 0)
+            {
+                Console.Error.WriteLine("Clean text regression test failed.");
+                foreach (string failure in failures)
+                    Console.Error.WriteLine("  " + failure);
+                return 1;
+            }
+
+            Console.WriteLine("Clean text regression test passed.");
+            return 0;
+        }
+
+        private static void VerifyCleanTextPostProcessProjectionUsesCachedOriginal(
+            string originalFile,
+            string cleanTextFile,
+            StepWatermarkDetectionReport detectionReport,
+            string cachedOriginalProjectionDirectory,
+            string cleanTextProjectionDirectory,
+            List<string> failures,
+            List<ProjectionVisualFailure> visualFailures)
+        {
+            var projectionOptions = CreateVerificationProjectionOptions();
+            var detectionRegions = StepProjectionRenderer.ProjectDetectionRegions(
+                    originalFile,
+                    detectionReport,
+                    projectionOptions)
+                .ToList();
+
+            var detectedViewNames = detectionRegions
+                .Select(region => region.ViewName)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(viewName => viewName, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            if (detectedViewNames.Count == 0)
+            {
+                failures.Add(Path.GetFileName(originalFile) + " CleanText did not produce projection verification regions.");
+                return;
+            }
+
+            ClearProjectionFiles(cleanTextProjectionDirectory, new[] { Path.GetFileName(cleanTextFile) });
+            StepProjectionRenderer.ProjectFile(
+                cleanTextFile,
+                cleanTextProjectionDirectory,
+                CreateProjectionOptionsForViews(detectedViewNames, projectionOptions));
+
+            string originalModelName = Path.GetFileNameWithoutExtension(originalFile);
+            string cleanTextModelName = Path.GetFileNameWithoutExtension(cleanTextFile);
+            foreach (string viewName in detectedViewNames)
+            {
+                string cachedOriginalProjectionPath = Path.Combine(cachedOriginalProjectionDirectory, originalModelName + "__" + viewName + ".png");
+                string cleanTextProjectionPath = Path.Combine(cleanTextProjectionDirectory, cleanTextModelName + "__" + viewName + ".png");
+
+                if (!File.Exists(cachedOriginalProjectionPath))
+                {
+                    failures.Add("Cached original projection is missing for CleanText verification: " + cachedOriginalProjectionPath);
+                    continue;
+                }
+
+                if (!File.Exists(cleanTextProjectionPath))
+                {
+                    failures.Add("CleanText projection is missing: " + cleanTextProjectionPath);
+                    continue;
+                }
+
+                var viewRegions = detectionRegions
+                    .Where(region => string.Equals(region.ViewName, viewName, StringComparison.OrdinalIgnoreCase))
+                    .ToList();
+                VerifyPostCleanProjectionImage(
+                    Path.GetFileName(originalFile),
+                    viewName,
+                    cachedOriginalProjectionPath,
+                    cleanTextProjectionPath,
+                    viewRegions,
+                    new HashSet<string>(StringComparer.OrdinalIgnoreCase),
+                    failures,
+                    visualFailures);
+            }
         }
 
         private static int RunSilhouetteCleanupTests()
@@ -318,6 +465,29 @@ namespace StepCleaner.Tests
             }
 
             Console.WriteLine("Footprint placement regression test passed.");
+            return 0;
+        }
+
+        private static int RunFootprintLayerTests()
+        {
+            var failures = new List<string>();
+
+            AssertEqual("TopAssembly", FootprintLayerMap.NormalizeLayerName("ComponentShapeLayer"), "component shape should import as assembly documentation", failures);
+            AssertEqual("TopAssembly", FootprintLayerMap.NormalizeLayerName("ComponentMarkingLayer"), "component marking should import as assembly documentation", failures);
+            AssertEqual("TopAssembly", FootprintLayerMap.NormalizeLayerName("ComponentPolarityLayer"), "component polarity should import as assembly documentation", failures);
+            AssertEqual("Mechanical", FootprintLayerMap.NormalizeLayerName("LeadShapeLayer"), "lead shape should import as non-production mechanical documentation", failures);
+            AssertEqual("Mechanical", FootprintLayerMap.NormalizeLayerName("Document"), "document layer should import as non-production mechanical documentation", failures);
+            AssertEqual("TopSilkLayer", FootprintLayerMap.NormalizeLayerName("TopSilkLayer"), "existing EasyEDA layer names should remain unchanged", failures);
+
+            if (failures.Count > 0)
+            {
+                Console.Error.WriteLine("Footprint layer regression test failed.");
+                foreach (string failure in failures)
+                    Console.Error.WriteLine("  " + failure);
+                return 1;
+            }
+
+            Console.WriteLine("Footprint layer regression test passed.");
             return 0;
         }
 
@@ -812,6 +982,22 @@ namespace StepCleaner.Tests
             {
                 Console.Error.WriteLine("Invalid numeric value for " + option + ": " + args[index]);
                 return false;
+            }
+
+            return true;
+        }
+
+        private static bool BytesEqual(byte[] left, byte[] right)
+        {
+            if (ReferenceEquals(left, right))
+                return true;
+            if (left == null || right == null || left.Length != right.Length)
+                return false;
+
+            for (int i = 0; i < left.Length; i++)
+            {
+                if (left[i] != right[i])
+                    return false;
             }
 
             return true;

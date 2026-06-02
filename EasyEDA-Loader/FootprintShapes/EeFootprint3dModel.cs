@@ -116,7 +116,7 @@ namespace EasyEDA_Loader
                 byte[] originalModel = modelTask.GetAwaiter().GetResult();
 
                 byte[] footprintModel = ctx.RemoveWatermark
-                    ? StepWatermarkCleanVerifier.CleanOrThrow(originalModel, GetSafeCacheFileName(), CreateVerificationDirectory())
+                    ? StepWatermarkCleanVerifier.CleanOrThrow(originalModel, GetSafeCacheFileName(), CreateVerificationDirectory(), ctx.CleanText)
                     : originalModel;
 
                 string modelIdentifier = FirstNonEmpty(ctx.PartNumber, Name, Uuid);

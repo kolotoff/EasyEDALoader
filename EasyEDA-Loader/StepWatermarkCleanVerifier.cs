@@ -29,7 +29,7 @@ namespace EasyEDA_Loader
         private const int VerificationProjectionImageSizePixels = 1000;
         private const int VerificationProjectionPaddingPixels = 50;
 
-        public static byte[] CleanOrThrow(byte[] originalStep, string modelName, string verificationDirectory)
+        public static byte[] CleanOrThrow(byte[] originalStep, string modelName, string verificationDirectory, bool cleanText = false)
         {
             if (originalStep == null)
                 throw new ArgumentNullException(nameof(originalStep));
@@ -42,7 +42,10 @@ namespace EasyEDA_Loader
 
             var cleanReport = StepWatermarkCleaner.CleanWithReport(
                 Encoding.Latin1.GetString(originalStep),
-                new StepWatermarkCleanerOptions());
+                new StepWatermarkCleanerOptions
+                {
+                    CleanText = cleanText
+                });
             byte[] cleanStep = Encoding.Latin1.GetBytes(cleanReport.CleanedStep);
 
             string safeModelName = SanitizeFileName(Path.GetFileNameWithoutExtension(modelName));

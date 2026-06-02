@@ -205,6 +205,7 @@ namespace EasyEDA_Loader
 
         public List<ComponentSelection> SelectedComponents { get; private set; }
         public bool RemoveWatermark => removeWatermarkCheckBox?.IsChecked == true;
+        public bool CleanText => RemoveWatermark && cleanTextCheckBox?.IsChecked == true;
         public Func<IReadOnlyList<ComponentSelection>, Action<ImportProgressEvent>, bool> ImportExecutor { get; set; }
 
         public DialogWindow()
@@ -250,6 +251,7 @@ namespace EasyEDA_Loader
             SetPreviewProgress(false);
             SetOperationProgress(false);
             RestoreLastSession();
+            UpdateCleanTextControlState();
             searchTextBox.Focus();
             searchTextBox.CaretIndex = searchTextBox.Text?.Length ?? 0;
         }
@@ -283,6 +285,39 @@ namespace EasyEDA_Loader
                 // Recursively apply to children
                 ApplyColorToTextBlocks(child, brush);
             }
+        }
+
+        private async void StepCleanOptionsChanged(object sender, RoutedEventArgs e)
+        {
+            UpdateCleanTextControlState();
+
+            if (_isRestoringSession)
+                return;
+
+            if (searchResults == null || resultsGrid == null)
+                return;
+
+            SaveLastSession();
+
+            previewCts?.Cancel();
+            previewCts?.Dispose();
+            previewCts = new CancellationTokenSource();
+
+            if (resultsGrid?.SelectedItem is PartInfoViewModel partViewModel)
+                await LoadPreviewAsync(partViewModel, previewCts.Token);
+        }
+
+        private void UpdateCleanTextControlState()
+        {
+            if (cleanTextCheckBox == null)
+                return;
+
+            bool removeWatermarkSelected = removeWatermarkCheckBox?.IsChecked == true;
+            cleanTextCheckBox.IsEnabled = removeWatermarkSelected &&
+                removeWatermarkCheckBox?.IsEnabled == true &&
+                !_isCriticalOperationActive;
+            if (!removeWatermarkSelected)
+                cleanTextCheckBox.IsChecked = false;
         }
 
         private void SetSearchProgress(bool isVisible, string message = null, double? progress = null)
@@ -588,7 +623,12 @@ namespace EasyEDA_Loader
 
             try
             {
-                string cleanStepPath = await GetOrCreateCleanStepPreviewFileAsync(modelInfo, stepData, cancellationToken);
+                string cleanStepPath = await GetOrCreateCleanStepPreviewFileAsync(
+                    modelInfo,
+                    stepData,
+                    RemoveWatermark,
+                    CleanText,
+                    cancellationToken);
 
                 await StartF3DPreviewAsync(_originalF3DPreview, stepPath, false, cancellationToken);
                 await StartF3DPreviewAsync(_cleanF3DPreview, cleanStepPath, false, cancellationToken);
@@ -620,6 +660,8 @@ namespace EasyEDA_Loader
         private static async Task<string> GetOrCreateCleanStepPreviewFileAsync(
             EeFootprint3dModel modelInfo,
             byte[] originalStepData,
+            bool removeWatermark,
+            bool cleanText,
             CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -627,9 +669,13 @@ namespace EasyEDA_Loader
                 throw new InvalidOperationException("Original STEP data is empty.");
 
             string modelKey = modelInfo?.Uuid ?? modelInfo?.Name;
+            if (!removeWatermark)
+                return ModelCache.GetOriginalStepPath(modelKey);
+
+            string cleanModeKey = modelKey + (cleanText ? "__watermark_text" : "__watermark");
             string safeName = ModelCache.GetSafeFileName(modelKey);
             byte[] cleanStepData = await ModelCache.GetCleanStepModelAsync(
-                modelKey,
+                cleanModeKey,
                 () => Task.Run(() =>
                     StepWatermarkCleanVerifier.CleanOrThrow(
                         originalStepData,
@@ -637,7 +683,10 @@ namespace EasyEDA_Loader
                         Path.Combine(
                             ModelCache.GetLocalDataRoot(),
                             "StepCleanerReports",
-                            safeName + "_" + DateTime.Now.ToString("yyyyMMdd_HHmmss", CultureInfo.InvariantCulture))),
+                            safeName +
+                            (cleanText ? "_text_" : "_") +
+                            DateTime.Now.ToString("yyyyMMdd_HHmmss", CultureInfo.InvariantCulture)),
+                        cleanText),
                     cancellationToken),
                 cancellationToken);
 
@@ -646,7 +695,7 @@ namespace EasyEDA_Loader
             if (cleanStepData == null || cleanStepData.Length == 0)
                 throw new InvalidOperationException("Clean STEP data is empty.");
 
-            return ModelCache.GetCleanStepPath(modelKey);
+            return ModelCache.GetCleanStepPath(cleanModeKey);
         }
 
         private F3DPreviewHost CreateF3DPreviewHost(string name)
@@ -1355,6 +1404,8 @@ namespace EasyEDA_Loader
 
                 searchTextBox.Text = state.SearchText ?? string.Empty;
                 removeWatermarkCheckBox.IsChecked = state.RemoveWatermark ?? true;
+                cleanTextCheckBox.IsChecked = state.CleanText ?? false;
+                UpdateCleanTextControlState();
 
                 searchResults.Clear();
                 if (state.Results != null)
@@ -1410,6 +1461,7 @@ namespace EasyEDA_Loader
                 {
                     SearchText = searchTextBox.Text,
                     RemoveWatermark = RemoveWatermark,
+                    CleanText = CleanText,
                     SelectedPart = (resultsGrid.SelectedItem as PartInfoViewModel)?.PartInfo?.Part,
                     Results = searchResults.Select(result => new DialogSessionResult
                     {
@@ -1598,6 +1650,7 @@ namespace EasyEDA_Loader
                         IncludeFootprint = includeThisFootprint,
                         IncludeSymbol = includeThisSymbol,
                         RemoveWatermark = RemoveWatermark,
+                        CleanText = CleanText,
                         ImportTarget = importTarget
                     });
                 }
@@ -1630,6 +1683,7 @@ namespace EasyEDA_Loader
             }
             cancelButton.IsEnabled = isEnabled;
             removeWatermarkCheckBox.IsEnabled = isEnabled;
+            UpdateCleanTextControlState();
         }
 
         private bool ValidateImportOptions()
@@ -1841,8 +1895,10 @@ namespace EasyEDA_Loader
                         ModelCache.GetLocalDataRoot(),
                         "StepCleanerReports",
                         ModelCache.GetSafeFileName(modelInfo.Uuid ?? modelInfo.Name) +
+                        (CleanText ? "_text" : string.Empty) +
                         "_" +
-                        DateTime.Now.ToString("yyyyMMdd_HHmmss", System.Globalization.CultureInfo.InvariantCulture))),
+                        DateTime.Now.ToString("yyyyMMdd_HHmmss", System.Globalization.CultureInfo.InvariantCulture)),
+                    CleanText),
                 cancellationToken);
         }
 
@@ -1963,6 +2019,7 @@ namespace EasyEDA_Loader
     {
         public string SearchText { get; set; }
         public bool? RemoveWatermark { get; set; }
+        public bool? CleanText { get; set; }
         public string SelectedPart { get; set; }
         public List<DialogSessionResult> Results { get; set; }
     }

@@ -17,6 +17,7 @@ namespace EasyEDA_Loader
 
         public List<ComponentSelection> SelectedComponents => wpfDialog?.SelectedComponents;
         public bool RemoveWatermark => wpfDialog?.RemoveWatermark ?? true;
+        public bool CleanText => wpfDialog?.CleanText ?? false;
 
         public Dialog(Func<IReadOnlyList<ComponentSelection>, Action<ImportProgressEvent>, bool> importExecutor = null)
         {
@@ -61,6 +62,7 @@ namespace EasyEDA_Loader
         public bool IncludeFootprint { get; set; }
         public bool IncludeSymbol { get; set; }
         public bool RemoveWatermark { get; set; }
+        public bool CleanText { get; set; }
         public ComponentImportTarget ImportTarget { get; set; }
     }
 

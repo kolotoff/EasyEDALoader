@@ -22,6 +22,7 @@ namespace StepCleaner
         {
             var arguments = new List<string>(args);
             bool writeDetectionDebug = RemoveDetectionDebugFlag(arguments);
+            bool cleanText = RemoveCleanTextFlag(arguments);
 
             if (arguments.Count > 0 && IsProjectionCommand(arguments[0]))
                 return Project(arguments.ToArray());
@@ -39,7 +40,7 @@ namespace StepCleaner
             string outputPath = arguments.Count == 2 ? arguments[1] : GetDefaultOutputPath(inputPath);
 
             if (Directory.Exists(inputPath))
-                return CleanDirectory(inputPath, outputPath, writeDetectionDebug);
+                return CleanDirectory(inputPath, outputPath, writeDetectionDebug, cleanText);
 
             if (!File.Exists(inputPath))
             {
@@ -49,7 +50,7 @@ namespace StepCleaner
 
             try
             {
-                var report = CleanFile(inputPath, outputPath);
+                var report = CleanFile(inputPath, outputPath, cleanText);
                 if (writeDetectionDebug)
                     WriteDetectionDebug(inputPath, GetDefaultDetectionDebugOutputPath(inputPath, outputPath), report.DetectionReport);
 
@@ -215,7 +216,7 @@ namespace StepCleaner
             }
         }
 
-        private static int CleanDirectory(string inputDirectory, string outputDirectory, bool writeDetectionDebug)
+        private static int CleanDirectory(string inputDirectory, string outputDirectory, bool writeDetectionDebug, bool cleanText)
         {
             Directory.CreateDirectory(outputDirectory);
 
@@ -249,7 +250,7 @@ namespace StepCleaner
                 foreach (string inputFile in inputFiles)
                 {
                     string outputFile = Path.Combine(outputDirectory, Path.GetFileName(inputFile));
-                    var report = CleanFile(inputFile, outputFile);
+                    var report = CleanFile(inputFile, outputFile, cleanText);
                     if (writeDetectionDebug)
                         WriteDetectionDebug(inputFile, debugDirectory, report.DetectionReport);
 
@@ -693,12 +694,17 @@ namespace StepCleaner
             return builder.ToString();
         }
 
-        private static StepWatermarkCleanerReport CleanFile(string inputPath, string outputPath)
+        private static StepWatermarkCleanerReport CleanFile(string inputPath, string outputPath, bool cleanText)
         {
             byte[] stepBytes = File.ReadAllBytes(inputPath);
             string stepText = System.Text.Encoding.Latin1.GetString(stepBytes);
 
-            var report = StepWatermarkCleaner.CleanWithReport(stepText, new StepWatermarkCleanerOptions());
+            var report = StepWatermarkCleaner.CleanWithReport(
+                stepText,
+                new StepWatermarkCleanerOptions
+                {
+                    CleanText = cleanText
+                });
             File.WriteAllBytes(outputPath, System.Text.Encoding.Latin1.GetBytes(report.CleanedStep));
             return report;
         }
@@ -868,12 +874,33 @@ namespace StepCleaner
             return found;
         }
 
+        private static bool RemoveCleanTextFlag(List<string> args)
+        {
+            bool found = false;
+            for (int i = args.Count - 1; i >= 0; i--)
+            {
+                if (!IsCleanTextFlag(args[i]))
+                    continue;
+
+                args.RemoveAt(i);
+                found = true;
+            }
+
+            return found;
+        }
+
         private static bool IsDetectionDebugFlag(string arg)
         {
             return string.Equals(arg, "--debug", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(arg, "-d", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(arg, "--debug-detection", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(arg, "--detection-debug", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool IsCleanTextFlag(string arg)
+        {
+            return string.Equals(arg, "--clean-text", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(arg, "--text", StringComparison.OrdinalIgnoreCase);
         }
 
         private sealed class PostCleanVerificationResult
@@ -900,8 +927,8 @@ namespace StepCleaner
         private static void PrintUsage()
         {
             Console.WriteLine("Usage:");
-            Console.WriteLine("  StepCleaner <input.step> [output.step] [--debug]");
-            Console.WriteLine("  StepCleaner <input-directory> [output-directory] [--debug]");
+            Console.WriteLine("  StepCleaner <input.step> [output.step] [--debug] [--clean-text]");
+            Console.WriteLine("  StepCleaner <input-directory> [output-directory] [--debug] [--clean-text]");
             Console.WriteLine("  StepCleaner detect <input.step|input-directory> [--debug]");
             Console.WriteLine("  StepCleaner project <input.step|input-directory> [projection-directory]");
             Console.WriteLine();
@@ -909,6 +936,7 @@ namespace StepCleaner
             Console.WriteLine("When input-directory is named Original and output-directory is omitted, the cleaner writes to sibling Clean.");
             Console.WriteLine("The detect command runs automatic stage 1 detection only; marked JSON is not loaded.");
             Console.WriteLine("The --debug option writes detected watermark region projection PNG files to Clean\\Detection.");
+            Console.WriteLine("The --clean-text option additionally removes detected raised or cut text-string geometry.");
             Console.WriteLine("Cleanup returns " + PostCleanVerificationFailedExitCode.ToString(CultureInfo.InvariantCulture) + " when post-clean projection verification fails; failed comparison images are written to PostCleanVerification.");
             Console.WriteLine("The project command writes six PNG side projections and JSON mapping files; when the input directory is named Original, the projection directory defaults to sibling Projection.");
         }

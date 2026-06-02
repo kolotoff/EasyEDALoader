@@ -322,6 +322,15 @@
                 <CheckBox x:Name="removeWatermarkCheckBox"
                           Content="Remove Watermark"
                           IsChecked="True"
+                          Checked="StepCleanOptionsChanged"
+                          Unchecked="StepCleanOptionsChanged"
+                          VerticalAlignment="Center"/>
+                <CheckBox x:Name="cleanTextCheckBox"
+                          Content="Clean text"
+                          Margin="16,0,0,0"
+                          IsChecked="False"
+                          Checked="StepCleanOptionsChanged"
+                          Unchecked="StepCleanOptionsChanged"
                           VerticalAlignment="Center"/>
             </StackPanel>
 

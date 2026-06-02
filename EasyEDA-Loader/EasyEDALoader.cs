@@ -460,6 +460,7 @@ namespace EasyEDA_Loader
                                     ModelTask = modelTask,
                                     RawModelTask = rawModelTask,
                                     RemoveWatermark = selection.RemoveWatermark,
+                                    CleanText = selection.CleanText,
                                     PartNumber = partNumber,
                                     Description = footprintDescription,
                                     HeightMm = footprintHeight,
