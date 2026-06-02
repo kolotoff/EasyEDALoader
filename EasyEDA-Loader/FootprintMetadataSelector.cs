@@ -318,7 +318,25 @@ namespace EasyEDA_Loader
             if (string.Equals(packageSuffix, partNumber, StringComparison.OrdinalIgnoreCase))
                 return true;
 
+            string comparablePackageName = NormalizePartComparisonText(packageName);
+            string comparablePartNumber = NormalizePartComparisonText(partNumber);
+            if (!string.IsNullOrWhiteSpace(comparablePackageName) &&
+                !string.IsNullOrWhiteSpace(comparablePartNumber) &&
+                comparablePackageName.IndexOf(comparablePartNumber, StringComparison.OrdinalIgnoreCase) >= 0)
+                return true;
+
             return packageName.IndexOf(partNumber, StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        private static string NormalizePartComparisonText(string value)
+        {
+            string cleaned = Clean(value);
+            if (string.IsNullOrWhiteSpace(cleaned))
+                return "";
+
+            return cleaned
+                .Replace('(', '-')
+                .Replace(")", "");
         }
 
         private static string Clean(string value)

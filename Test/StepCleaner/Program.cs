@@ -796,6 +796,12 @@ namespace StepCleaner.Tests
                 "part-number-specific connector footprint names should keep the manufacturer part number",
                 failures);
 
+            AssertEqual(
+                "DF56C-30S-0.3V(51)",
+                FootprintMetadataSelector.SelectName("CONN-SMD_30P-P0.60_DF56C-30S-0.3V-51", "DF56C-30S-0.3V(51)"),
+                "part-number-specific connector footprint names should handle package suffix notation variants",
+                failures);
+
             if (failures.Count > 0)
             {
                 Console.Error.WriteLine("Metadata regression test failed.");
