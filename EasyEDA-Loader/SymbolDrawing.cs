@@ -83,10 +83,9 @@ namespace EasyEDA_Loader
 
     public class SymbolDrawing
     {
-        private const double MilPerMm = 1000.0 / 25.4;
-        private const double GostGridMil = 2.5 * MilPerMm;
-        private const double GostPinLengthMil = 5.0 * MilPerMm;
-        private const double GostPinPitchMil = 5.0 * MilPerMm;
+        private const double GostGridMil = SymbolImportRules.GostGridMil;
+        private const double GostPinLengthMil = SymbolImportRules.GostPinLengthMil;
+        private const double GostPinPitchMil = SymbolImportRules.GostPinPitchMil;
 
         static void DistributeEvenly<T>(List<T> source, List<List<T>> targets)
         {
@@ -216,7 +215,7 @@ namespace EasyEDA_Loader
             c.Children.Add(line);
         }
 
-        static public (AltiumSymbolRectangle, List<AltiumSymbolPin>) LayoutPins(List<EeSymbolShape> Shapes, int widthMargin = 8, int heightMargin = 2, double gridSize = GostGridMil, double pinPitch = GostPinPitchMil)
+        static public (AltiumSymbolRectangle, List<AltiumSymbolPin>) LayoutPins(List<EeSymbolShape> Shapes, bool isConnector = false, int widthMargin = 8, int heightMargin = 1, double gridSize = GostGridMil, double pinPitch = GostPinPitchMil)
         {
             var leftPins = Shapes.OfType<EeSymbolPin>()
                 .Where(shape => shape.Name.Rotation == 0 && shape.Name.TextAnchor == "start")
@@ -251,24 +250,25 @@ namespace EasyEDA_Loader
             };
 
             List<AltiumSymbolPin> pins = new();
-            AddSidePins(pins, leftPins, 0, gridSize, TRotationBy90.eRotate180, pinPitch);
-            AddSidePins(pins, rightPins, altiumRect.Width, gridSize, TRotationBy90.eRotate0, pinPitch);
+            AddSidePins(pins, leftPins, 0, gridSize, TRotationBy90.eRotate180, pinPitch, isConnector);
+            AddSidePins(pins, rightPins, altiumRect.Width, gridSize, TRotationBy90.eRotate0, pinPitch, isConnector);
             return (altiumRect, pins);
         }
 
-        private static void AddSidePins(List<AltiumSymbolPin> pins, List<EeSymbolPin> sourcePins, double x, double firstY, TRotationBy90 orientation, double pinPitch)
+        private static void AddSidePins(List<AltiumSymbolPin> pins, List<EeSymbolPin> sourcePins, double x, double firstY, TRotationBy90 orientation, double pinPitch, bool isConnector)
         {
             for (var p = 0; p < sourcePins.Count; ++p)
             {
+                string pinName = SymbolImportRules.FormatPinName(sourcePins[p].Settings.SpicePinNumber, sourcePins[p].Name.Text, isConnector);
                 pins.Add(new AltiumSymbolPin
                 {
                     X = x,
                     Y = firstY + p * pinPitch,
                     Orientation = orientation,
                     Designator = sourcePins[p].Settings.SpicePinNumber,
-                    Name = sourcePins[p].Name.Text,
+                    Name = pinName,
                     Length = GostPinLengthMil,
-                    ShowName = sourcePins[p].Name.IsDisplayed,
+                    ShowName = sourcePins[p].Name.IsDisplayed || (isConnector && !string.IsNullOrWhiteSpace(pinName)),
                     PinType = AltiumSymbolPin.FromEEPinType(sourcePins[p].Settings.Type)
                 });
             }
@@ -291,15 +291,15 @@ namespace EasyEDA_Loader
             }
         }
 
-        static public void CreateComponent(ISch_Lib schLib, ISch_Component component, string pcbLibraryPath, string package, SymbolData ee_symbol)
+        static public void CreateComponent(ISch_Lib schLib, ISch_Component component, string pcbLibraryPath, string package, SymbolData ee_symbol, bool isConnector)
         {
-            (var rect, var pins) = SymbolDrawing.LayoutPins(ee_symbol.Shapes);
+            (var rect, var pins) = SymbolDrawing.LayoutPins(ee_symbol.Shapes, isConnector);
             var gostFont = EESCH.CreateGostFontInfo();
-            EESCH.CreateRectangle(schLib, component, rect.X1, rect.Height - rect.Y1, rect.X2, rect.Height - rect.Y2);
-            EESCH.SetComponentDesignatorLocation(component, rect.X1, rect.Height + GostGridMil);
+            EESCH.CreateRectangle(schLib, component, rect.X1, 0, rect.X2, -rect.Height);
+            EESCH.SetComponentDesignatorLocation(component, rect.X1, GostGridMil);
             foreach (var pin in pins)
             {
-                EESCH.CreatePin(schLib, component, pin.X, rect.Height - pin.Y, pin.Designator, pin.Name, pin.Orientation, pin.Length, pin.PinType, pin.ShowName, gostFont);
+                EESCH.CreatePin(schLib, component, pin.X, -pin.Y, pin.Designator, pin.Name, pin.Orientation, pin.Length, pin.PinType, pin.ShowName, gostFont);
             }
             EESCH.AssignFootprint(component, pcbLibraryPath, package, "");
             schLib.AddSchComponent(component);

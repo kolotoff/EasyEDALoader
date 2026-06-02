@@ -171,6 +171,9 @@ namespace StepCleaner.Tests
             if (IsOption(args[0], "--metadata"))
                 return RunMetadataTests();
 
+            if (IsOption(args[0], "--symbol-rules"))
+                return RunSymbolRuleTests();
+
             if (IsOption(args[0], "--async-import"))
                 return RunAsyncImportTests();
 
@@ -179,6 +182,7 @@ namespace StepCleaner.Tests
 
             Console.Error.WriteLine("Unknown command: " + args[0]);
             Console.Error.WriteLine("Usage: StepCleaner.Tests --metadata");
+            Console.Error.WriteLine("Usage: StepCleaner.Tests --symbol-rules");
             Console.Error.WriteLine("Usage: StepCleaner.Tests --async-import");
             Console.Error.WriteLine("Usage: StepCleaner.Tests --silhouette <input.step> <output.png> [--rotx deg] [--roty deg] [--rotz deg] [--rotation2d deg] [--size pixels] [--padding pixels] [--no-grid] [--no-axes]");
             return 2;
@@ -330,6 +334,72 @@ namespace StepCleaner.Tests
             return 0;
         }
 
+        private static int RunSymbolRuleTests()
+        {
+            var failures = new List<string>();
+
+            AssertNear(98.4251968503937, SymbolImportRules.GostGridMil, 0.0000001, "GOST schematic grid must be exactly 2.5 mm in mils", failures);
+            AssertNear(196.850393700787, SymbolImportRules.GostPinPitchMil, 0.0000001, "generated schematic pins must advance by 5.0 mm rows", failures);
+            AssertNear(196.850393700787, SymbolImportRules.GostPinLengthMil, 0.0000001, "generated schematic pin length must be 5.0 mm", failures);
+
+            AssertEqual("Pin 1", SymbolImportRules.FormatPinName("1", "1", true), "numeric connector pins should have readable Pin N names", failures);
+            AssertEqual("Pin 12", SymbolImportRules.FormatPinName("", "12", true), "numeric connector pin names should be normalized even when the designator is absent", failures);
+            AssertEqual("D+", SymbolImportRules.FormatPinName("2", "D+", true), "non-numeric connector pin names should keep electrical meaning", failures);
+            AssertEqual("1", SymbolImportRules.FormatPinName("1", "1", false), "numeric IC pin names should not be rewritten as connector contacts", failures);
+
+            AssertEqual("XS?", SymbolImportRules.SelectDesignator("J?", "USB4110", "USB Type-C receptacle", "USB-C-SMD"), "USB receptacles should use the socket designator family", failures);
+            AssertEqual("XP?", SymbolImportRules.SelectDesignator("J?", "DF40C-10DP-0.4V", "board-to-board header", "CONN-SMD"), "headers should use the plug/header designator family", failures);
+            AssertEqual("DD?", SymbolImportRules.SelectDesignator("U?", "CH334P", "USB hub controller", "SOP-16"), "IC source U? designators should map to GOST DD?", failures);
+
+            AssertEqual("Разъём USB", SymbolImportRules.SelectValueType("XS?", "USB4110", "USB Type-C receptacle", "USB-C-SMD"), "USB connector value type should use the USB connector vocabulary", failures);
+            AssertEqual("Разъём", SymbolImportRules.SelectValueType("XP?", "DF40C", "mezzanine header", "CONN-SMD"), "generic connectors should use connector value type", failures);
+            AssertEqual("Микросхема", SymbolImportRules.SelectValueType("DD?", "CH334P", "USB hub controller", "SOP-16"), "ICs should use microcircuit value type", failures);
+
+            AssertEqual("not custom", SymbolImportRules.IsCustomParameter("Footprint") ? "custom" : "not custom", "footprint model name must not be added as a custom parameter", failures);
+            AssertEqual("not custom", SymbolImportRules.IsCustomParameter("FootprintLibrary") ? "custom" : "not custom", "footprint library link must not be added as a custom parameter", failures);
+            AssertEqual("not custom", SymbolImportRules.IsCustomParameter("Package") ? "custom" : "not custom", "package must not be added as a custom parameter", failures);
+            AssertEqual("not custom", SymbolImportRules.IsCustomParameter("mounting") ? "custom" : "not custom", "mounting must not be added as a custom parameter", failures);
+            AssertEqual("custom", SymbolImportRules.IsCustomParameter("Manufacturer") ? "custom" : "not custom", "manufacturer remains a custom GOST parameter", failures);
+
+            AssertEqual(
+                "BM08B-GHS-TBT",
+                SymbolImportRules.SelectDesignItemId(
+                    manufacturerPart: "BM08B-GHS-TBT",
+                    symbolName: "EasyEDA Generic Name",
+                    componentTitle: "C123456",
+                    searchResultName: "C123456",
+                    searchPart: "C123456",
+                    lcscNumber: "C123456",
+                    szlcscNumber: "C123456"),
+                "design item ID should prefer manufacturer part number over EasyEDA or LCSC identifiers",
+                failures);
+
+            AssertEqual(
+                "USB4110-GF-A",
+                SymbolImportRules.SelectDesignItemId(
+                    manufacturerPart: "",
+                    symbolName: "USB4110-GF-A",
+                    componentTitle: "C999999",
+                    searchResultName: "C999999",
+                    searchPart: "C999999",
+                    lcscNumber: "C999999",
+                    szlcscNumber: "C999999"),
+                "design item ID should fall back to EasyEDA manufacturer-style symbol name before LCSC identifiers",
+                failures);
+
+            if (failures.Count > 0)
+            {
+                Console.Error.WriteLine("Symbol rule regression test failed.");
+                foreach (string failure in failures)
+                    Console.Error.WriteLine("  " + failure);
+
+                return 1;
+            }
+
+            Console.WriteLine("Symbol rule regression test passed.");
+            return 0;
+        }
+
         private static FootprintDescriptionGeometry CreateMr30FootprintGeometry()
         {
             return new FootprintDescriptionGeometry
@@ -345,6 +415,20 @@ namespace StepCleaner.Tests
         {
             if (!string.Equals(expected, actual, StringComparison.Ordinal))
                 failures.Add(message + ": expected '" + expected + "', got '" + actual + "'.");
+        }
+
+        private static void AssertNear(double expected, double actual, double tolerance, string message, List<string> failures)
+        {
+            if (Math.Abs(expected - actual) > tolerance)
+            {
+                failures.Add(
+                    message +
+                    ": expected '" +
+                    expected.ToString(CultureInfo.InvariantCulture) +
+                    "', got '" +
+                    actual.ToString(CultureInfo.InvariantCulture) +
+                    "'.");
+            }
         }
 
         private static int SaveSilhouetteProjectionImage(string[] args)

@@ -115,21 +115,21 @@ namespace EasyEDA_Loader
                 ValueType = EESCH.SelectRuleValueType(designator, partName, description, package),
                 Footprint = CleanPropertyValue(footprintName),
                 FootprintLibrary = CleanPropertyValue(pcbLibraryPath),
-                Package = CleanPropertyValue(package),
-                Mounting = CleanPropertyValue(mounting)
+                Package = "",
+                Mounting = ""
             };
         }
 
         private static string SelectPartNumber(ComponentSelection selection, ComponentInfo component, SymbolData symbolData)
         {
-            return FirstNonEmpty(
-                selection?.PartInfo?.Name,
-                symbolData?.Head?.Parameters?.ManufacturerPart,
-                symbolData?.Head?.Parameters?.Name,
-                component?.Title,
-                selection?.PartInfo?.Part,
-                component?.Lcsc?.Number,
-                component?.Szlcsc?.Number);
+            return SymbolImportRules.SelectDesignItemId(
+                manufacturerPart: symbolData?.Head?.Parameters?.ManufacturerPart,
+                symbolName: symbolData?.Head?.Parameters?.Name,
+                componentTitle: component?.Title,
+                searchResultName: selection?.PartInfo?.Name,
+                searchPart: selection?.PartInfo?.Part,
+                lcscNumber: component?.Lcsc?.Number,
+                szlcscNumber: component?.Szlcsc?.Number);
         }
 
         private static string SelectFootprintDescription(ComponentInfo component, EasyedaApi.ProductInfo productInfo, string partNumber, string package, string mounting)
@@ -358,8 +358,8 @@ namespace EasyEDA_Loader
                     var ee_footprint = root.Component.PackageDetail?.Footprint;
                     var ee_symbol = root.Component.Symbol;
                     string package = FirstNonEmpty(ee_footprint?.Head?.Parameters?.Package, selection.PartInfo?.Name, selection.PartInfo?.Part);
-                    string partName = FirstNonEmpty(ee_symbol?.Head?.Parameters?.Name, root.Component.Title, selection.PartInfo?.Name, selection.PartInfo?.Part);
                     string partNumber = SelectPartNumber(selection, root.Component, ee_symbol);
+                    string partName = FirstNonEmpty(partNumber, ee_symbol?.Head?.Parameters?.Name, root.Component.Title, selection.PartInfo?.Name, selection.PartInfo?.Part);
                     string mounting = InferMounting(ee_footprint);
                     EeFootprint3dModel model = selection.Include3dModel ? ee_footprint?.GetModel() : null;
 
@@ -468,7 +468,8 @@ namespace EasyEDA_Loader
                             if (component != null)
                             {
                                 AltiumApi.GlobalVars.PCBServer.PreProcess();
-                                SymbolDrawing.CreateComponent(targetSchLib, component, pcbLibraryPath, footprintName, ee_symbol);
+                                bool isConnector = SymbolImportRules.IsConnectorDesignator(designator);
+                                SymbolDrawing.CreateComponent(targetSchLib, component, pcbLibraryPath, footprintName, ee_symbol, isConnector);
 
                                 EESCH.ApplyGostPropertySet(component, BuildSchematicPropertySet(ee_symbol, ee_footprint, productInfo, designator, partName, description, footprintName, package, pcbLibraryPath, mounting));
                                 AltiumApi.GlobalVars.PCBServer.PostProcess();

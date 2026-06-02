@@ -36,6 +36,8 @@ namespace EasyEDA_Loader
             schComponent.SetState_ComponentDescription(desc);
             SetComponentComment(schComponent, name);
             SetComponentDesignator(schComponent, designator, CreateGostFontInfo());
+            SetComponentSpecialStringText(schComponent, "Comment", name);
+            SetComponentSpecialStringText(schComponent, "Designator", designator);
             return schComponent;
         }
 
@@ -67,7 +69,7 @@ namespace EasyEDA_Loader
 
         public static void ApplyRequiredSymbolParameters(ISch_Component c, string footprintName)
         {
-            ApplyGostPropertySet(c, new SchematicPropertySet { Footprint = footprintName, Package = footprintName });
+            ApplyGostPropertySet(c, new SchematicPropertySet { Footprint = footprintName });
         }
 
         public static void ApplyGostPropertySet(ISch_Component c, SchematicPropertySet properties)
@@ -83,12 +85,6 @@ namespace EasyEDA_Loader
             AddOrUpdateParameter(c, "TU", properties.TU);
             AddOrUpdateParameter(c, "AlternateManufacturer", properties.AlternateManufacturer);
             AddOrUpdateParameter(c, "AlternatePartNumber", properties.AlternatePartNumber);
-            AddOrUpdateParameter(c, "Footprint", properties.Footprint);
-            AddOrUpdateParameter(c, "FootprintLibrary", properties.FootprintLibrary);
-            AddOrUpdateParameter(c, "Package", properties.Package);
-
-            if (!string.IsNullOrWhiteSpace(properties.Mounting))
-                AddOrUpdateParameter(c, "Mounting", properties.Mounting);
         }
 
         public static bool IsRuleManagedParameter(string name)
@@ -270,6 +266,7 @@ namespace EasyEDA_Loader
 
         private static void SetComponentComment(ISch_Component c, string comment)
         {
+            SetComponentSpecialStringText(c, "Comment", comment);
             object schComment = GetComponentComment(c);
             if (schComment == null)
                 return;
@@ -280,12 +277,35 @@ namespace EasyEDA_Loader
 
         private static void SetComponentDesignator(ISch_Component c, string designator, FontInfo fontInfo)
         {
+            SetComponentSpecialStringText(c, "Designator", designator);
             object schDesignator = GetComponentDesignator(c);
             if (schDesignator == null)
                 return;
 
             SetTextObjectText(schDesignator, designator);
             SetTextObjectStyle(schDesignator, fontInfo);
+        }
+
+        private static void SetComponentSpecialStringText(ISch_Component c, string propertyName, string text)
+        {
+            if (c == null || string.IsNullOrWhiteSpace(propertyName))
+                return;
+
+            object specialString = TryInvokeResult(c, "GetState_Sch" + propertyName)
+                ?? TryInvokeResult(c, "Internal_GetState_Sch" + propertyName);
+            SetTextObjectText(specialString, text);
+
+            try
+            {
+                dynamic dynamicComponent = c;
+                if (string.Equals(propertyName, "Comment", StringComparison.OrdinalIgnoreCase) && dynamicComponent.Comment != null)
+                    dynamicComponent.Comment.Text = text ?? "";
+                if (string.Equals(propertyName, "Designator", StringComparison.OrdinalIgnoreCase) && dynamicComponent.Designator != null)
+                    dynamicComponent.Designator.Text = text ?? "";
+            }
+            catch
+            {
+            }
         }
 
         public static void SetComponentDesignatorLocation(ISch_Component c, double xMils, double yMils)
@@ -423,52 +443,28 @@ namespace EasyEDA_Loader
 
         public static void AssignFootprint(ISch_Component c, string libraryPath, string modelName, string modelMapping)
         {
+            if (c == null || string.IsNullOrWhiteSpace(modelName))
+                return;
+
             var modelType = "PCBLIB";
             var model = c.AddSchImplementation();
             model.ClearAllDatafileLinks();
             model.SetState_MapAsString(modelMapping);
             model.SetState_ModelName(modelName);
             model.SetState_ModelType(modelType);
-            model.AddDataFileLink(modelName, libraryPath, modelType);
+            if (!string.IsNullOrWhiteSpace(libraryPath))
+                model.AddDataFileLink(modelName, libraryPath, modelType);
             model.SetState_IsCurrent(true);
         }
 
         public static string SelectRuleDesignator(string sourceDesignator, string partName, string description, string package)
         {
-            string text = $"{partName} {description} {package}".ToLowerInvariant();
-
-            if (ContainsAny(text, "usb", "type-c", "type c", "receptacle", "socket", "jack", "female"))
-                return "XS?";
-            if (ContainsAny(text, "header", "plug", "pin header", "male"))
-                return "XP?";
-            if (ContainsAny(text, "connector", "conn", "terminal", "ffc", "fpc"))
-                return "X?";
-            if (ContainsAny(text, "op amp", "opamp", "operational amplifier", "rf amplifier", "low noise amplifier"))
-                return "DA?";
-
-            if (string.IsNullOrWhiteSpace(sourceDesignator))
-                return "DD?";
-            if (string.Equals(sourceDesignator, "U?", StringComparison.OrdinalIgnoreCase))
-                return "DD?";
-            if (string.Equals(sourceDesignator, "J?", StringComparison.OrdinalIgnoreCase)
-                || string.Equals(sourceDesignator, "P?", StringComparison.OrdinalIgnoreCase))
-                return "X?";
-
-            return sourceDesignator;
+            return SymbolImportRules.SelectDesignator(sourceDesignator, partName, description, package);
         }
 
         public static string SelectRuleValueType(string designator, string partName, string description, string package)
         {
-            string text = $"{partName} {description} {package}".ToLowerInvariant();
-
-            if (ContainsAny(text, "usb", "type-c", "type c"))
-                return "Разъём USB";
-
-            if ((designator != null && designator.StartsWith("X", StringComparison.OrdinalIgnoreCase))
-                || ContainsAny(text, "connector", "conn", "terminal", "header", "plug", "receptacle", "socket", "jack", "female", "ffc", "fpc", "jst"))
-                return "Разъём";
-
-            return "Микросхема";
+            return SymbolImportRules.SelectValueType(designator, partName, description, package);
         }
 
         private static bool ContainsAny(string text, params string[] needles)
