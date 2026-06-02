@@ -344,6 +344,77 @@ namespace StepCleaner.Tests
                     new HashSet<string>(StringComparer.OrdinalIgnoreCase),
                     failures,
                     visualFailures);
+
+                if (string.Equals(viewName, "z_plus", StringComparison.OrdinalIgnoreCase) &&
+                    string.Equals(
+                        Path.GetFileName(originalFile),
+                        "SOT-223-4P_L6.5-W3.5-H1.6-LS7.0-P2.30.step",
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    VerifyProjectionRegionPreserved(
+                        Path.GetFileName(originalFile),
+                        viewName,
+                        "pin-one marker",
+                        cachedOriginalProjectionPath,
+                        cleanTextProjectionPath,
+                        x: 318,
+                        y: 128,
+                        width: 68,
+                        height: 68,
+                        maxChangedPixels: 12,
+                        failures);
+                }
+            }
+        }
+
+        private static void VerifyProjectionRegionPreserved(
+            string fileName,
+            string viewName,
+            string regionName,
+            string originalProjectionPath,
+            string cleanProjectionPath,
+            int x,
+            int y,
+            int width,
+            int height,
+            int maxChangedPixels,
+            List<string> failures)
+        {
+            using (var originalImage = SKBitmap.Decode(originalProjectionPath))
+            using (var cleanImage = SKBitmap.Decode(cleanProjectionPath))
+            {
+                if (originalImage == null || cleanImage == null)
+                {
+                    failures.Add(fileName + " has an unreadable " + regionName + " projection on " + viewName + ".");
+                    return;
+                }
+
+                int xEnd = Math.Min(x + width, Math.Min(originalImage.Width, cleanImage.Width));
+                int yEnd = Math.Min(y + height, Math.Min(originalImage.Height, cleanImage.Height));
+                int changedPixels = 0;
+                for (int row = Math.Max(y, 0); row < yEnd; row++)
+                {
+                    for (int col = Math.Max(x, 0); col < xEnd; col++)
+                    {
+                        if (PixelsDifferent(originalImage.GetPixel(col, row), cleanImage.GetPixel(col, row), ProjectionDifferenceTolerance))
+                            changedPixels++;
+                    }
+                }
+
+                if (changedPixels > maxChangedPixels)
+                {
+                    failures.Add(
+                        fileName +
+                        " changed preserved " +
+                        regionName +
+                        " on " +
+                        viewName +
+                        ": pixels=" +
+                        changedPixels.ToString(CultureInfo.InvariantCulture) +
+                        ", allowed=" +
+                        maxChangedPixels.ToString(CultureInfo.InvariantCulture) +
+                        ".");
+                }
             }
         }
 

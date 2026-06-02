@@ -2854,11 +2854,14 @@ namespace EasyEDA_Loader
                         textFaceIds.Add(candidate.FaceId);
                 }
 
-                if (!acceptedAnyCluster && LooksLikeDenseTextStringGroup(groupCandidates, group.Key.Axis, options))
+                if (!acceptedAnyCluster)
                 {
-                    detection.ClusterCount++;
-                    foreach (var candidate in groupCandidates)
-                        textFaceIds.Add(candidate.FaceId);
+                    foreach (var textBand in SelectTextStringBands(groupCandidates, group.Key.Axis, options))
+                    {
+                        detection.ClusterCount++;
+                        foreach (var candidate in textBand)
+                            textFaceIds.Add(candidate.FaceId);
+                    }
                 }
             }
 
@@ -2939,19 +2942,124 @@ namespace EasyEDA_Loader
             return horizontalString || verticalString || stackedString;
         }
 
-        private static bool LooksLikeDenseTextStringGroup(
+        private static List<List<WatermarkFaceCandidate>> SelectTextStringBands(
             List<WatermarkFaceCandidate> group,
             int axis,
             StepWatermarkCleanerOptions options)
         {
+            var result = new List<List<WatermarkFaceCandidate>>();
             if (group.Count < options.CleanTextMinCandidateFaceCount)
-                return false;
+                return result;
 
             int pointCount = group.Sum(candidate => candidate.PointCount);
             if (pointCount < options.AutomaticClusterMinPointCount * 4)
-                return false;
+                return result;
 
-            return true;
+            int uAxis;
+            int vAxis;
+            GetProjectedAxes(axis, out uAxis, out vAxis);
+            AddTextStringBandsForAxes(group, axis, uAxis, vAxis, options, result);
+            AddTextStringBandsForAxes(group, axis, vAxis, uAxis, options, result);
+
+            var seen = new HashSet<int>();
+            var unique = new List<List<WatermarkFaceCandidate>>();
+            foreach (var band in result
+                .OrderByDescending(candidateBand => candidateBand.Count)
+                .ThenByDescending(candidateBand => candidateBand.Sum(candidate => candidate.PointCount)))
+            {
+                var selected = band
+                    .Where(candidate => seen.Add(candidate.FaceId))
+                    .ToList();
+                if (selected.Count >= 5)
+                    unique.Add(selected);
+            }
+
+            return unique;
+        }
+
+        private static void AddTextStringBandsForAxes(
+            List<WatermarkFaceCandidate> group,
+            int hostAxis,
+            int narrowAxis,
+            int stringAxis,
+            StepWatermarkCleanerOptions options,
+            List<List<WatermarkFaceCandidate>> result)
+        {
+            Bounds groupBounds = new Bounds();
+            foreach (var candidate in group)
+                groupBounds.Include(candidate.Bounds);
+
+            double narrowSpan = Math.Abs(groupBounds.Size.Get(narrowAxis));
+            if (narrowSpan <= 0.000001)
+                return;
+
+            double bandGap = Math.Max(narrowSpan * 0.035, 0.000001);
+            var bands = new List<ProjectedClusterBand>();
+            foreach (var candidate in group.OrderBy(candidate => candidate.Bounds.Min.Get(narrowAxis)))
+            {
+                double min = candidate.Bounds.Min.Get(narrowAxis);
+                double max = candidate.Bounds.Max.Get(narrowAxis);
+                ProjectedClusterBand band = bands.FirstOrDefault(existing => min <= existing.Max + bandGap && max >= existing.Min - bandGap);
+                if (band == null)
+                {
+                    band = new ProjectedClusterBand
+                    {
+                        Min = min,
+                        Max = max,
+                        VMin = candidate.Bounds.Min.Get(stringAxis),
+                        VMax = candidate.Bounds.Max.Get(stringAxis)
+                    };
+                    bands.Add(band);
+                }
+
+                band.Min = Math.Min(band.Min, min);
+                band.Max = Math.Max(band.Max, max);
+                band.VMin = Math.Min(band.VMin, candidate.Bounds.Min.Get(stringAxis));
+                band.VMax = Math.Max(band.VMax, candidate.Bounds.Max.Get(stringAxis));
+                band.Candidates.Add(candidate);
+                band.Score += Math.Max(candidate.PointCount, 1);
+            }
+
+            foreach (var band in bands)
+            {
+                if (band.Candidates.Count < 5 || band.Score < options.AutomaticClusterMinPointCount)
+                    continue;
+
+                double bandNarrowSpan = Math.Max(band.Max - band.Min, 0.000001);
+                double bandStringSpan = Math.Max(band.VMax - band.VMin, 0.000001);
+                double aspect = bandStringSpan / bandNarrowSpan;
+                if (aspect < 1.35 || aspect > 18.0)
+                    continue;
+
+                var bandBounds = new Bounds();
+                foreach (var candidate in band.Candidates)
+                    bandBounds.Include(candidate.Bounds);
+
+                Bounds hostBounds = band.Candidates[0].HostBounds;
+                if (!LooksLikeSmallMark(bandBounds, hostBounds, options))
+                    continue;
+
+                if (TouchesProjectedBoundary(
+                    bandBounds,
+                    hostBounds,
+                    hostAxis,
+                    GetAutomaticEdgeMargin(hostBounds, hostAxis) * 2.0))
+                    continue;
+
+                var componentBounds = band.Candidates.Select(candidate => candidate.Bounds).ToList();
+                int narrowBandCount = CountProjectedBands(componentBounds, narrowAxis, Math.Max(bandNarrowSpan * 0.10, 0.000001));
+                int stringBandCount = CountProjectedBands(componentBounds, stringAxis, Math.Max(bandStringSpan * 0.045, 0.000001));
+                bool denseElongatedString = band.Candidates.Count >= options.CleanTextMinCandidateFaceCount &&
+                    narrowBandCount <= 2 &&
+                    aspect >= 2.0;
+                if (stringBandCount < 4 || narrowBandCount > 4)
+                {
+                    if (!denseElongatedString)
+                        continue;
+                }
+
+                result.Add(band.Candidates.ToList());
+            }
         }
 
         private static void AddCoplanarCompanionFaces(
