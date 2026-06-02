@@ -186,6 +186,9 @@ namespace StepCleaner.Tests
             if (IsOption(args[0], "--footprint-layers"))
                 return RunFootprintLayerTests();
 
+            if (IsOption(args[0], "--model-cache"))
+                return RunModelCacheTests();
+
             if (IsOption(args[0], "--silhouette-cleanup"))
                 return RunSilhouetteCleanupTests();
 
@@ -202,10 +205,60 @@ namespace StepCleaner.Tests
             Console.Error.WriteLine("Usage: StepCleaner.Tests --async-import");
             Console.Error.WriteLine("Usage: StepCleaner.Tests --footprint-placement");
             Console.Error.WriteLine("Usage: StepCleaner.Tests --footprint-layers");
+            Console.Error.WriteLine("Usage: StepCleaner.Tests --model-cache");
             Console.Error.WriteLine("Usage: StepCleaner.Tests --silhouette-cleanup");
             Console.Error.WriteLine("Usage: StepCleaner.Tests --clean-text");
             Console.Error.WriteLine("Usage: StepCleaner.Tests --silhouette <input.step> <output.png> [--rotx deg] [--roty deg] [--rotz deg] [--rotation2d deg] [--size pixels] [--padding pixels] [--no-grid] [--no-axes] [--include-inactive-topology]");
             return 2;
+        }
+
+        private static int RunModelCacheTests()
+        {
+            var failures = new List<string>();
+
+            AssertEqual(
+                "model-uuid__watermark",
+                CleanStepCacheKeys.GetCleanModeKey("model-uuid", false),
+                "watermark-only clean cache key should use the existing suffix",
+                failures);
+
+            AssertEqual(
+                "model-uuid__watermark_text",
+                CleanStepCacheKeys.GetCleanModeKey("model-uuid", true),
+                "clean-text cache key should use the existing suffix",
+                failures);
+
+            var expectedKeys = new[]
+            {
+                "model-uuid__watermark",
+                "model-uuid__watermark_text"
+            };
+            var actualKeys = CleanStepCacheKeys.GetCleanModeKeys("model-uuid").ToArray();
+            for (int i = 0; i < expectedKeys.Length; i++)
+            {
+                string actual = i < actualKeys.Length ? actualKeys[i] : "";
+                AssertEqual(expectedKeys[i], actual, "regenerate should target every cleaned STEP cache variant", failures);
+            }
+            if (actualKeys.Length != expectedKeys.Length)
+            {
+                failures.Add(
+                    "regenerate should target exactly " +
+                    expectedKeys.Length.ToString(CultureInfo.InvariantCulture) +
+                    " cleaned STEP cache variants, got " +
+                    actualKeys.Length.ToString(CultureInfo.InvariantCulture) +
+                    ".");
+            }
+
+            if (failures.Count > 0)
+            {
+                Console.Error.WriteLine("Model cache regression test failed.");
+                foreach (string failure in failures)
+                    Console.Error.WriteLine("  " + failure);
+                return 1;
+            }
+
+            Console.WriteLine("Model cache regression test passed.");
+            return 0;
         }
 
         private static int RunCleanTextTests()
@@ -729,6 +782,18 @@ namespace StepCleaner.Tests
                 "AMASS MR30PB, 3-position vertical through-hole male PCB power plug connector, 3.5 mm pitch, 11.9 x 5.3 mm body",
                 richDescription,
                 "C30170185-style metadata should synthesize a detailed footprint description",
+                failures);
+
+            AssertEqual(
+                "SOT-223",
+                FootprintMetadataSelector.SelectName("SOT-223", "LM317"),
+                "generic IC footprint names should prefer the standard package over the part number",
+                failures);
+
+            AssertEqual(
+                "MR30PB-M30.A.G.Y",
+                FootprintMetadataSelector.SelectName("CONN-TH_MR30PB-M30.A.G.Y", "MR30PB-M30.A.G.Y"),
+                "part-number-specific connector footprint names should keep the manufacturer part number",
                 failures);
 
             if (failures.Count > 0)

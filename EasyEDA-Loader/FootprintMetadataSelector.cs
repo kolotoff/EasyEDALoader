@@ -14,6 +14,17 @@ namespace EasyEDA_Loader
 
     public static class FootprintMetadataSelector
     {
+        public static string SelectName(string packageName, string partNumber)
+        {
+            string cleanedPackageName = Clean(packageName);
+            string cleanedPartNumber = Clean(partNumber);
+
+            if (IsPackageSpecificToPart(cleanedPackageName, cleanedPartNumber))
+                return cleanedPartNumber;
+
+            return FirstNonEmpty(cleanedPackageName, cleanedPartNumber);
+        }
+
         public static string SelectDescription(
             string productDescription,
             string componentDescription,
@@ -293,6 +304,21 @@ namespace EasyEDA_Loader
                 return cleaned.Substring(separator + 1);
 
             return "";
+        }
+
+        private static bool IsPackageSpecificToPart(string packageName, string partNumber)
+        {
+            if (string.IsNullOrWhiteSpace(packageName) || string.IsNullOrWhiteSpace(partNumber))
+                return false;
+
+            if (string.Equals(packageName, partNumber, StringComparison.OrdinalIgnoreCase))
+                return true;
+
+            string packageSuffix = GetPackageSuffix(packageName);
+            if (string.Equals(packageSuffix, partNumber, StringComparison.OrdinalIgnoreCase))
+                return true;
+
+            return packageName.IndexOf(partNumber, StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
         private static string Clean(string value)

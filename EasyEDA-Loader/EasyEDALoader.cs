@@ -389,7 +389,7 @@ namespace EasyEDA_Loader
 
                     // Get product info (use cached from search if available)
                     EasyedaApi.ProductInfo productInfo = selection.PartInfo?.Info;
-                    string footprintName = FirstNonEmpty(partNumber, package);
+                    string footprintName = FootprintMetadataSelector.SelectName(package, partNumber);
                     string footprintDescription = SelectFootprintDescription(root.Component, productInfo, partNumber, package, mounting);
                     double footprintHeight = SelectFootprintHeightMm(productInfo);
 

@@ -50,6 +50,22 @@ namespace EasyEDA_Loader
             return Path.Combine(GetModelCacheDirectory("Clean"), GetSafeFileName(modelUuid) + "_clean.step");
         }
 
+        public static int DeleteCleanStepModels(string modelUuid)
+        {
+            int deletedCount = 0;
+            foreach (string cleanModeKey in CleanStepCacheKeys.GetCleanModeKeys(modelUuid))
+            {
+                string cleanStepPath = GetCleanStepPath(cleanModeKey);
+                if (!File.Exists(cleanStepPath))
+                    continue;
+
+                File.Delete(cleanStepPath);
+                deletedCount++;
+            }
+
+            return deletedCount;
+        }
+
         public static string GetRawObjPath(string modelUuid)
         {
             return Path.Combine(GetModelCacheDirectory("Raw"), GetSafeFileName(modelUuid) + ".obj");

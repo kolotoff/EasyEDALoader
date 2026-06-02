@@ -291,6 +291,7 @@ namespace EasyEDA_Loader
         private async void StepCleanOptionsChanged(object sender, RoutedEventArgs e)
         {
             UpdateCleanTextControlState();
+            UpdateModelActionButtonState();
 
             if (_isRestoringSession)
                 return;
@@ -440,7 +441,7 @@ namespace EasyEDA_Loader
                 _currentComponent = null;
                 _currentModel = null;
                 _currentRoot = null;
-                saveModelButton.IsEnabled = false;
+                UpdateModelActionButtonState();
                 SetPreviewProgress(true, "Loading component data...", 5);
 
                 var root = await Task.Run(() => Api.GetComponentJsonAsync(partViewModel.PartInfo.Part, cancellationToken));
@@ -469,7 +470,7 @@ namespace EasyEDA_Loader
                         var eeFootprint = _currentComponent.PackageDetail.Footprint;
                         _currentModel = eeFootprint.GetModel();
 
-                        saveModelButton.IsEnabled = _currentModel != null;
+                        UpdateModelActionButtonState();
 
                         EeFootprintContext ctx = new EeFootprintContext
                         {
@@ -568,7 +569,7 @@ namespace EasyEDA_Loader
             _currentComponent = null;
             _currentModel = null;
             _currentRoot = null;
-            saveModelButton.IsEnabled = false;
+            UpdateModelActionButtonState();
             SetPreviewProgress(false);
         }
 
@@ -681,7 +682,7 @@ namespace EasyEDA_Loader
             if (!removeWatermark)
                 return ModelCache.GetOriginalStepPath(modelKey);
 
-            string cleanModeKey = modelKey + (cleanText ? "__watermark_text" : "__watermark");
+            string cleanModeKey = CleanStepCacheKeys.GetCleanModeKey(modelKey, cleanText);
             string safeName = ModelCache.GetSafeFileName(modelKey);
             byte[] cleanStepData = await ModelCache.GetCleanStepModelAsync(
                 cleanModeKey,
@@ -1370,6 +1371,16 @@ namespace EasyEDA_Loader
             addToLibraryButton.IsEnabled = hasSelectedParts;
             addFootprintButton.IsEnabled = hasSelectedParts && IsActivePcbLibrary();
             addSymbolButton.IsEnabled = hasSelectedParts && IsActiveSchLibrary();
+            UpdateModelActionButtonState();
+        }
+
+        private void UpdateModelActionButtonState()
+        {
+            bool hasModel = _currentModel != null && !_isCriticalOperationActive;
+            if (saveModelButton != null)
+                saveModelButton.IsEnabled = hasModel;
+            if (regenerateCleanStepButton != null)
+                regenerateCleanStepButton.IsEnabled = hasModel && RemoveWatermark;
         }
 
         private static bool IsActivePcbLibrary()
@@ -1692,11 +1703,17 @@ namespace EasyEDA_Loader
                 addToLibraryButton.IsEnabled = false;
                 addFootprintButton.IsEnabled = false;
                 addSymbolButton.IsEnabled = false;
+                if (saveModelButton != null)
+                    saveModelButton.IsEnabled = false;
+                if (regenerateCleanStepButton != null)
+                    regenerateCleanStepButton.IsEnabled = false;
             }
             cancelButton.IsEnabled = isEnabled;
             removeWatermarkCheckBox.IsEnabled = isEnabled;
             importLcscMechanicalLayersCheckBox.IsEnabled = isEnabled;
             UpdateCleanTextControlState();
+            if (isEnabled)
+                UpdateModelActionButtonState();
         }
 
         private bool ValidateImportOptions()
@@ -1830,6 +1847,7 @@ namespace EasyEDA_Loader
             if (result == true)
             {
                 saveModelButton.IsEnabled = false;
+                regenerateCleanStepButton.IsEnabled = false;
                 try
                 {
                     Mouse.OverrideCursor = Cursors.Wait;
@@ -1879,8 +1897,56 @@ namespace EasyEDA_Loader
                 {
                     Mouse.OverrideCursor = null;
                     SetImportControlsEnabled(true);
-                    saveModelButton.IsEnabled = _currentModel != null;
+                    UpdateModelActionButtonState();
                 }
+            }
+        }
+
+        private async void RegenerateCleanStepButton_Click(object sender, RoutedEventArgs e)
+        {
+            if (_currentModel == null || !RemoveWatermark)
+                return;
+
+            try
+            {
+                Mouse.OverrideCursor = Cursors.Wait;
+                SetImportControlsEnabled(false);
+                BeginCriticalOperation("Regenerating cleaned STEP cache...");
+
+                string modelKey = _currentModel.Uuid ?? _currentModel.Name;
+                int deletedCount = ModelCache.DeleteCleanStepModels(modelKey);
+                ReportImportProgress(new ImportProgressEvent
+                {
+                    Message = "Deleted " + deletedCount.ToString(CultureInfo.InvariantCulture) + " cleaned STEP cache file(s).",
+                    Percent = 20,
+                    IsIndeterminate = false
+                });
+
+                previewCts?.Cancel();
+                previewCts?.Dispose();
+                previewCts = new CancellationTokenSource();
+
+                if (resultsGrid?.SelectedItem is PartInfoViewModel partViewModel)
+                    await LoadPreviewAsync(partViewModel, previewCts.Token);
+
+                CompleteCriticalOperation("Cleaned STEP cache regenerated.", true);
+            }
+            catch (StepWatermarkCleanFailedException ex)
+            {
+                CompleteCriticalOperation($"Failed to regenerate cleaned STEP cache: {ex.Message}", false);
+                ShowMarkdownReport(ex.ReportPath);
+                MessageBox.Show($"Failed to regenerate cleaned STEP cache: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+            catch (Exception ex)
+            {
+                CompleteCriticalOperation($"Failed to regenerate cleaned STEP cache: {ex.Message}", false);
+                MessageBox.Show($"Failed to regenerate cleaned STEP cache: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+            finally
+            {
+                Mouse.OverrideCursor = null;
+                SetImportControlsEnabled(true);
+                UpdateModelActionButtonState();
             }
         }
 
