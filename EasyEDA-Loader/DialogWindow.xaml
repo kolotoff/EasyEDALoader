@@ -176,10 +176,9 @@
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*"/>
                     <ColumnDefinition Width="Auto"/>
-                    <ColumnDefinition Width="Auto"/>
                 </Grid.ColumnDefinitions>
 
-                <TextBlock Grid.Row="0" Grid.ColumnSpan="3"
+                <TextBlock Grid.Row="0" Grid.ColumnSpan="2"
                            Text="Enter part number(s) to search or import (e.g. C2040, C25804):"
                            Margin="0,0,0,8"/>
 
@@ -200,20 +199,11 @@
                         Content="Search"
                         Width="75"
                         Height="52"
-                        Margin="0,0,8,0"
                         Click="SearchButton_Click"/>
-
-                <Button x:Name="importButton"
-                        Grid.Row="1"
-                        Grid.Column="2"
-                        Content="Import"
-                        Width="75"
-                        Height="52"
-                        Click="ImportButton_Click"/>
 
                 <StackPanel x:Name="searchProgressPanel"
                             Grid.Row="2"
-                            Grid.ColumnSpan="3"
+                            Grid.ColumnSpan="2"
                             Margin="0,8,0,0"
                             Visibility="Collapsed">
                     <ProgressBar x:Name="searchProgressBar"
@@ -308,12 +298,26 @@
                         IsEnabled="False"
                         Click="SaveModelButton_Click"/>
                 <Button x:Name="addToLibraryButton"
-                        Content="Add to Library"
-                        Width="120"
+                        Content="Import to temp"
+                        Width="110"
                         Height="24"
                         Margin="0,0,8,0"
                         IsEnabled="False"
                         Click="AddToLibraryButton_Click"/>
+                <Button x:Name="addFootprintButton"
+                        Content="Add footprint"
+                        Width="110"
+                        Height="24"
+                        Margin="0,0,8,0"
+                        IsEnabled="False"
+                        Click="AddFootprintButton_Click"/>
+                <Button x:Name="addSymbolButton"
+                        Content="Add symbol"
+                        Width="90"
+                        Height="24"
+                        Margin="0,0,8,0"
+                        IsEnabled="False"
+                        Click="AddSymbolButton_Click"/>
                 <Button x:Name="cancelButton"
                         Content="Cancel"
                         Width="75"

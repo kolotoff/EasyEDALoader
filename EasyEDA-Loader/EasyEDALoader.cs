@@ -222,7 +222,8 @@ namespace EasyEDA_Loader
             Trace("Run entered.");
             Dialog dialog = new Dialog();
             DialogResult result = dialog.ShowDialog();
-            if (result != DialogResult.OK || dialog.SelectedComponents.Count == 0)
+            var selections = dialog.SelectedComponents;
+            if (result != DialogResult.OK || selections == null || selections.Count == 0)
                 return;
 
             var currentDoc = GetCurrentDocument();
@@ -230,33 +231,63 @@ namespace EasyEDA_Loader
             var ctx = new CancellationTokenSource();
             var api = new EasyedaApi();
 
-            string documentsPath = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
-            string libraryPath = Path.Combine(documentsPath, "AltiumEE");
-            Directory.CreateDirectory(libraryPath);
-            string pcbLibraryPath = Path.Combine(libraryPath, "EasyEDA.pcblib");
-            string schLibraryPath = Path.Combine(libraryPath, "EasyEDA.schlib");
+            IServerDocument tempPcbDocument = null;
+            IServerDocument tempSchDocument = null;
+            IPCB_Library tempPcbLib = null;
+            IPCB_Library activePcbLib = null;
+            ISch_Lib tempSchLib = null;
+            ISch_Lib activeSchLib = null;
+            string tempPcbLibraryPath = "";
 
-            var pcbDocument = AltiumApi.GlobalVars.Client.OpenDocument("PcbLib", pcbLibraryPath);
-            AltiumApi.GlobalVars.Client.ShowDocument(pcbDocument);
-            var pcbLib = AltiumApi.GlobalVars.PCBServer.GetCurrentPCBLibrary();
+            if (selections.Exists(selection => selection.ImportTarget == ComponentImportTarget.TemporaryLibraries))
+            {
+                string documentsPath = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
+                string libraryPath = Path.Combine(documentsPath, "AltiumEE");
+                Directory.CreateDirectory(libraryPath);
+                tempPcbLibraryPath = Path.Combine(libraryPath, "EasyEDA.pcblib");
+                string schLibraryPath = Path.Combine(libraryPath, "EasyEDA.schlib");
 
-            var schDocument = AltiumApi.GlobalVars.Client.OpenDocument("SchLib", schLibraryPath);
-            AltiumApi.GlobalVars.Client.ShowDocument(schDocument);
-            var schLib = EESCH.GetCurrentSchLibrary();
+                tempPcbDocument = AltiumApi.GlobalVars.Client.OpenDocument("PcbLib", tempPcbLibraryPath);
+                AltiumApi.GlobalVars.Client.ShowDocument(tempPcbDocument);
+                tempPcbLib = AltiumApi.GlobalVars.PCBServer.GetCurrentPCBLibrary();
+
+                tempSchDocument = AltiumApi.GlobalVars.Client.OpenDocument("SchLib", schLibraryPath);
+                AltiumApi.GlobalVars.Client.ShowDocument(tempSchDocument);
+                tempSchLib = EESCH.GetCurrentSchLibrary();
+            }
+
+            if (selections.Exists(selection => selection.ImportTarget == ComponentImportTarget.ActivePcbLibrary && selection.IncludeFootprint))
+            {
+                activePcbLib = AltiumApi.GlobalVars.PCBServer.GetCurrentPCBLibrary();
+                if (activePcbLib == null)
+                {
+                    MessageBox.Show("Open and activate a PCB library before adding a footprint.", "EasyEDA Loader Error", MessageBoxButtons.OK, MessageBoxIcon.Hand);
+                    return;
+                }
+            }
+
+            if (selections.Exists(selection => selection.ImportTarget == ComponentImportTarget.ActiveSchLibrary && selection.IncludeSymbol))
+            {
+                activeSchLib = GetActiveSchLibrary();
+                if (activeSchLib == null)
+                {
+                    MessageBox.Show("Open and activate a schematic library before adding a symbol.", "EasyEDA Loader Error", MessageBoxButtons.OK, MessageBoxIcon.Hand);
+                    return;
+                }
+            }
 
             // Process each selected component
-            foreach (var selection in dialog.SelectedComponents)
+            foreach (var selection in selections)
             {
                 try
                 {
                     var root = selection.Root;
-                    var owner_id = root.Component.Owner.Uuid;
-                    var ee_footprint = root.Component.PackageDetail.Footprint;
+                    var ee_footprint = root.Component.PackageDetail?.Footprint;
                     var ee_symbol = root.Component.Symbol;
-                    string package = ee_footprint.Head.Parameters.Package;
-                    string partName = ee_symbol.Head.Parameters.Name;
+                    string package = FirstNonEmpty(ee_footprint?.Head?.Parameters?.Package, selection.PartInfo?.Name, selection.PartInfo?.Part);
+                    string partName = FirstNonEmpty(ee_symbol?.Head?.Parameters?.Name, root.Component.Title, selection.PartInfo?.Name, selection.PartInfo?.Part);
                     string partNumber = SelectPartNumber(selection, root.Component, ee_symbol);
-                    EeFootprint3dModel model = selection.Include3dModel ? ee_footprint.GetModel() : null;
+                    EeFootprint3dModel model = selection.Include3dModel ? ee_footprint?.GetModel() : null;
 
                     // Prefetch model if we can
                     Task<byte[]> modelTask = model != null ? ModelCache.GetStepModelAsync(api, model.Uuid, ctx.Token) : null;
@@ -268,11 +299,43 @@ namespace EasyEDA_Loader
                     string footprintDescription = SelectFootprintDescription(root.Component, productInfo, partNumber, package);
                     double footprintHeight = SelectFootprintHeightMm(productInfo);
 
+                    IPCB_Library targetPcbLib = null;
+                    IServerDocument targetPcbDocument = null;
+                    ISch_Lib targetSchLib = null;
+                    IServerDocument targetSchDocument = null;
+                    string pcbLibraryPath = "";
+
+                    if (selection.ImportTarget == ComponentImportTarget.TemporaryLibraries)
+                    {
+                        targetPcbLib = tempPcbLib;
+                        targetPcbDocument = tempPcbDocument;
+                        targetSchLib = tempSchLib;
+                        targetSchDocument = tempSchDocument;
+                        pcbLibraryPath = tempPcbLibraryPath;
+                    }
+                    else if (selection.ImportTarget == ComponentImportTarget.ActivePcbLibrary)
+                    {
+                        targetPcbLib = activePcbLib;
+                        targetPcbDocument = currentDoc;
+                    }
+                    else if (selection.ImportTarget == ComponentImportTarget.ActiveSchLibrary)
+                    {
+                        targetSchLib = activeSchLib;
+                        targetSchDocument = currentDoc;
+                    }
+
                     // Create PCB footprint if requested
                     if (selection.IncludeFootprint)
                     {
-                        AltiumApi.GlobalVars.Client.ShowDocument(pcbDocument);
-                        var libComp = pcbLib.GetComponentByName(footprintName);
+                        if (ee_footprint == null)
+                            throw new InvalidOperationException("The selected component does not include a footprint.");
+                        if (targetPcbLib == null)
+                            throw new InvalidOperationException("No target PCB library is active.");
+
+                        if (targetPcbDocument != null)
+                            AltiumApi.GlobalVars.Client.ShowDocument(targetPcbDocument);
+
+                        var libComp = targetPcbLib.GetComponentByName(footprintName);
                         bool createdFootprint = false;
                         if (libComp == null)
                         {
@@ -311,22 +374,33 @@ namespace EasyEDA_Loader
                     }
 
                     // Create schematic symbol
-                    string description = productInfo?.Description ?? partName;
-                    string designator = EESCH.SelectRuleDesignator(ee_symbol.Head.Parameters.Pre, partName, description, package);
-
-                    var existingComponent = schLib.GetState_SchComponentByLibRef(partName);
-                    if (existingComponent == null)
+                    if (selection.IncludeSymbol)
                     {
-                        var component = EESCH.CreateComponent(partName, description, designator);
-                        if (schLib != null && component != null)
-                        {
-                            AltiumApi.GlobalVars.PCBServer.PreProcess();
-                            SymbolDrawing.CreateComponent(schLib, component, pcbLibraryPath, footprintName, ee_symbol);
+                        if (ee_symbol == null)
+                            throw new InvalidOperationException("The selected component does not include a schematic symbol.");
+                        if (targetSchLib == null)
+                            throw new InvalidOperationException("No target schematic library is active.");
 
-                            EESCH.ApplyGostPropertySet(component, BuildSchematicPropertySet(ee_symbol, ee_footprint, productInfo, designator, partName, description, footprintName, package, pcbLibraryPath));
-                            AltiumApi.GlobalVars.PCBServer.PostProcess();
-                            schLib.SetState_Current_SchComponent(component);
-                            schLib.GraphicallyInvalidate();
+                        if (targetSchDocument != null)
+                            AltiumApi.GlobalVars.Client.ShowDocument(targetSchDocument);
+
+                        string description = productInfo?.Description ?? partName;
+                        string designator = EESCH.SelectRuleDesignator(ee_symbol.Head.Parameters.Pre, partName, description, package);
+
+                        var existingComponent = targetSchLib.GetState_SchComponentByLibRef(partName);
+                        if (existingComponent == null)
+                        {
+                            var component = EESCH.CreateComponent(partName, description, designator);
+                            if (component != null)
+                            {
+                                AltiumApi.GlobalVars.PCBServer.PreProcess();
+                                SymbolDrawing.CreateComponent(targetSchLib, component, pcbLibraryPath, footprintName, ee_symbol);
+
+                                EESCH.ApplyGostPropertySet(component, BuildSchematicPropertySet(ee_symbol, ee_footprint, productInfo, designator, partName, description, footprintName, package, pcbLibraryPath));
+                                AltiumApi.GlobalVars.PCBServer.PostProcess();
+                                targetSchLib.SetState_Current_SchComponent(component);
+                                targetSchLib.GraphicallyInvalidate();
+                            }
                         }
                     }
                 }
@@ -340,6 +414,22 @@ namespace EasyEDA_Loader
             if (currentDoc != null)
                 AltiumApi.GlobalVars.Client.ShowDocument(currentDoc);
 
+        }
+
+        private static ISch_Lib GetActiveSchLibrary()
+        {
+            try
+            {
+                var schDoc = AltiumApi.GlobalVars.SCHServer.GetCurrentSchDocument();
+                if (schDoc == null || schDoc.GetState_ObjectId() != SCH.TObjectId.eSchLib)
+                    return null;
+
+                return schDoc as ISch_Lib;
+            }
+            catch
+            {
+                return null;
+            }
         }
 
         private static IServerDocument GetCurrentDocument()

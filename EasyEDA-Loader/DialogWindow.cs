@@ -18,6 +18,8 @@ using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 using Microsoft.Win32;
 using Newtonsoft.Json;
+using PCB;
+using SCH;
 using Forms = System.Windows.Forms;
 
 namespace EasyEDA_Loader
@@ -219,6 +221,7 @@ namespace EasyEDA_Loader
             f3dCleanModelHost.Child = _cleanF3DPreview.Panel;
             LocationChanged += (s, e) => UpdateF3DPreviewScreenBounds();
             SizeChanged += (s, e) => UpdateF3DPreviewScreenBounds();
+            Activated += (s, e) => UpdateAddButtonState();
 
             _footprintHelper = new CanvasZoomPanHelper(footprintCanvas);
             footprintCanvasView.ScrollChanged += (s, e) =>
@@ -1243,7 +1246,35 @@ namespace EasyEDA_Loader
 
         public void UpdateAddButtonState()
         {
-            addToLibraryButton.IsEnabled = searchResults.Any(p => p.AddToLibrary);
+            bool hasSelectedParts = searchResults.Any(p => p.AddToLibrary);
+            addToLibraryButton.IsEnabled = hasSelectedParts;
+            addFootprintButton.IsEnabled = hasSelectedParts && IsActivePcbLibrary();
+            addSymbolButton.IsEnabled = hasSelectedParts && IsActiveSchLibrary();
+        }
+
+        private static bool IsActivePcbLibrary()
+        {
+            try
+            {
+                return AltiumApi.GlobalVars.PCBServer?.GetCurrentPCBLibrary() != null;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static bool IsActiveSchLibrary()
+        {
+            try
+            {
+                var schDoc = AltiumApi.GlobalVars.SCHServer?.GetCurrentSchDocument();
+                return schDoc != null && schDoc.GetState_ObjectId() == SCH.TObjectId.eSchLib;
+            }
+            catch
+            {
+                return false;
+            }
         }
 
         private void RestoreLastSession()
@@ -1413,8 +1444,9 @@ namespace EasyEDA_Loader
                 return;
 
             searchButton.IsEnabled = false;
-            importButton.IsEnabled = false;
             addToLibraryButton.IsEnabled = false;
+            addFootprintButton.IsEnabled = false;
+            addSymbolButton.IsEnabled = false;
             searchResults.Clear();
             SetSearchProgress(true, "Searching EasyEDA...", 0);
 
@@ -1444,7 +1476,7 @@ namespace EasyEDA_Loader
                 SetSearchProgress(false);
                 Mouse.OverrideCursor = null;
                 searchButton.IsEnabled = true;
-                importButton.IsEnabled = true;
+                UpdateAddButtonState();
             }
         }
 
@@ -1457,7 +1489,12 @@ namespace EasyEDA_Loader
             }
         }
 
-        private async Task LoadComponentsForImportAsync(IReadOnlyList<PartInfoViewModel> selectedParts)
+        private async Task LoadComponentsForImportAsync(
+            IReadOnlyList<PartInfoViewModel> selectedParts,
+            ComponentImportTarget importTarget,
+            bool includeFootprint,
+            bool includeSymbol,
+            bool include3dModel)
         {
             SelectedComponents.Clear();
 
@@ -1475,17 +1512,25 @@ namespace EasyEDA_Loader
                     var component = root.Component;
                     var has3dModel = component.PackageDetail?.Footprint?.GetModel() != null;
                     var hasFootprint = component.PackageDetail?.Footprint != null;
+                    var hasSymbol = component.Symbol != null;
+                    var includeThisFootprint = includeFootprint && hasFootprint;
+                    var includeThisSymbol = includeSymbol && hasSymbol;
 
                     partViewModel.HasFootprint = hasFootprint;
                     partViewModel.Has3d = has3dModel;
+
+                    if (!includeThisFootprint && !includeThisSymbol)
+                        continue;
 
                     SelectedComponents.Add(new ComponentSelection
                     {
                         PartInfo = partInfo,
                         Root = root,
-                        Include3dModel = has3dModel,
-                        IncludeFootprint = hasFootprint,
-                        RemoveWatermark = RemoveWatermark
+                        Include3dModel = include3dModel && includeThisFootprint && has3dModel,
+                        IncludeFootprint = includeThisFootprint,
+                        IncludeSymbol = includeThisSymbol,
+                        RemoveWatermark = RemoveWatermark,
+                        ImportTarget = importTarget
                     });
                 }
             }
@@ -1499,8 +1544,16 @@ namespace EasyEDA_Loader
         private void SetImportControlsEnabled(bool isEnabled)
         {
             searchButton.IsEnabled = isEnabled;
-            importButton.IsEnabled = isEnabled;
-            addToLibraryButton.IsEnabled = isEnabled && searchResults.Any(p => p.AddToLibrary);
+            if (isEnabled)
+            {
+                UpdateAddButtonState();
+            }
+            else
+            {
+                addToLibraryButton.IsEnabled = false;
+                addFootprintButton.IsEnabled = false;
+                addSymbolButton.IsEnabled = false;
+            }
             cancelButton.IsEnabled = isEnabled;
             removeWatermarkCheckBox.IsEnabled = isEnabled;
         }
@@ -1510,64 +1563,58 @@ namespace EasyEDA_Loader
             return true;
         }
 
-        private async void ImportButton_Click(object sender, RoutedEventArgs e)
-        {
-            var partNumbers = GetPartNumbersOrShowMessage();
-            if (partNumbers.Count == 0)
-                return;
-            if (!ValidateImportOptions())
-                return;
-
-            var closeDialog = false;
-            SetImportControlsEnabled(false);
-            searchResults.Clear();
-
-            try
-            {
-                Mouse.OverrideCursor = Cursors.Wait;
-                SetSearchProgress(true, "Searching EasyEDA...", 0);
-
-                var results = await SearchPartNumbersAsync(partNumbers, true);
-                if (results.Count == 0)
-                {
-                    MessageBox.Show("No results found.", "Import", MessageBoxButton.OK, MessageBoxImage.Information);
-                    return;
-                }
-
-                SetSearchProgress(true, "Preparing import...", 100);
-                AddSearchResults(results);
-
-                var selectedResults = results.Where(result => result.AddToLibrary).ToList();
-                if (selectedResults.Count == 0)
-                {
-                    MessageBox.Show("No results with both footprint and 3D body were found.", "Import", MessageBoxButton.OK, MessageBoxImage.Information);
-                    return;
-                }
-
-                await LoadComponentsForImportAsync(selectedResults);
-
-                closeDialog = true;
-                DialogResult = true;
-                Close();
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show($"Failed to load component data: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
-            }
-            finally
-            {
-                Mouse.OverrideCursor = null;
-                if (!closeDialog)
-                {
-                    SetSearchProgress(false);
-                    SetImportControlsEnabled(true);
-                }
-            }
-        }
-
         private async void AddToLibraryButton_Click(object sender, RoutedEventArgs e)
         {
+            await ImportSelectedPartsAsync(
+                ComponentImportTarget.TemporaryLibraries,
+                includeFootprint: true,
+                includeSymbol: true,
+                include3dModel: true,
+                inactiveTargetMessage: null);
+        }
+
+        private async void AddFootprintButton_Click(object sender, RoutedEventArgs e)
+        {
+            await ImportSelectedPartsAsync(
+                ComponentImportTarget.ActivePcbLibrary,
+                includeFootprint: true,
+                includeSymbol: false,
+                include3dModel: true,
+                inactiveTargetMessage: "Open and activate a PCB library before adding a footprint.");
+        }
+
+        private async void AddSymbolButton_Click(object sender, RoutedEventArgs e)
+        {
+            await ImportSelectedPartsAsync(
+                ComponentImportTarget.ActiveSchLibrary,
+                includeFootprint: false,
+                includeSymbol: true,
+                include3dModel: false,
+                inactiveTargetMessage: "Open and activate a schematic library before adding a symbol.");
+        }
+
+        private async Task ImportSelectedPartsAsync(
+            ComponentImportTarget importTarget,
+            bool includeFootprint,
+            bool includeSymbol,
+            bool include3dModel,
+            string inactiveTargetMessage)
+        {
             var selectedParts = searchResults.Where(p => p.AddToLibrary).ToList();
+
+            if (importTarget == ComponentImportTarget.ActivePcbLibrary && !IsActivePcbLibrary())
+            {
+                MessageBox.Show(inactiveTargetMessage, "No Active PCB Library", MessageBoxButton.OK, MessageBoxImage.Information);
+                UpdateAddButtonState();
+                return;
+            }
+
+            if (importTarget == ComponentImportTarget.ActiveSchLibrary && !IsActiveSchLibrary())
+            {
+                MessageBox.Show(inactiveTargetMessage, "No Active Schematic Library", MessageBoxButton.OK, MessageBoxImage.Information);
+                UpdateAddButtonState();
+                return;
+            }
 
             if (selectedParts.Count == 0)
             {
@@ -1583,7 +1630,7 @@ namespace EasyEDA_Loader
             try
             {
                 Mouse.OverrideCursor = Cursors.Wait;
-                await LoadComponentsForImportAsync(selectedParts);
+                await LoadComponentsForImportAsync(selectedParts, importTarget, includeFootprint, includeSymbol, include3dModel);
 
                 closeDialog = true;
                 DialogResult = true;

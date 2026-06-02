@@ -56,6 +56,15 @@ namespace EasyEDA_Loader
         public Root Root { get; set; }
         public bool Include3dModel { get; set; }
         public bool IncludeFootprint { get; set; }
+        public bool IncludeSymbol { get; set; }
         public bool RemoveWatermark { get; set; }
+        public ComponentImportTarget ImportTarget { get; set; }
+    }
+
+    public enum ComponentImportTarget
+    {
+        TemporaryLibraries,
+        ActivePcbLibrary,
+        ActiveSchLibrary
     }
 }

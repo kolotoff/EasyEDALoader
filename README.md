@@ -10,11 +10,11 @@ I used easyeda2kicad as a reference for this project as well as AtliumLibraryLoa
 
 # Usage
 
-Using the extension is pretty straight forward once it is installed, there will be a new Menu option `EasyEDA Loader` in Altium's menus, this will open a Modal Dialog which prompts the LCSC Part number e.g. "C2040". Tick which part you want to add after searching and press Add to Library
+Using the extension is pretty straight forward once it is installed, there will be a new Menu option `EasyEDA Loader` in Altium's menus, this will open a Modal Dialog which prompts the LCSC Part number e.g. "C2040". Tick which part you want to add after searching and press `Import to temp`, `Add footprint`, or `Add symbol`.
 
 ![Dialog](/Assets/Loader.PNG)
 
-Hitting OK will automatically create `EasyEDA.pcblib` and `EasyEDA.schlib` if they don't already exist in `Documents/AltiumEE`, create the footprint, download the 3d model, create the symbol, add part info, map the footprint to the symbol, then place the component into the active schematic at the bottom left.
+`Import to temp` will automatically create `EasyEDA.pcblib` and `EasyEDA.schlib` if they don't already exist in `Documents/AltiumEE`, create the footprint, download the 3d model, create the symbol, add part info, map the footprint to the symbol, then place the component into the active schematic at the bottom left. `Add footprint` imports only the footprint into the active PCB library, and `Add symbol` imports only the schematic symbol into the active schematic library.
 
 # Runtime Dependencies
 
