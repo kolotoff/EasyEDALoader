@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Globalization;
+using System.IO;
 using System.Linq;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -126,6 +128,19 @@ namespace EasyEDA_Loader
         private const double InternalDetailMaxArcRadiusMm = 1.95;
         private const double InternalDetailMaxLineLengthMm = 4.0;
         private const double InternalDetailExteriorClearanceMm = 0.16;
+        private const int RasterProjectionMaxPixels = 2200;
+        private const int RasterProjectionMinPixels = 900;
+        private const double RasterProjectionTargetPixelsPerMm = 180.0;
+        private const double RasterProjectionPaddingRatio = 0.04;
+        private const double RasterProjectionMinPaddingMm = 0.35;
+        private const double RasterProjectionMinPathLengthMm = 0.18;
+        private const double RasterProjectionMinClosedAreaMm2 = 0.006;
+        private const double RasterRegionDepthBucketMm = 0.04;
+        private const double RasterRegionNormalBucket = 0.04;
+        private const int RenderMaskImageSizePixels = 1800;
+        private const int RenderMaskBackgroundThreshold = 246;
+        private const int RenderMaskLumaBucket = 18;
+        private const int RenderMaskMinBodyPixels = 25;
         private const string NumPattern = @"[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[Ee][+-]?\d+)?";
 
         private static readonly Regex NumberRegex = new Regex(NumPattern, RegexOptions.Compiled);
@@ -162,29 +177,20 @@ namespace EasyEDA_Loader
                 Rotation2D = placement.Rotation2D
             };
 
-            VisibleProjection projection = VisibleEdgeProjection(geometry, state);
+            VisibleProjection projection = TopologicalHiddenLineProjection(geometry, state);
             if (projection.Segments.Count == 0 || projection.SourceBounds == null)
                 return Array.Empty<StepSilhouettePrimitive>();
 
             double placementRotation = NormalizeRotationDegrees(
                 ProjectionRotationFromModelState(state) + AltiumTopProjectionRotationCorrectionDeg);
+
             List<Segment2d> placed = PlaceSegmentsWithoutRescale(
                 projection.Segments,
                 placement.TargetBounds,
                 projection.SourceBounds,
                 placementRotation);
 
-            IReadOnlyList<StepSilhouettePrimitive> edgePrimitives = OptimizeSegmentsToPrimitives(placed);
-            List<StepSilhouettePrimitive> faceContourPrimitives = BuildFaceUnionContourPrimitives(
-                projection.ProjectionFaces,
-                placement.TargetBounds,
-                projection.SourceBounds,
-                placementRotation);
-
-            if (faceContourPrimitives.Count == 0)
-                return edgePrimitives;
-
-            return MergeFaceContoursWithInternalDetails(faceContourPrimitives, edgePrimitives);
+            return OptimizeTechnicalDrawingSegmentsToPrimitives(placed);
         }
 
         private static StepGeometry ParseStepGeometry(string text)
@@ -416,11 +422,28 @@ namespace EasyEDA_Loader
                 Vec3d yDir = Normalize(Cross(axis, xDir));
                 double a1 = CircleAngle(start, center, xDir, yDir);
                 double a2 = CircleAngle(end, center, xDir, yDir);
-                double delta = PositiveModulo(a2 - a1 + Math.PI, 2.0 * Math.PI) - Math.PI;
-                if (Math.Abs(delta) < 1e-9 && Distance(start, end) > 1e-6)
-                    delta = 2.0 * Math.PI;
+                bool fullCircle = Distance(start, end) <= 1e-6;
+                double delta;
+                if (fullCircle)
+                {
+                    delta = edge.SameSense ? 2.0 * Math.PI : -2.0 * Math.PI;
+                }
+                else
+                {
+                    delta = a2 - a1;
+                    if (edge.SameSense)
+                    {
+                        while (delta <= 1e-9)
+                            delta += 2.0 * Math.PI;
+                    }
+                    else
+                    {
+                        while (delta >= -1e-9)
+                            delta -= 2.0 * Math.PI;
+                    }
+                }
 
-                int steps = Math.Max(2, Math.Min(24, (int)Math.Ceiling(Math.Abs(delta) * circle.Radius / 0.12)));
+                int steps = Math.Max(8, Math.Min(96, (int)Math.Ceiling(Math.Abs(delta) * circle.Radius / 0.08)));
                 var points = new List<Vec3d>(steps + 1);
                 for (int index = 0; index <= steps; index++)
                 {
@@ -632,13 +655,16 @@ namespace EasyEDA_Loader
 
             foreach (FaceInfo faceInfo in faceInfos)
             {
-                if (adjacentFaceIds != null && adjacentFaceIds.Contains(faceInfo.FaceId))
-                    continue;
                 if (!FaceContainsPoint(faceInfo, midpoint))
                     continue;
 
                 double? faceHeight = FaceHeightAt(faceInfo, midpoint.X, midpoint.Y);
                 if (!faceHeight.HasValue)
+                    continue;
+
+                if (adjacentFaceIds != null &&
+                    adjacentFaceIds.Contains(faceInfo.FaceId) &&
+                    Math.Abs(faceHeight.Value - segmentHeight) <= OcclusionEpsilonMm)
                     continue;
 
                 if (viewSign >= 0)
@@ -666,12 +692,107 @@ namespace EasyEDA_Loader
             return top;
         }
 
+        private static VisibleProjection TopologicalHiddenLineProjection(StepGeometry geometry, ModelState state)
+        {
+            VisibleProjection top = TopologicalHiddenLineProjectionForSide(geometry, state, 1);
+            VisibleProjection bottom = TopologicalHiddenLineProjectionForSide(geometry, state, -1);
+            if (bottom.VisibleProjectedSegments > top.VisibleProjectedSegments)
+                return bottom;
+            if (bottom.VisibleProjectedSegments == top.VisibleProjectedSegments && bottom.VisibleEdges > top.VisibleEdges)
+                return bottom;
+            return top;
+        }
+
+        private static VisibleProjection TopologicalHiddenLineProjectionForSide(StepGeometry geometry, ModelState state, int viewSign)
+        {
+            List<int> allEdgeIds = geometry.Edges.Keys.OrderBy(id => id).ToList();
+            ProjectedSegmentsResult allProjection = ProjectedSegmentsForEdges(geometry, state, allEdgeIds, null, null, viewSign);
+            if (allProjection.Segments.Count == 0)
+                return new VisibleProjection(new List<Segment2d>(), null, 0, 0, viewSign);
+
+            StepSilhouetteBounds sourceBounds = BoundsForSegments(allProjection.Segments);
+            Dictionary<int, HashSet<int>> edgeFaceIds = BuildAdjacentFaceIdsByEdge(geometry);
+            List<FaceInfo> projectionFaces = BuildProjectionFaceInfos(geometry, state);
+            ProjectedSegmentsResult visibleProjection = ProjectedSegmentsForEdges(
+                geometry,
+                state,
+                allEdgeIds,
+                projectionFaces,
+                edgeFaceIds,
+                viewSign);
+
+            List<Segment2d> visibleSegments = visibleProjection.Segments.Count > 0
+                ? visibleProjection.Segments
+                : allProjection.Segments;
+
+            return new VisibleProjection(
+                visibleSegments,
+                sourceBounds,
+                visibleSegments.Count,
+                allEdgeIds.Count,
+                viewSign,
+                projectionFaces);
+        }
+
+        private static Dictionary<int, HashSet<int>> BuildAdjacentFaceIdsByEdge(StepGeometry geometry)
+        {
+            var result = new Dictionary<int, HashSet<int>>();
+            foreach (KeyValuePair<int, AdvancedFace> item in geometry.Faces)
+            {
+                int faceId = item.Key;
+                foreach (int boundId in item.Value.BoundIds)
+                {
+                    if (!geometry.FaceBounds.TryGetValue(boundId, out FaceBound bound))
+                        continue;
+                    if (!geometry.EdgeLoops.TryGetValue(bound.LoopId, out List<int> orientedEdgeIds))
+                        continue;
+
+                    foreach (int orientedEdgeId in orientedEdgeIds)
+                    {
+                        if (!geometry.OrientedEdges.TryGetValue(orientedEdgeId, out OrientedEdge orientedEdge))
+                            continue;
+                        if (!result.TryGetValue(orientedEdge.EdgeId, out HashSet<int> faceIds))
+                        {
+                            faceIds = new HashSet<int>();
+                            result[orientedEdge.EdgeId] = faceIds;
+                        }
+
+                        faceIds.Add(faceId);
+                    }
+                }
+            }
+
+            return result;
+        }
+
+        private static List<FaceInfo> BuildProjectionFaceInfos(StepGeometry geometry, ModelState state)
+        {
+            var result = new List<FaceInfo>();
+            foreach (KeyValuePair<int, AdvancedFace> item in geometry.Faces)
+            {
+                int faceId = item.Key;
+                AdvancedFace face = item.Value;
+                Vec3d? normal = FaceNormal(geometry, face, state);
+                Vec3d? planePoint = FacePlanePoint(geometry, face, state);
+                if (!normal.HasValue || !planePoint.HasValue)
+                    continue;
+
+                FacePolygons polygons = FacePolygonsFor(geometry, face, state);
+                if (polygons.Outers.Count == 0)
+                    continue;
+
+                result.Add(new FaceInfo(faceId, normal.Value, planePoint.Value, polygons.Outers, polygons.Holes));
+            }
+
+            return result;
+        }
+
         private static VisibleProjection VisibleEdgeProjectionForSide(StepGeometry geometry, ModelState state, int viewSign)
         {
             List<int> allEdgeIds = geometry.Edges.Keys.OrderBy(id => id).ToList();
             ProjectedSegmentsResult allProjection = ProjectedSegmentsForEdges(geometry, state, allEdgeIds, null, null, viewSign);
             if (allProjection.Segments.Count == 0)
-                return new VisibleProjection(new List<Segment2d>(), null, 0, 0);
+                return new VisibleProjection(new List<Segment2d>(), null, 0, 0, viewSign);
 
             StepSilhouetteBounds sourceBounds = BoundsForSegments(allProjection.Segments);
             var edgeFaceIds = new Dictionary<int, HashSet<int>>();
@@ -766,7 +887,7 @@ namespace EasyEDA_Loader
                 ? visibleProjection.Segments
                 : allProjection.Segments;
 
-            return new VisibleProjection(visibleSegments, sourceBounds, visibleSegments.Count, visibleEdgeIds.Count, projectionFaces);
+            return new VisibleProjection(visibleSegments, sourceBounds, visibleSegments.Count, visibleEdgeIds.Count, viewSign, projectionFaces);
         }
 
         private static List<Segment2d> PlaceSegmentsWithoutRescale(
@@ -845,6 +966,50 @@ namespace EasyEDA_Loader
             primitives = AddLineGapBridges(primitives);
             primitives = RemoveLinesInsideCompleteCircularRings(primitives);
             primitives = RemoveShortDisconnectedLines(primitives);
+            primitives = SnapPrimitiveEndpoints(primitives);
+
+            var result = new List<StepSilhouettePrimitive>();
+            var lineKeys = new HashSet<SegmentKey>();
+            var arcKeys = new HashSet<string>();
+            foreach (StepSilhouettePrimitive primitive in primitives)
+            {
+                if (primitive.Kind == StepSilhouettePrimitiveKind.Line)
+                {
+                    SegmentKey key = CanonicalSegmentKey(new Segment2d(primitive.X1, primitive.Y1, primitive.X2, primitive.Y2));
+                    if (!lineKeys.Add(key))
+                        continue;
+                }
+                else
+                {
+                    string key = string.Join("|",
+                        (int)Math.Round(primitive.CenterX * 1000.0),
+                        (int)Math.Round(primitive.CenterY * 1000.0),
+                        (int)Math.Round(primitive.Radius * 1000.0),
+                        (int)Math.Round(primitive.StartAngle * 1000.0),
+                        (int)Math.Round(primitive.EndAngle * 1000.0));
+                    if (!arcKeys.Add(key))
+                        continue;
+                }
+
+                result.Add(primitive);
+            }
+
+            return result;
+        }
+
+        private static IReadOnlyList<StepSilhouettePrimitive> OptimizeTechnicalDrawingSegmentsToPrimitives(List<Segment2d> segments)
+        {
+            List<Segment2d> deduped = DedupeSegments(segments);
+            var primitives = new List<StepSilhouettePrimitive>();
+            List<Segment2d> pathSegments = ExtractCircularEdgePrimitives(deduped, primitives);
+            List<List<Point2d>> paths = TraceSegmentPaths(pathSegments);
+            foreach (List<Point2d> path in paths)
+                primitives.AddRange(TechnicalDrawingPrimitivesFromPath(path));
+
+            primitives = MergeLinePrimitives(primitives);
+            primitives = MergeArcPrimitives(primitives);
+            primitives = CompleteNearlyClosedCircularArcs(primitives);
+            primitives = RemoveSmallVisiblePrimitives(primitives);
             primitives = SnapPrimitiveEndpoints(primitives);
 
             var result = new List<StepSilhouettePrimitive>();
@@ -997,6 +1162,481 @@ namespace EasyEDA_Loader
             {
                 unionPath?.Dispose();
             }
+        }
+
+        private static IReadOnlyList<StepSilhouettePrimitive> TryBuildRenderedMaskPrimitives(
+            byte[] stepData,
+            StepSilhouetteBounds targetBounds)
+        {
+            string f3d = FindF3DConsoleExecutable();
+            if (string.IsNullOrWhiteSpace(f3d) || stepData == null || stepData.Length == 0 || targetBounds == null)
+                return Array.Empty<StepSilhouettePrimitive>();
+
+            string tempStep = null;
+            string tempPng = null;
+            try
+            {
+                tempStep = Path.Combine(Path.GetTempPath(), "EasyEDALoaderProjection_" + Guid.NewGuid().ToString("N") + ".step");
+                tempPng = Path.Combine(Path.GetTempPath(), "EasyEDALoaderProjection_" + Guid.NewGuid().ToString("N") + ".png");
+                File.WriteAllBytes(tempStep, stepData);
+
+                if (!RenderF3DMask(f3d, tempStep, tempPng))
+                    return Array.Empty<StepSilhouettePrimitive>();
+
+                using (SKBitmap bitmap = SKBitmap.Decode(tempPng))
+                {
+                    if (bitmap == null)
+                        return Array.Empty<StepSilhouettePrimitive>();
+
+                    return BuildRenderedMaskPrimitives(bitmap, targetBounds);
+                }
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine("Rendered 3D projection failed: " + ex.Message);
+                return Array.Empty<StepSilhouettePrimitive>();
+            }
+            finally
+            {
+                TryDeleteFile(tempStep);
+                TryDeleteFile(tempPng);
+            }
+        }
+
+        private static IReadOnlyList<StepSilhouettePrimitive> BuildRenderedMaskPrimitives(
+            SKBitmap bitmap,
+            StepSilhouetteBounds targetBounds)
+        {
+            if (!TryFindRenderedBodyBounds(bitmap, out SKRectI bodyBounds))
+                return Array.Empty<StepSilhouettePrimitive>();
+
+            var transform = RenderMaskTransform.Create(bodyBounds, targetBounds);
+            var regions = new int[bitmap.Width * bitmap.Height];
+            for (int y = 0; y < bitmap.Height; y++)
+            {
+                for (int x = 0; x < bitmap.Width; x++)
+                    regions[y * bitmap.Width + x] = RenderMaskRegionId(bitmap.GetPixel(x, y));
+            }
+
+            List<Segment2d> boundarySegments = TraceRenderedMaskBoundaries(regions, bitmap.Width, bitmap.Height, bodyBounds, transform);
+            if (boundarySegments.Count == 0)
+                return Array.Empty<StepSilhouettePrimitive>();
+
+            List<List<Point2d>> paths = TraceSegmentPaths(DedupeSegments(boundarySegments));
+            var primitives = new List<StepSilhouettePrimitive>();
+            foreach (List<Point2d> path in paths)
+            {
+                List<Point2d> cleaned = RemoveDuplicatePathPoints(path);
+                if (cleaned.Count < 2 || PathLength(cleaned) < RasterProjectionMinPathLengthMm)
+                    continue;
+
+                bool closed = Distance(cleaned[0], cleaned[cleaned.Count - 1]) <= ClosedPathEndpointToleranceMm;
+                if (closed && Math.Abs(PolygonArea(cleaned)) < RasterProjectionMinClosedAreaMm2)
+                    continue;
+
+                primitives.AddRange(closed
+                    ? PrimitivesFromContourPath(cleaned)
+                    : PrimitivesFromPath(cleaned));
+            }
+
+            return OptimizePrimitiveList(primitives).ToList();
+        }
+
+        private static bool RenderF3DMask(string executable, string inputPath, string outputPath)
+        {
+            var startInfo = new ProcessStartInfo
+            {
+                FileName = executable,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardError = true,
+                RedirectStandardOutput = true
+            };
+
+            startInfo.ArgumentList.Add("--no-config");
+            startInfo.ArgumentList.Add("--verbose=error");
+            startInfo.ArgumentList.Add("--output");
+            startInfo.ArgumentList.Add(outputPath);
+            startInfo.ArgumentList.Add("--resolution");
+            startInfo.ArgumentList.Add(RenderMaskImageSizePixels.ToString(CultureInfo.InvariantCulture) + "," + RenderMaskImageSizePixels.ToString(CultureInfo.InvariantCulture));
+            startInfo.ArgumentList.Add("--background-color");
+            startInfo.ArgumentList.Add("#ffffff");
+            startInfo.ArgumentList.Add("--camera-orthographic");
+            startInfo.ArgumentList.Add("--color");
+            startInfo.ArgumentList.Add("#808080");
+            startInfo.ArgumentList.Add("--camera-direction=0,0,-1");
+            startInfo.ArgumentList.Add("--up=+Y");
+            startInfo.ArgumentList.Add(inputPath);
+
+            using (Process process = Process.Start(startInfo))
+            {
+                if (process == null)
+                    return false;
+                process.WaitForExit(30000);
+                if (!process.HasExited)
+                {
+                    try { process.Kill(); }
+                    catch { }
+                    return false;
+                }
+
+                if (process.ExitCode != 0)
+                    return false;
+            }
+
+            return File.Exists(outputPath) && new FileInfo(outputPath).Length > 0;
+        }
+
+        private static bool TryFindRenderedBodyBounds(SKBitmap bitmap, out SKRectI bodyBounds)
+        {
+            int left = bitmap.Width;
+            int top = bitmap.Height;
+            int right = -1;
+            int bottom = -1;
+            int count = 0;
+
+            for (int y = 0; y < bitmap.Height; y++)
+            {
+                for (int x = 0; x < bitmap.Width; x++)
+                {
+                    if (RenderMaskRegionId(bitmap.GetPixel(x, y)) == 0)
+                        continue;
+
+                    left = Math.Min(left, x);
+                    top = Math.Min(top, y);
+                    right = Math.Max(right, x);
+                    bottom = Math.Max(bottom, y);
+                    count++;
+                }
+            }
+
+            if (count < RenderMaskMinBodyPixels || right <= left || bottom <= top)
+            {
+                bodyBounds = SKRectI.Empty;
+                return false;
+            }
+
+            bodyBounds = new SKRectI(left, top, right + 1, bottom + 1);
+            return true;
+        }
+
+        private static int RenderMaskRegionId(SKColor color)
+        {
+            if (color.Red >= RenderMaskBackgroundThreshold &&
+                color.Green >= RenderMaskBackgroundThreshold &&
+                color.Blue >= RenderMaskBackgroundThreshold)
+                return 0;
+
+            int luma = (color.Red * 299 + color.Green * 587 + color.Blue * 114) / 1000;
+            return Math.Max(1, 1 + luma / RenderMaskLumaBucket);
+        }
+
+        private static List<Segment2d> TraceRenderedMaskBoundaries(
+            int[] regions,
+            int width,
+            int height,
+            SKRectI bodyBounds,
+            RenderMaskTransform transform)
+        {
+            var segments = new List<Segment2d>();
+            int left = Math.Max(0, bodyBounds.Left - 1);
+            int top = Math.Max(0, bodyBounds.Top - 1);
+            int right = Math.Min(width - 1, bodyBounds.Right + 1);
+            int bottom = Math.Min(height - 1, bodyBounds.Bottom + 1);
+
+            for (int y = top; y <= bottom; y++)
+            {
+                for (int x = left; x <= right; x++)
+                {
+                    int current = x >= 0 && x < width && y >= 0 && y < height ? regions[y * width + x] : 0;
+                    int nextRight = x + 1 < width ? regions[y * width + x + 1] : 0;
+                    if (current != nextRight)
+                        AddRenderVerticalSegment(segments, transform, x + 1, y, y + 1);
+
+                    int nextBottom = y + 1 < height ? regions[(y + 1) * width + x] : 0;
+                    if (current != nextBottom)
+                        AddRenderHorizontalSegment(segments, transform, y + 1, x, x + 1);
+                }
+            }
+
+            return segments;
+        }
+
+        private static void AddRenderVerticalSegment(
+            List<Segment2d> segments,
+            RenderMaskTransform transform,
+            int x,
+            int y1,
+            int y2)
+        {
+            Point2d a = transform.ModelPoint(x, y1);
+            Point2d b = transform.ModelPoint(x, y2);
+            segments.Add(new Segment2d(a.X, a.Y, b.X, b.Y));
+        }
+
+        private static void AddRenderHorizontalSegment(
+            List<Segment2d> segments,
+            RenderMaskTransform transform,
+            int y,
+            int x1,
+            int x2)
+        {
+            Point2d a = transform.ModelPoint(x1, y);
+            Point2d b = transform.ModelPoint(x2, y);
+            segments.Add(new Segment2d(a.X, a.Y, b.X, b.Y));
+        }
+
+        private static string FindF3DConsoleExecutable()
+        {
+            string configuredPath = Environment.GetEnvironmentVariable("STEPCLEANER_F3D_CONSOLE");
+            if (!string.IsNullOrWhiteSpace(configuredPath) && File.Exists(configuredPath))
+                return configuredPath;
+
+            string programFiles = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
+            var candidates = new[]
+            {
+                Path.Combine(programFiles, "F3D", "bin", "f3d-console.exe"),
+                "f3d-console.exe"
+            };
+
+            foreach (string candidate in candidates)
+            {
+                try
+                {
+                    if (File.Exists(candidate))
+                        return candidate;
+                }
+                catch
+                {
+                }
+            }
+
+            return null;
+        }
+
+        private static void TryDeleteFile(string path)
+        {
+            if (string.IsNullOrWhiteSpace(path))
+                return;
+
+            try
+            {
+                if (File.Exists(path))
+                    File.Delete(path);
+            }
+            catch
+            {
+            }
+        }
+
+        private static IReadOnlyList<StepSilhouettePrimitive> BuildRasterHiddenLinePrimitives(
+            List<FaceInfo> faces,
+            int viewSign,
+            StepSilhouetteBounds targetBounds,
+            StepSilhouetteBounds sourceBounds,
+            double rotationDeg)
+        {
+            if (faces == null || faces.Count == 0 || targetBounds == null || sourceBounds == null)
+                return Array.Empty<StepSilhouettePrimitive>();
+
+            RasterProjectionTransform transform = RasterProjectionTransform.Create(targetBounds);
+            if (transform.WidthPixels <= 1 || transform.HeightPixels <= 1)
+                return Array.Empty<StepSilhouettePrimitive>();
+
+            var regionIdsByKey = new Dictionary<RasterRegionKey, int>();
+            int nextRegionId = 1;
+
+            using (var bitmap = new SKBitmap(transform.WidthPixels, transform.HeightPixels, SKColorType.Rgba8888, SKAlphaType.Opaque))
+            using (var canvas = new SKCanvas(bitmap))
+            using (var paint = new SKPaint())
+            {
+                bitmap.Erase(SKColors.Black);
+                paint.Style = SKPaintStyle.Fill;
+                paint.IsAntialias = false;
+
+                foreach (FaceInfo face in faces
+                    .Where(face => face.Outers.Count > 0)
+                    .OrderBy(face => viewSign * EstimateFaceDepth(face)))
+                {
+                    using (SKPath path = BuildRasterFacePath(face, sourceBounds, targetBounds, rotationDeg, transform))
+                    {
+                        if (path == null || path.IsEmpty)
+                            continue;
+
+                        SKRect bounds = path.Bounds;
+                        if (bounds.Width < 1.0f || bounds.Height < 1.0f)
+                            continue;
+
+                        RasterRegionKey key = RasterRegionKey.FromFace(face, viewSign);
+                        if (!regionIdsByKey.TryGetValue(key, out int regionId))
+                        {
+                            regionId = nextRegionId++;
+                            regionIdsByKey[key] = regionId;
+                        }
+
+                        paint.Color = ColorForRasterRegion(regionId);
+                        canvas.DrawPath(path, paint);
+                    }
+                }
+
+                var regionPixels = new int[bitmap.Width * bitmap.Height];
+                for (int y = 0; y < bitmap.Height; y++)
+                {
+                    for (int x = 0; x < bitmap.Width; x++)
+                        regionPixels[y * bitmap.Width + x] = RegionIdFromColor(bitmap.GetPixel(x, y));
+                }
+
+                List<Segment2d> boundarySegments = TraceRasterRegionBoundaries(regionPixels, bitmap.Width, bitmap.Height, transform);
+                if (boundarySegments.Count == 0)
+                    return Array.Empty<StepSilhouettePrimitive>();
+
+                List<List<Point2d>> paths = TraceSegmentPaths(DedupeSegments(boundarySegments));
+                var primitives = new List<StepSilhouettePrimitive>();
+                foreach (List<Point2d> path in paths)
+                {
+                    List<Point2d> cleaned = RemoveDuplicatePathPoints(path);
+                    if (cleaned.Count < 2 || PathLength(cleaned) < RasterProjectionMinPathLengthMm)
+                        continue;
+
+                    bool closed = Distance(cleaned[0], cleaned[cleaned.Count - 1]) <= ClosedPathEndpointToleranceMm;
+                    if (closed && Math.Abs(PolygonArea(cleaned)) < RasterProjectionMinClosedAreaMm2)
+                        continue;
+
+                    primitives.AddRange(closed
+                        ? PrimitivesFromContourPath(cleaned)
+                        : PrimitivesFromPath(cleaned));
+                }
+
+                return OptimizePrimitiveList(primitives).ToList();
+            }
+        }
+
+        private static SKPath BuildRasterFacePath(
+            FaceInfo face,
+            StepSilhouetteBounds sourceBounds,
+            StepSilhouetteBounds targetBounds,
+            double rotationDeg,
+            RasterProjectionTransform transform)
+        {
+            double sourceCenterX = sourceBounds.CenterX;
+            double sourceCenterY = sourceBounds.CenterY;
+            double targetCenterX = targetBounds.CenterX;
+            double targetCenterY = targetBounds.CenterY;
+            rotationDeg = NormalizeRotationDegrees(rotationDeg);
+            double radians = DegreesToRadians(rotationDeg);
+            double cos = Math.Cos(radians);
+            double sin = Math.Sin(radians);
+
+            var path = new SKPath { FillType = SKPathFillType.EvenOdd };
+            foreach (List<Point2d> polygon in face.Outers)
+                AddRasterPolygon(path, polygon, sourceCenterX, sourceCenterY, targetCenterX, targetCenterY, cos, sin, transform);
+            foreach (List<Point2d> polygon in face.Holes)
+                AddRasterPolygon(path, polygon, sourceCenterX, sourceCenterY, targetCenterX, targetCenterY, cos, sin, transform);
+            return path;
+        }
+
+        private static void AddRasterPolygon(
+            SKPath path,
+            List<Point2d> polygon,
+            double sourceCenterX,
+            double sourceCenterY,
+            double targetCenterX,
+            double targetCenterY,
+            double cos,
+            double sin,
+            RasterProjectionTransform transform)
+        {
+            if (polygon == null || polygon.Count < 3)
+                return;
+
+            Point2d first = MapPlacedPoint(polygon[0].X, polygon[0].Y, sourceCenterX, sourceCenterY, targetCenterX, targetCenterY, cos, sin);
+            path.MoveTo(transform.PixelX(first.X), transform.PixelY(first.Y));
+            for (int index = 1; index < polygon.Count; index++)
+            {
+                Point2d point = MapPlacedPoint(polygon[index].X, polygon[index].Y, sourceCenterX, sourceCenterY, targetCenterX, targetCenterY, cos, sin);
+                path.LineTo(transform.PixelX(point.X), transform.PixelY(point.Y));
+            }
+
+            path.Close();
+        }
+
+        private static List<Segment2d> TraceRasterRegionBoundaries(
+            int[] regionPixels,
+            int width,
+            int height,
+            RasterProjectionTransform transform)
+        {
+            var segments = new List<Segment2d>();
+            for (int y = 0; y < height; y++)
+            {
+                for (int x = 0; x < width; x++)
+                {
+                    int current = regionPixels[y * width + x];
+                    if (x == 0 && current != 0)
+                        AddRasterVerticalSegment(segments, transform, x, y, y + 1);
+                    if (y == 0 && current != 0)
+                        AddRasterHorizontalSegment(segments, transform, y, x, x + 1);
+
+                    int right = x + 1 < width ? regionPixels[y * width + x + 1] : 0;
+                    if (current != right)
+                        AddRasterVerticalSegment(segments, transform, x + 1, y, y + 1);
+
+                    int bottom = y + 1 < height ? regionPixels[(y + 1) * width + x] : 0;
+                    if (current != bottom)
+                        AddRasterHorizontalSegment(segments, transform, y + 1, x, x + 1);
+                }
+            }
+
+            return segments;
+        }
+
+        private static void AddRasterVerticalSegment(
+            List<Segment2d> segments,
+            RasterProjectionTransform transform,
+            int x,
+            int y1,
+            int y2)
+        {
+            Point2d a = transform.ModelPoint(x, y1);
+            Point2d b = transform.ModelPoint(x, y2);
+            segments.Add(new Segment2d(a.X, a.Y, b.X, b.Y));
+        }
+
+        private static void AddRasterHorizontalSegment(
+            List<Segment2d> segments,
+            RasterProjectionTransform transform,
+            int y,
+            int x1,
+            int x2)
+        {
+            Point2d a = transform.ModelPoint(x1, y);
+            Point2d b = transform.ModelPoint(x2, y);
+            segments.Add(new Segment2d(a.X, a.Y, b.X, b.Y));
+        }
+
+        private static int RegionIdFromColor(SKColor color)
+        {
+            return color.Red | (color.Green << 8) | (color.Blue << 16);
+        }
+
+        private static SKColor ColorForRasterRegion(int regionId)
+        {
+            return new SKColor(
+                (byte)(regionId & 0xff),
+                (byte)((regionId >> 8) & 0xff),
+                (byte)((regionId >> 16) & 0xff));
+        }
+
+        private static double EstimateFaceDepth(FaceInfo face)
+        {
+            List<Point2d> points = face.Outers.SelectMany(polygon => polygon).ToList();
+            if (points.Count == 0)
+                return face.PlanePoint.Z;
+
+            double u = points.Average(point => point.X);
+            double v = points.Average(point => point.Y);
+            double? depth = FaceHeightAt(face, u, v);
+            return depth ?? face.PlanePoint.Z;
         }
 
         private static SKPath BuildPlacedFacePath(
@@ -1382,6 +2022,23 @@ namespace EasyEDA_Loader
                 return new List<StepSilhouettePrimitive> { arc };
 
             return SimplifiedLinePrimitives(path);
+        }
+
+        private static List<StepSilhouettePrimitive> TechnicalDrawingPrimitivesFromPath(List<Point2d> path)
+        {
+            if (path.Count < 2)
+                return new List<StepSilhouettePrimitive>();
+
+            if (TryFitClosedCircularPath(path, out List<StepSilhouettePrimitive> circularArcs))
+                return circularArcs;
+
+            if (PointsAreCollinear(path))
+            {
+                StepSilhouettePrimitive line = LinePrimitive(path[0], path[path.Count - 1]);
+                return line != null ? new List<StepSilhouettePrimitive> { line } : new List<StepSilhouettePrimitive>();
+            }
+
+            return SegmentedPrimitivesFromPath(path);
         }
 
         private static List<StepSilhouettePrimitive> SimplifiedLinePrimitives(List<Point2d> path)
@@ -2516,6 +3173,40 @@ namespace EasyEDA_Loader
             return primitive.Radius * DegreesToRadians(PrimitiveArcSweepDegrees(primitive));
         }
 
+        private static double PathLength(List<Point2d> path)
+        {
+            if (path == null || path.Count < 2)
+                return 0.0;
+
+            double length = 0.0;
+            for (int index = 1; index < path.Count; index++)
+                length += Distance(path[index - 1], path[index]);
+            return length;
+        }
+
+        private static List<Point2d> RemoveDuplicatePathPoints(List<Point2d> path)
+        {
+            var result = new List<Point2d>();
+            if (path == null)
+                return result;
+
+            bool closed = path.Count > 2 && Distance(path[0], path[path.Count - 1]) <= ClosedPathEndpointToleranceMm;
+            foreach (Point2d point in path)
+            {
+                Point2d rounded = RoundedPoint(point);
+                if (result.Count == 0 || Distance(result[result.Count - 1], rounded) > PointEpsilonMm)
+                    result.Add(rounded);
+            }
+
+            while (result.Count > 2 && Distance(result[0], result[result.Count - 1]) <= PointEpsilonMm)
+                result.RemoveAt(result.Count - 1);
+
+            if (closed && result.Count > 2 && Distance(result[0], result[result.Count - 1]) > PointEpsilonMm)
+                result.Add(result[0]);
+
+            return result;
+        }
+
         private static Point2d ArcEndpoint(StepSilhouettePrimitive primitive, double angleDegrees)
         {
             double angle = DegreesToRadians(angleDegrees);
@@ -2825,12 +3516,14 @@ namespace EasyEDA_Loader
                 StepSilhouetteBounds sourceBounds,
                 int visibleProjectedSegments,
                 int visibleEdges,
+                int viewSign,
                 List<FaceInfo> projectionFaces = null)
             {
                 Segments = segments;
                 SourceBounds = sourceBounds;
                 VisibleProjectedSegments = visibleProjectedSegments;
                 VisibleEdges = visibleEdges;
+                ViewSign = viewSign;
                 ProjectionFaces = projectionFaces ?? new List<FaceInfo>();
             }
 
@@ -2838,7 +3531,166 @@ namespace EasyEDA_Loader
             public StepSilhouetteBounds SourceBounds { get; }
             public int VisibleProjectedSegments { get; }
             public int VisibleEdges { get; }
+            public int ViewSign { get; }
             public List<FaceInfo> ProjectionFaces { get; }
+        }
+
+        private sealed class RasterProjectionTransform
+        {
+            private RasterProjectionTransform(
+                double left,
+                double top,
+                double scale,
+                int widthPixels,
+                int heightPixels)
+            {
+                Left = left;
+                Top = top;
+                Scale = scale;
+                WidthPixels = widthPixels;
+                HeightPixels = heightPixels;
+            }
+
+            public double Left { get; }
+            public double Top { get; }
+            public double Scale { get; }
+            public int WidthPixels { get; }
+            public int HeightPixels { get; }
+
+            public static RasterProjectionTransform Create(StepSilhouetteBounds bounds)
+            {
+                double maxDimension = Math.Max(bounds.Width, bounds.Height);
+                double padding = Math.Max(RasterProjectionMinPaddingMm, maxDimension * RasterProjectionPaddingRatio);
+                double widthMm = Math.Max(0.001, bounds.Width + padding * 2.0);
+                double heightMm = Math.Max(0.001, bounds.Height + padding * 2.0);
+                double scale = Math.Min(
+                    RasterProjectionTargetPixelsPerMm,
+                    RasterProjectionMaxPixels / Math.Max(widthMm, heightMm));
+                scale = Math.Max(scale, RasterProjectionMinPixels / Math.Max(widthMm, heightMm));
+                scale = Math.Min(scale, RasterProjectionMaxPixels / Math.Max(widthMm, heightMm));
+
+                int widthPixels = Math.Max(2, (int)Math.Ceiling(widthMm * scale));
+                int heightPixels = Math.Max(2, (int)Math.Ceiling(heightMm * scale));
+                return new RasterProjectionTransform(
+                    bounds.Left - padding,
+                    bounds.Top + padding,
+                    scale,
+                    widthPixels,
+                    heightPixels);
+            }
+
+            public float PixelX(double x)
+            {
+                return (float)((x - Left) * Scale);
+            }
+
+            public float PixelY(double y)
+            {
+                return (float)((Top - y) * Scale);
+            }
+
+            public Point2d ModelPoint(int pixelX, int pixelY)
+            {
+                return new Point2d(
+                    RoundCoord(Left + pixelX / Scale),
+                    RoundCoord(Top - pixelY / Scale));
+            }
+        }
+
+        private sealed class RenderMaskTransform
+        {
+            private RenderMaskTransform(double centerX, double centerY, double pixelCenterX, double pixelCenterY, double pixelsPerMm)
+            {
+                CenterX = centerX;
+                CenterY = centerY;
+                PixelCenterX = pixelCenterX;
+                PixelCenterY = pixelCenterY;
+                PixelsPerMm = pixelsPerMm;
+            }
+
+            public double CenterX { get; }
+            public double CenterY { get; }
+            public double PixelCenterX { get; }
+            public double PixelCenterY { get; }
+            public double PixelsPerMm { get; }
+
+            public static RenderMaskTransform Create(SKRectI bodyBounds, StepSilhouetteBounds targetBounds)
+            {
+                double bodyWidthPixels = Math.Max(1.0, bodyBounds.Width);
+                double bodyHeightPixels = Math.Max(1.0, bodyBounds.Height);
+                double targetWidthMm = Math.Max(0.001, targetBounds.Width);
+                double targetHeightMm = Math.Max(0.001, targetBounds.Height);
+                double pixelsPerMm = Math.Max(bodyWidthPixels / targetWidthMm, bodyHeightPixels / targetHeightMm);
+
+                return new RenderMaskTransform(
+                    targetBounds.CenterX,
+                    targetBounds.CenterY,
+                    (bodyBounds.Left + bodyBounds.Right) / 2.0,
+                    (bodyBounds.Top + bodyBounds.Bottom) / 2.0,
+                    pixelsPerMm);
+            }
+
+            public Point2d ModelPoint(int pixelX, int pixelY)
+            {
+                return new Point2d(
+                    RoundCoord(CenterX + (pixelX - PixelCenterX) / PixelsPerMm),
+                    RoundCoord(CenterY - (pixelY - PixelCenterY) / PixelsPerMm));
+            }
+        }
+
+        private struct RasterRegionKey : IEquatable<RasterRegionKey>
+        {
+            public RasterRegionKey(int normalX, int normalY, int normalZ, int depth)
+            {
+                NormalX = normalX;
+                NormalY = normalY;
+                NormalZ = normalZ;
+                Depth = depth;
+            }
+
+            public int NormalX { get; }
+            public int NormalY { get; }
+            public int NormalZ { get; }
+            public int Depth { get; }
+
+            public static RasterRegionKey FromFace(FaceInfo face, int viewSign)
+            {
+                return new RasterRegionKey(
+                    Quantize(face.Normal.X, RasterRegionNormalBucket),
+                    Quantize(face.Normal.Y, RasterRegionNormalBucket),
+                    Quantize(face.Normal.Z, RasterRegionNormalBucket),
+                    Quantize(viewSign * EstimateFaceDepth(face), RasterRegionDepthBucketMm));
+            }
+
+            public bool Equals(RasterRegionKey other)
+            {
+                return NormalX == other.NormalX &&
+                    NormalY == other.NormalY &&
+                    NormalZ == other.NormalZ &&
+                    Depth == other.Depth;
+            }
+
+            public override bool Equals(object obj)
+            {
+                return obj is RasterRegionKey other && Equals(other);
+            }
+
+            public override int GetHashCode()
+            {
+                unchecked
+                {
+                    int hash = NormalX;
+                    hash = (hash * 397) ^ NormalY;
+                    hash = (hash * 397) ^ NormalZ;
+                    hash = (hash * 397) ^ Depth;
+                    return hash;
+                }
+            }
+
+            private static int Quantize(double value, double bucket)
+            {
+                return (int)Math.Round(value / bucket, MidpointRounding.AwayFromZero);
+            }
         }
 
         private sealed class ProjectedSegmentsResult

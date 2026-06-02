@@ -60,6 +60,9 @@ namespace EasyEDA_Loader
         private const int RiMouseMiddleButtonDown = 0x0010;
         private const int RiMouseMiddleButtonUp = 0x0020;
         private const int RiMouseWheel = 0x0400;
+        private const int VkLButton = 0x01;
+        private const int VkRButton = 0x02;
+        private const int VkMButton = 0x04;
         private const int MkLButton = 0x0001;
         private const int MkRButton = 0x0002;
         private const int MkMButton = 0x0010;
@@ -118,7 +121,9 @@ namespace EasyEDA_Loader
         private struct RawMouse
         {
             public ushort Flags;
-            public uint Buttons;
+            public ushort Reserved;
+            public ushort ButtonFlags;
+            public ushort ButtonData;
             public uint RawButtons;
             public int LastX;
             public int LastY;
@@ -158,6 +163,9 @@ namespace EasyEDA_Loader
 
         [DllImport("user32.dll")]
         private static extern bool GetCursorPos(out NativePoint point);
+
+        [DllImport("user32.dll")]
+        private static extern short GetAsyncKeyState(int vKey);
 
         [DllImport("user32.dll")]
         private static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
@@ -885,7 +893,12 @@ namespace EasyEDA_Loader
             if (!GetCursorPos(out NativePoint screenPoint))
                 return;
 
-            ushort buttonFlags = (ushort)(mouse.Buttons & 0xffff);
+            ushort buttonFlags = mouse.ButtonFlags;
+            bool hasButtonDown =
+                (buttonFlags & (RiMouseLeftButtonDown | RiMouseRightButtonDown | RiMouseMiddleButtonDown)) != 0;
+            if (!hasButtonDown && ReleaseF3DDragIfPhysicalButtonsReleased(screenPoint))
+                return;
+
             if ((buttonFlags & RiMouseLeftButtonDown) != 0)
                 MirrorF3DMouseInput(WmLButtonDown, screenPoint, 0);
             if ((buttonFlags & RiMouseRightButtonDown) != 0)
@@ -898,7 +911,7 @@ namespace EasyEDA_Loader
 
             if ((buttonFlags & RiMouseWheel) != 0)
             {
-                int delta = unchecked((short)((mouse.Buttons >> 16) & 0xffff));
+                int delta = unchecked((short)mouse.ButtonData);
                 MirrorF3DMouseInput(WmMouseWheel, screenPoint, delta);
             }
 
@@ -908,6 +921,36 @@ namespace EasyEDA_Loader
                 MirrorF3DMouseInput(WmRButtonUp, screenPoint, 0);
             if ((buttonFlags & RiMouseMiddleButtonUp) != 0)
                 MirrorF3DMouseInput(WmMButtonUp, screenPoint, 0);
+        }
+
+        private bool ReleaseF3DDragIfPhysicalButtonsReleased(NativePoint screenPoint)
+        {
+            if (_f3dInputSource == null || _f3dMouseButtonState == 0)
+                return false;
+
+            int physicalState = GetPhysicalF3DMouseButtonState();
+            if ((_f3dMouseButtonState & ~physicalState) == 0)
+                return false;
+
+            ReleaseF3DDrag(_f3dInputSource, screenPoint);
+            return true;
+        }
+
+        private static int GetPhysicalF3DMouseButtonState()
+        {
+            int state = 0;
+            if (IsMouseButtonDown(VkLButton))
+                state |= MkLButton;
+            if (IsMouseButtonDown(VkRButton))
+                state |= MkRButton;
+            if (IsMouseButtonDown(VkMButton))
+                state |= MkMButton;
+            return state;
+        }
+
+        private static bool IsMouseButtonDown(int virtualKey)
+        {
+            return (GetAsyncKeyState(virtualKey) & unchecked((short)0x8000)) != 0;
         }
 
         private void MirrorF3DMouseInput(int message, NativePoint screenPoint, int wheelDelta)
@@ -1038,6 +1081,7 @@ namespace EasyEDA_Loader
             NativePoint sourcePoint = screenPoint;
             ScreenToClient(source.WindowHandle, ref sourcePoint);
             NativePoint targetPoint = MapClientPointBetweenPreviews(source, target, sourcePoint);
+            SendMessage(target.WindowHandle, WmMouseMove, new IntPtr(_f3dMouseButtonState), MakeLParam(targetPoint.X, targetPoint.Y));
             ClientToScreen(target.WindowHandle, ref targetPoint);
             SendMessage(target.WindowHandle, WmMouseWheel, MakeWParam(_f3dMouseButtonState, delta), MakeLParam(targetPoint.X, targetPoint.Y));
         }
