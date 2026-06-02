@@ -88,7 +88,7 @@ namespace EasyEDA_Loader
                     return cached;
             }
 
-            byte[] data = await download();
+            byte[] data = await download().ConfigureAwait(false);
             cancellationToken.ThrowIfCancellationRequested();
 
             if (data != null && data.Length > 0)

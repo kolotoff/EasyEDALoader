@@ -59,12 +59,12 @@ namespace EasyEDA_Loader
 
             try
             {
-                var response = await HttpClient.GetAsync(url, cancellationToken);
+                var response = await HttpClient.GetAsync(url, cancellationToken).ConfigureAwait(false);
                 Debug.WriteLine($"[API] Response Status: {(int)response.StatusCode} {response.StatusCode}");
                 Console.WriteLine($"[API] Response Status: {(int)response.StatusCode} {response.StatusCode}");
                 
                 response.EnsureSuccessStatusCode();
-                var content = await response.Content.ReadAsStringAsync();
+                var content = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
                 
                 Debug.WriteLine($"[API] Response Length: {content.Length} characters");
                 Console.WriteLine($"[API] Response Length: {content.Length} characters");
@@ -106,12 +106,12 @@ namespace EasyEDA_Loader
 
             try
             {
-                var res = await HttpClient.GetAsync(fullUrl, cancellationToken);
+                var res = await HttpClient.GetAsync(fullUrl, cancellationToken).ConfigureAwait(false);
                 Debug.WriteLine($"[API] Response Status: {(int)res.StatusCode} {res.StatusCode}");
                 Console.WriteLine($"[API] Response Status: {(int)res.StatusCode} {res.StatusCode}");
                 
                 res.EnsureSuccessStatusCode();
-                var imageData = await res.Content.ReadAsByteArrayAsync();
+                var imageData = await res.Content.ReadAsByteArrayAsync().ConfigureAwait(false);
                 
                 Debug.WriteLine($"[API] Image Data Length: {imageData.Length} bytes");
                 Console.WriteLine($"[API] Image Data Length: {imageData.Length} bytes");
@@ -151,12 +151,12 @@ namespace EasyEDA_Loader
 
             try
             {
-                var res = await HttpClient.GetAsync(url, cancellationToken);
+                var res = await HttpClient.GetAsync(url, cancellationToken).ConfigureAwait(false);
                 Debug.WriteLine($"[API] Response Status: {(int)res.StatusCode} {res.StatusCode}");
                 Console.WriteLine($"[API] Response Status: {(int)res.StatusCode} {res.StatusCode}");
                 
                 res.EnsureSuccessStatusCode();
-                var data = await res.Content.ReadAsByteArrayAsync();
+                var data = await res.Content.ReadAsByteArrayAsync().ConfigureAwait(false);
                 
                 Debug.WriteLine($"[API] Model Data Length: {data.Length} bytes");
                 Console.WriteLine($"[API] Model Data Length: {data.Length} bytes");
@@ -184,12 +184,12 @@ namespace EasyEDA_Loader
 
             try
             {
-                var res = await HttpClient.GetAsync(url, cancellationToken);
+                var res = await HttpClient.GetAsync(url, cancellationToken).ConfigureAwait(false);
                 Debug.WriteLine($"[API] Response Status: {(int)res.StatusCode} {res.StatusCode}");
                 Console.WriteLine($"[API] Response Status: {(int)res.StatusCode} {res.StatusCode}");
                 
                 res.EnsureSuccessStatusCode();
-                var data = await res.Content.ReadAsByteArrayAsync();
+                var data = await res.Content.ReadAsByteArrayAsync().ConfigureAwait(false);
                 
                 Debug.WriteLine($"[API] Raw Model Data Length: {data.Length} bytes");
                 Console.WriteLine($"[API] Raw Model Data Length: {data.Length} bytes");
@@ -260,12 +260,12 @@ namespace EasyEDA_Loader
 
             try
             {
-                var response = await HttpClient.SendAsync(request);
+                var response = await HttpClient.SendAsync(request).ConfigureAwait(false);
                 Debug.WriteLine($"[API] Response Status: {(int)response.StatusCode} {response.StatusCode}");
                 Console.WriteLine($"[API] Response Status: {(int)response.StatusCode} {response.StatusCode}");
                 
                 response.EnsureSuccessStatusCode();
-                string result = await response.Content.ReadAsStringAsync();
+                string result = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
                 
                 Debug.WriteLine($"[API] Response Length: {result.Length} characters");
                 Console.WriteLine($"[API] Response Length: {result.Length} characters");
@@ -375,12 +375,12 @@ namespace EasyEDA_Loader
             
             try
             {
-                var response = await HttpClient.SendAsync(request);
+                var response = await HttpClient.SendAsync(request).ConfigureAwait(false);
                 Debug.WriteLine($"[API] Response Status: {(int)response.StatusCode} {response.StatusCode}");
                 Console.WriteLine($"[API] Response Status: {(int)response.StatusCode} {response.StatusCode}");
                 
                 response.EnsureSuccessStatusCode();
-                string result = await response.Content.ReadAsStringAsync();
+                string result = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
                 
                 Debug.WriteLine($"[API] Response Length: {result.Length} characters");
                 Console.WriteLine($"[API] Response Length: {result.Length} characters");

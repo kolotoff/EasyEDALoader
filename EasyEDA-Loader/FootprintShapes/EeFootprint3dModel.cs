@@ -73,8 +73,8 @@ namespace EasyEDA_Loader
             double? maxZ = null;
 
             byte[] model = ctx.RawModelTask != null
-                ? await ctx.RawModelTask
-                : await ModelCache.GetRawObjModelAsync(new EasyedaApi(), Uuid, ctx.CancelToken);
+                ? await ctx.RawModelTask.ConfigureAwait(false)
+                : await ModelCache.GetRawObjModelAsync(new EasyedaApi(), Uuid, ctx.CancelToken).ConfigureAwait(false);
 
             using var reader = new StringReader(Encoding.UTF8.GetString(model));
 
@@ -111,9 +111,9 @@ namespace EasyEDA_Loader
             {
                 var modelTask = ctx.ModelTask ?? ModelCache.GetStepModelAsync(new EasyedaApi(), Uuid, ctx.CancelToken);
                 var zInfoTask = Task.Run(() => GetZInfoFromOrigin(ctx));
-                Task.WhenAll(modelTask, zInfoTask).Wait();
+                Task.WhenAll(modelTask, zInfoTask).ConfigureAwait(false).GetAwaiter().GetResult();
 
-                byte[] originalModel = modelTask.Result;
+                byte[] originalModel = modelTask.GetAwaiter().GetResult();
 
                 byte[] footprintModel = ctx.RemoveWatermark
                     ? StepWatermarkCleanVerifier.CleanOrThrow(originalModel, GetSafeCacheFileName(), CreateVerificationDirectory())
@@ -131,7 +131,7 @@ namespace EasyEDA_Loader
                 // Will leave this for now as it's "close enough" most of the time to only need a nudge by a few 10ths of a millimeter
                 double modelX = ConvertX(Translation.X, ctx);
                 double modelY = ConvertY(Translation.Y, ctx);
-                ModelZInfo zInfo = zInfoTask.Result;
+                ModelZInfo zInfo = zInfoTask.GetAwaiter().GetResult();
                 double standoffHeight = Translation.Z + zInfo.OffsetFromOrigin;
                 double modelHeight = ctx.HeightMm > 0 ? ctx.HeightMm : zInfo.Height;
                 double overallHeight = modelHeight > 0 ? standoffHeight + modelHeight : 0;

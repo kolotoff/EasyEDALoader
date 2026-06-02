@@ -171,13 +171,97 @@ namespace StepCleaner.Tests
             if (IsOption(args[0], "--metadata"))
                 return RunMetadataTests();
 
+            if (IsOption(args[0], "--async-import"))
+                return RunAsyncImportTests();
+
             if (IsOption(args[0], "--silhouette"))
                 return SaveSilhouetteProjectionImage(args);
 
             Console.Error.WriteLine("Unknown command: " + args[0]);
             Console.Error.WriteLine("Usage: StepCleaner.Tests --metadata");
+            Console.Error.WriteLine("Usage: StepCleaner.Tests --async-import");
             Console.Error.WriteLine("Usage: StepCleaner.Tests --silhouette <input.step> <output.png> [--rotx deg] [--roty deg] [--rotz deg] [--rotation2d deg] [--size pixels] [--padding pixels] [--no-grid] [--no-axes]");
             return 2;
+        }
+
+        private static int RunAsyncImportTests()
+        {
+            var failures = new List<string>();
+            string repoRoot = FindRepoRoot();
+
+            AssertAwaitsUseConfigureAwaitFalse(
+                Path.Combine(repoRoot, "EasyEDA-Loader", "ModelCache.cs"),
+                "ModelCache",
+                failures);
+            AssertAwaitsUseConfigureAwaitFalse(
+                Path.Combine(repoRoot, "EasyEDA-Loader", "API", "EasyedaApi.cs"),
+                "EasyedaApi",
+                failures);
+            AssertNoBlockingTaskWaits(
+                Path.Combine(repoRoot, "EasyEDA-Loader", "FootprintShapes", "EeFootprint3dModel.cs"),
+                "EeFootprint3dModel",
+                failures);
+
+            if (failures.Count > 0)
+            {
+                Console.Error.WriteLine("Async footprint import regression test failed.");
+                foreach (string failure in failures)
+                    Console.Error.WriteLine("  " + failure);
+                return 1;
+            }
+
+            Console.WriteLine("Async footprint import regression test passed.");
+            return 0;
+        }
+
+        private static void AssertAwaitsUseConfigureAwaitFalse(string filePath, string label, List<string> failures)
+        {
+            string[] lines = File.ReadAllLines(filePath);
+            for (int i = 0; i < lines.Length; i++)
+            {
+                string line = lines[i].Trim();
+                if (!line.Contains("await "))
+                    continue;
+
+                if (!line.Contains("ConfigureAwait(false)"))
+                    failures.Add(label + " line " + (i + 1).ToString(CultureInfo.InvariantCulture) + " awaits without ConfigureAwait(false): " + line);
+            }
+        }
+
+        private static void AssertNoBlockingTaskWaits(string filePath, string label, List<string> failures)
+        {
+            string[] lines = File.ReadAllLines(filePath);
+            for (int i = 0; i < lines.Length; i++)
+            {
+                string line = lines[i].Trim();
+                if (line.Contains(".Wait()") || line.Contains(".Result"))
+                    failures.Add(label + " line " + (i + 1).ToString(CultureInfo.InvariantCulture) + " blocks synchronously on a Task: " + line);
+            }
+        }
+
+        private static string FindRepoRoot()
+        {
+            string directory = AppContext.BaseDirectory;
+            while (!string.IsNullOrWhiteSpace(directory))
+            {
+                if (Directory.Exists(Path.Combine(directory, ".git")) &&
+                    Directory.Exists(Path.Combine(directory, "EasyEDA-Loader")))
+                    return directory;
+
+                directory = Directory.GetParent(directory)?.FullName;
+            }
+
+            directory = Directory.GetCurrentDirectory();
+            while (!string.IsNullOrWhiteSpace(directory))
+            {
+                if (Directory.Exists(Path.Combine(directory, ".git")) &&
+                    Directory.Exists(Path.Combine(directory, "EasyEDA-Loader")))
+                    return directory;
+
+                directory = Directory.GetParent(directory)?.FullName;
+            }
+
+            throw new DirectoryNotFoundException("Could not locate repository root.");
         }
 
         private static int RunMetadataTests()
