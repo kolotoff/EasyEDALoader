@@ -195,7 +195,7 @@ namespace EasyEDA_Loader
                 }
             }
 
-            EEPCB.AddAssemblyTexts(c, ctx.HasAssemblyDesignatorText, ctx.HasAssemblyCommentText, ctx.Box.Height, ctx.ProjectionPrimitives);
+            EEPCB.AddAssemblyTexts(c, ctx.HasAssemblyDesignatorText, ctx.HasAssemblyCommentText, ctx.Box.Height, ctx.ProjectionPrimitives, true);
             EEPCB.AddCourtyard(c, ctx.Box.Width, ctx.Box.Height);
         }
     }

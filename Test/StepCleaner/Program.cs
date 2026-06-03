@@ -665,6 +665,8 @@ namespace StepCleaner.Tests
             string rcs = File.ReadAllText(Path.Combine(repoRoot, "EasyEDA-Loader", "EasyEDA-Loader.rcs"));
             string module = File.ReadAllText(Path.Combine(repoRoot, "EasyEDA-Loader", "EasyEDALoader.cs"));
             string eePcb = File.ReadAllText(Path.Combine(repoRoot, "EasyEDA-Loader", "EEPCB.cs"));
+            string footprintData = File.ReadAllText(Path.Combine(repoRoot, "EasyEDA-Loader", "FootprintData.cs"));
+            string footprint3dModel = File.ReadAllText(Path.Combine(repoRoot, "EasyEDA-Loader", "FootprintShapes", "EeFootprint3dModel.cs"));
 
             AssertContains(ins, "Command  Name = 'EasyEDAReproject3D'", "PcbLib action command must be declared in the INS file", failures);
             AssertContains(ins, "Command  Name = 'EasyEDAAlign3DModel'", "PcbLib alignment command must be declared in the INS file", failures);
@@ -683,8 +685,13 @@ namespace StepCleaner.Tests
             AssertContains(eePcb, "SyncPcbLibComponentFromBoard(component)", "Reproject 3D cleanup must sync the active PcbLib footprint from its board view before enumerating old primitives", failures);
             AssertContains(eePcb, "TransferAllPrimitivesBackFromBoard", "Reproject 3D cleanup must call the PcbLib transfer-back API so visible board-view primitives are enumerable", failures);
             AssertContains(eePcb, "SyncPcbLibComponentToBoard(component)", "Reproject 3D must push regenerated projection primitives back to the active PcbLib board view", failures);
+            AssertContains(eePcb, "private static void SyncPcbLibComponentToBoard", "Whole-footprint PcbLib component-to-board sync must stay scoped to reproject and not normal import", failures);
+            AssertContains(footprint3dModel, "Add3dBodyProjection(c, projectionPrimitives, true)", "Footprint import must add generated Mechanical 2 projection primitives directly to both component and board view", failures);
+            AssertContains(footprintData, "AddAssemblyTexts(c, ctx.HasAssemblyDesignatorText, ctx.HasAssemblyCommentText, ctx.Box.Height, ctx.ProjectionPrimitives, true)", "Footprint import must add generated Mechanical 2 assembly texts directly to both component and board view", failures);
+            AssertDoesNotContain(footprintData, "SyncPcbLibComponentToBoard(c)", "Footprint import must not transfer all component primitives onto the board because it can disturb pad locations", failures);
             AssertContains(eePcb, "TransferAllPrimitivesOntoBoard", "Reproject 3D must call the PcbLib transfer-onto-board API after regenerating component primitives", failures);
-            AssertContains(eePcb, "AddToPcbLibComponent(c, pcbPrimitive)", "Reprojected Mechanical 2 projection primitives must be added to the footprint component, not duplicated through the board helper", failures);
+            AssertContains(eePcb, "AddProjectionPrimitive(c, pcbPrimitive, addToBoardView)", "Generated Mechanical 2 projection primitives must use the common import/reproject ownership helper", failures);
+            AssertContains(eePcb, "AddToPcbLibComponent(c, primitive)", "Default reprojected Mechanical 2 projection primitives must be added to the footprint component, not duplicated through the board helper", failures);
             AssertContains(eePcb, "EnumerateFilteredComponentProjectionPrimitives", "Reproject 3D cleanup must use filtered PcbLib iterators so old Mechanical 2 projection tracks are visible", failures);
             AssertContains(eePcb, "GetCurrentPcbLibraryBoard", "Reproject 3D cleanup must also scan the active PcbLib board for free Mechanical 2 projection primitives", failures);
             AssertContains(eePcb, "AddDistinctBoard(boards, GetCurrentPcbLibraryBoard())", "Reproject 3D cleanup must remove primitives from the active PcbLib board, not only the component board", failures);

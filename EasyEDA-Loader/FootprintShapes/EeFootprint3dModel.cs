@@ -178,7 +178,7 @@ namespace EasyEDA_Loader
                             RotZ = projectionRotation.Z,
                             Rotation2D = FootprintModelPlacement.ProjectionPlacementRotationDeg()
                         });
-                    int projectionCount = EEPCB.Add3dBodyProjection(c, projectionPrimitives);
+                    int projectionCount = EEPCB.Add3dBodyProjection(c, projectionPrimitives, true);
                     if (projectionCount > 0)
                     {
                         ctx.ProjectionPrimitives.AddRange(projectionPrimitives);

@@ -449,7 +449,7 @@ namespace EasyEDA_Loader
             AddToPCB(c, CreateLine(c, layer, x1, y2, x1, y1, width));
         }
 
-        public static int Add3dBodyProjection(IPCB_Group c, IReadOnlyList<StepSilhouettePrimitive> primitives)
+        public static int Add3dBodyProjection(IPCB_Group c, IReadOnlyList<StepSilhouettePrimitive> primitives, bool addToBoardView = false)
         {
             if (c == null || primitives == null)
                 return 0;
@@ -470,11 +470,19 @@ namespace EasyEDA_Loader
                 if (pcbPrimitive == null)
                     continue;
 
-                AddToPcbLibComponent(c, pcbPrimitive);
+                AddProjectionPrimitive(c, pcbPrimitive, addToBoardView);
                 count++;
             }
 
             return count;
+        }
+
+        private static void AddProjectionPrimitive(IPCB_Group c, object primitive, bool addToBoardView)
+        {
+            if (addToBoardView)
+                AddToPCB(c, primitive);
+            else
+                AddToPcbLibComponent(c, primitive);
         }
 
         public static void AddCourtyard(IPCB_Group c, double width, double height)
@@ -491,13 +499,13 @@ namespace EasyEDA_Loader
             AddToPCB(c, CreateLine(c, TLayerConstant.eMechanical3, 0, -centerMark, 0, centerMark, MechanicalLineWidthMm));
         }
 
-        public static void AddAssemblyTexts(IPCB_Group c, bool hasDesignator, bool hasComment, double bodyHeight, IReadOnlyList<StepSilhouettePrimitive> projectionPrimitives = null)
+        public static void AddAssemblyTexts(IPCB_Group c, bool hasDesignator, bool hasComment, double bodyHeight, IReadOnlyList<StepSilhouettePrimitive> projectionPrimitives = null, bool addToBoardView = false)
         {
             ProjectionTextLocations locations = ChooseProjectionTextLocations(projectionPrimitives);
             if (!hasDesignator)
-                AddToPcbLibComponent(c, CreateText(c, TLayerConstant.eMechanical2, ".Designator", locations.DesignatorX, locations.DesignatorY, MechanicalLineWidthMm, AssemblyTextSizeMm, 0));
+                AddProjectionPrimitive(c, CreateText(c, TLayerConstant.eMechanical2, ".Designator", locations.DesignatorX, locations.DesignatorY, MechanicalLineWidthMm, AssemblyTextSizeMm, 0), addToBoardView);
             if (!hasComment)
-                AddToPcbLibComponent(c, CreateText(c, TLayerConstant.eMechanical2, ".Comment", locations.CommentX, locations.CommentY, MechanicalLineWidthMm, AssemblyTextSizeMm, 0));
+                AddProjectionPrimitive(c, CreateText(c, TLayerConstant.eMechanical2, ".Comment", locations.CommentX, locations.CommentY, MechanicalLineWidthMm, AssemblyTextSizeMm, 0), addToBoardView);
         }
 
         public static int ClearMechanical2Projection(IPCB_Group component)
