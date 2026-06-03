@@ -314,17 +314,19 @@ namespace EasyEDA_Loader
         {
             Trace("ReprojectActiveFootprint3D entered.");
             IPCB_Group component = GetActivePcbLibComponentOrThrow();
+            IServerDocument document = GetCurrentDocument();
             int removedCount = 0;
             int projectionCount = 0;
+            BeginPcbLibraryEdit(document);
             AltiumApi.GlobalVars.PCBServer.PreProcess();
             try
             {
-                removedCount = EEPCB.ClearMechanical2Projection(component);
-                projectionCount = EEPCB.ReprojectComponentBodySilhouette(component);
+                projectionCount = EEPCB.ReprojectComponentBodySilhouette(component, out removedCount);
             }
             finally
             {
                 AltiumApi.GlobalVars.PCBServer.PostProcess();
+                EndPcbLibraryEdit(document);
             }
 
             MarkCurrentDocumentModified();
@@ -339,7 +341,9 @@ namespace EasyEDA_Loader
         {
             Trace("AlignActiveFootprint3DModel entered.");
             IPCB_Group component = GetActivePcbLibComponentOrThrow();
+            IServerDocument document = GetCurrentDocument();
             int alignedCount = 0;
+            BeginPcbLibraryEdit(document);
             AltiumApi.GlobalVars.PCBServer.PreProcess();
             try
             {
@@ -348,6 +352,7 @@ namespace EasyEDA_Loader
             finally
             {
                 AltiumApi.GlobalVars.PCBServer.PostProcess();
+                EndPcbLibraryEdit(document);
             }
 
             MarkCurrentDocumentModified();
@@ -672,7 +677,23 @@ namespace EasyEDA_Loader
             AltiumApi.GlobalVars.Client.GetProcessControl()?.PreProcess(document, "");
         }
 
+        private static void BeginPcbLibraryEdit(IServerDocument document)
+        {
+            if (document == null)
+                return;
+
+            AltiumApi.GlobalVars.Client.GetProcessControl()?.PreProcess(document, "");
+        }
+
         private static void EndSchematicLibraryEdit(IServerDocument document)
+        {
+            if (document == null)
+                return;
+
+            AltiumApi.GlobalVars.Client.GetProcessControl()?.PostProcess(document, "");
+        }
+
+        private static void EndPcbLibraryEdit(IServerDocument document)
         {
             if (document == null)
                 return;

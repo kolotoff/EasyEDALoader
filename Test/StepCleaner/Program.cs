@@ -679,10 +679,35 @@ namespace StepCleaner.Tests
             AssertContains(module, "AlignActiveFootprint3DModel", "Align command should dispatch to an active-footprint handler", failures);
 
             AssertContains(eePcb, "ClearMechanical2Projection", "Reproject 3D must clear Mechanical Layer 2 before regenerating projection", failures);
+            AssertContains(eePcb, "SyncPcbLibComponentFromBoard(component)", "Reproject 3D cleanup must sync the active PcbLib footprint from its board view before enumerating old primitives", failures);
+            AssertContains(eePcb, "TransferAllPrimitivesBackFromBoard", "Reproject 3D cleanup must call the PcbLib transfer-back API so visible board-view primitives are enumerable", failures);
+            AssertContains(eePcb, "SyncPcbLibComponentToBoard(component)", "Reproject 3D must push regenerated projection primitives back to the active PcbLib board view", failures);
+            AssertContains(eePcb, "TransferAllPrimitivesOntoBoard", "Reproject 3D must call the PcbLib transfer-onto-board API after regenerating component primitives", failures);
+            AssertContains(eePcb, "AddToPcbLibComponent(c, pcbPrimitive)", "Reprojected Mechanical 2 projection primitives must be added to the footprint component, not duplicated through the board helper", failures);
+            AssertContains(eePcb, "EnumerateFilteredComponentProjectionPrimitives", "Reproject 3D cleanup must use filtered PcbLib iterators so old Mechanical 2 projection tracks are visible", failures);
+            AssertContains(eePcb, "GetCurrentPcbLibraryBoard", "Reproject 3D cleanup must also scan the active PcbLib board for free Mechanical 2 projection primitives", failures);
+            AssertContains(eePcb, "AddDistinctBoard(boards, GetCurrentPcbLibraryBoard())", "Reproject 3D cleanup must remove primitives from the active PcbLib board, not only the component board", failures);
+            AssertContains(eePcb, "ClearMechanical2ByEditorCommand", "Reproject 3D cleanup must use PcbLib editor select/delete when SDK primitive enumeration hides visible Mechanical 2 objects", failures);
+            AssertContains(eePcb, "LaunchPcbCommand(\"PCB:DeSelect\", \"Scope=All\")", "Reproject 3D cleanup must clear editor selection before selecting Mechanical 2 objects", failures);
+            AssertContains(eePcb, "LaunchPcbCommand(\"PCB:Select\", \"Scope=Layer\")", "Reproject 3D cleanup must select all objects on Mechanical 2 through the PCB editor command", failures);
+            AssertContains(eePcb, "LaunchPcbCommand(\"PCB:DeleteObjects\", \"Object=FOCUSED\")", "Reproject 3D cleanup must use the same DeleteObjects mode as the working altium-mcp PcbLib editor cleanup", failures);
+            AssertContains(eePcb, "DXP.Utils.RunCommand", "Reproject 3D cleanup must send PCB editor commands through the view-less SDK command helper when CurrentView is unavailable", failures);
+            AssertContains(eePcb, "MessageRouterSendCommandToModule", "Reproject 3D cleanup should retain message router fallback when a document view is available", failures);
+            AssertContains(eePcb, "new V7_Layer(TLayerConstant.eMechanical2).Number()", "Reproject 3D cleanup must filter by V7 mechanical layer number, not raw TLayerConstant enum value", failures);
+            AssertContains(eePcb, "CreatePcbLayerSet(TLayerConstant.eMechanical2)", "Reproject 3D cleanup must use Altium's typed IPCB_LayerSet factory for Mechanical 2 when available", failures);
+            AssertContains(eePcb, "AddFilter_IPCB_LayerSet", "Reproject 3D cleanup must apply typed IPCB_LayerSet filters like AltiumScript LayerSet helpers", failures);
+            AssertContains(eePcb, "AddFilter_ObjectSet", "Reproject 3D cleanup must filter iterators by projection object types", failures);
+            AssertContains(eePcb, "AddFilter_LayerSet", "Reproject 3D cleanup must filter iterators by Mechanical 2", failures);
             AssertContains(eePcb, "ReprojectComponentBodySilhouette", "Reproject 3D must regenerate silhouette primitives from a 3D body", failures);
+            AssertContains(module, "ReprojectComponentBodySilhouette(component, out removedCount)", "Reproject 3D must only clear Mechanical 2 after projection generation succeeds", failures);
+            AssertContains(eePcb, "BeginPcbPrimitiveModify(component)", "Reproject 3D must open a footprint primitive modify transaction for undo", failures);
+            AssertContains(eePcb, "EndPcbPrimitiveModify(component, modifying, changed)", "Reproject 3D must close or cancel the footprint primitive modify transaction for undo", failures);
+            AssertContains(eePcb, "SaveModelToFile failed for 3D body projection, trying model fallback", "Reproject 3D must continue to model export fallback when SaveModelToFile is unsupported", failures);
             AssertContains(eePcb, "AlignComponentBodiesToPads", "Align 3D model must align bodies using pad bounds", failures);
-            AssertContains(eePcb, "if (!TranslateComponentBodyModelOriginMm(body, move.XMm, move.YMm))", "Align 3D model must attempt body model-origin translation", failures);
-            AssertContains(eePcb, "return false;", "Align 3D model must not fall back to primitive MoveByXY because it can move the whole footprint in PcbLib", failures);
+            AssertContains(eePcb, "body.BeginModify()", "Align 3D model must open a primitive modify transaction for undo", failures);
+            AssertContains(eePcb, "body.EndModify()", "Align 3D model must close a changed primitive modify transaction for undo", failures);
+            AssertContains(eePcb, "body.CancelModify()", "Align 3D model must cancel the primitive modify transaction when no change was applied", failures);
+            AssertContains(eePcb, "TranslateComponentBodyModelOriginMm(body, move.XMm, move.YMm)", "Align 3D model must attempt body model-origin translation", failures);
             AssertDoesNotContain(eePcb, "body.MoveByXY", "Align 3D model must never move an already-owned component body with primitive MoveByXY in PcbLib", failures);
             AssertContains(eePcb, "FindCurrentPcbLibComponentFallback", "PcbLib commands must find the active footprint even when CurrentComponent is not populated", failures);
 
