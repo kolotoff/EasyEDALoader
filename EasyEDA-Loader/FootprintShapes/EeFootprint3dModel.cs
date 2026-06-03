@@ -123,14 +123,18 @@ namespace EasyEDA_Loader
                 string temp = Path.Combine(Path.GetTempPath(), $"{GetSafeFileName(modelIdentifier)}.step");
                 File.WriteAllBytes(temp, footprintModel);
 
-                // The translation is not quite right, the values shown in "3D Model Manager" are available from the Search API as "3D Model Transform"
-                // The Y axis is slightly off and I cannot figure out the missing piece maybe combination of rotation/y-flip/re-center causing this to be wrong
-                // Where the mesh starts X,Y in the EE model manager seems to differ from the computed one here
+                // Prefer the footprint SVGNODE origin when the product search transform carries a placeholder 0,0 offset.
                 // The Z is the lowest Z of the mesh plus the Z offset (hence why we download the Raw mesh and search for the lowest vert.z as this offset is not part of the info)
 
-                // Will leave this for now as it's "close enough" most of the time to only need a nudge by a few 10ths of a millimeter
-                double modelX = ctx.ModelOffset != null ? ctx.ModelOffset.X : ConvertX(Translation.X, ctx);
-                double modelY = ctx.ModelOffset != null ? ctx.ModelOffset.Y : ConvertY(Translation.Y, ctx);
+                double footprintModelX = ConvertX(Translation.X, ctx);
+                double footprintModelY = ConvertY(Translation.Y, ctx);
+                FootprintModelMove resolvedModelCenter = FootprintModelPlacement.ResolveModelCenterMm(
+                    ctx.ModelOffset?.X,
+                    ctx.ModelOffset?.Y,
+                    footprintModelX,
+                    footprintModelY);
+                double modelX = resolvedModelCenter.XMm;
+                double modelY = resolvedModelCenter.YMm;
                 ModelZInfo zInfo = zInfoTask.GetAwaiter().GetResult();
                 double modelZOffset = ctx.ModelOffset != null ? ctx.ModelOffset.Z : Translation.Z;
                 double standoffHeight = modelZOffset + zInfo.OffsetFromOrigin;
@@ -139,12 +143,17 @@ namespace EasyEDA_Loader
                 if (overallHeight > 0)
                     EEPCB.SetFootprintMetadata(c, ctx.Description, overallHeight);
 
+                FootprintModelRotation modelRotation = FootprintModelPlacement.ResolveAltiumModelRotationDeg(
+                    Rotation.X,
+                    Rotation.Y,
+                    Rotation.Z);
+
                 var body = EEPCB.CreateComponentBody(
                     c,
                     temp,
-                    Rotation.X,
-                    Rotation.Y,
-                    Rotation.Z,
+                    modelRotation.X,
+                    modelRotation.Y,
+                    modelRotation.Z,
                     modelX,
                     modelY,
                     standoffHeight,
@@ -157,15 +166,16 @@ namespace EasyEDA_Loader
 
                 try
                 {
+                    FootprintModelRotation projectionRotation = FootprintModelPlacement.ResolveProjectionModelRotationDeg(modelRotation);
                     StepSilhouetteBounds projectionBounds = EEPCB.GetComponentBodyBoundsMm(c, body, modelX, modelY, Width, Height);
                     IReadOnlyList<StepSilhouettePrimitive> projectionPrimitives = StepSilhouetteProjection.Generate(
                         footprintModel,
                         new StepSilhouettePlacement
                         {
                             TargetBounds = projectionBounds,
-                            RotX = Rotation.X,
-                            RotY = Rotation.Y,
-                            RotZ = Rotation.Z
+                            RotX = projectionRotation.X,
+                            RotY = projectionRotation.Y,
+                            RotZ = projectionRotation.Z
                         });
                     int projectionCount = EEPCB.Add3dBodyProjection(c, projectionPrimitives);
                     if (projectionCount > 0)

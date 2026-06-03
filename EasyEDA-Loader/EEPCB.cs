@@ -53,12 +53,185 @@ namespace EasyEDA_Loader
                 footprint.SetState_Height(AltiumApi.MmToCoord(heightMm));
         }
 
-        public static void AddToPCB(IPCB_LibComponent c, object obj)
+        public static string GetComponentPattern(object footprint)
+        {
+            if (footprint == null)
+                return "";
+
+            return TryInvokeResult(footprint, "GetState_Pattern") as string
+                ?? TryInvokeResult(footprint, "GetState_Name") as string
+                ?? "";
+        }
+
+        public static IPCB_Group GetCurrentPcbLibComponent()
+        {
+            var pcbLib = AltiumApi.GlobalVars.PCBServer.GetCurrentPCBLibrary();
+            if (pcbLib == null)
+                return null;
+
+            IPCB_Group currentComponent = CoercePcbLibComponent(
+                pcbLib,
+                TryInvokeResult(pcbLib, "GetState_CurrentComponent")
+                    ?? TryInvokeResult(pcbLib, "Internal_GetState_CurrentComponent"));
+            if (currentComponent != null)
+                return currentComponent;
+
+            return FindCurrentPcbLibComponentFallback(pcbLib);
+        }
+
+        private static IPCB_Group FindCurrentPcbLibComponentFallback(IPCB_Library pcbLib)
+        {
+            if (pcbLib == null)
+                return null;
+
+            IPCB_Board activeBoard = TryInvokeResult(pcbLib, "GetState_Board") as IPCB_Board
+                ?? TryInvokeResult(pcbLib, "Internal_GetState_Board") as IPCB_Board;
+            IPCB_Group firstComponent = null;
+            IPCB_Group onlyComponent = null;
+            int componentCount = 0;
+
+            foreach (IPCB_Group component in EnumeratePcbLibComponents(pcbLib))
+            {
+                componentCount++;
+                if (firstComponent == null)
+                    firstComponent = component;
+                onlyComponent = component;
+
+                if (ComponentUsesBoard(component, activeBoard))
+                {
+                    SetCurrentPcbLibComponent(pcbLib, component);
+                    return component;
+                }
+            }
+
+            if (componentCount == 1)
+            {
+                SetCurrentPcbLibComponent(pcbLib, onlyComponent);
+                return onlyComponent;
+            }
+
+            if (TryConvertToInt(TryInvokeResult(pcbLib, "ComponentCount"), out int count) && count == 1 && firstComponent != null)
+            {
+                SetCurrentPcbLibComponent(pcbLib, firstComponent);
+                return firstComponent;
+            }
+
+            return null;
+        }
+
+        private static IPCB_Group CoercePcbLibComponent(IPCB_Library pcbLib, object component)
+        {
+            if (component == null)
+                return null;
+
+            if (component is IPCB_Group group)
+                return group;
+
+            string pattern = TryInvokeResult(component, "GetState_Pattern") as string;
+            if (string.IsNullOrWhiteSpace(pattern))
+                pattern = TryInvokeResult(component, "GetState_Name") as string;
+
+            if (string.IsNullOrWhiteSpace(pattern))
+                return null;
+
+            return TryInvokeResult(pcbLib, "GetComponentByName", pattern) as IPCB_Group
+                ?? TryInvokeResult(pcbLib, "Internal_GetComponentByName", pattern) as IPCB_Group;
+        }
+
+        private static void SetCurrentPcbLibComponent(IPCB_Library pcbLib, IPCB_Group component)
+        {
+            if (pcbLib == null || component == null)
+                return;
+
+            TryInvoke(pcbLib, "SetState_CurrentComponent", component);
+        }
+
+        private static IEnumerable<IPCB_Group> EnumeratePcbLibComponents(IPCB_Library pcbLib)
+        {
+            object iterator = null;
+            try
+            {
+                iterator = TryInvokeResult(pcbLib, "LibraryIterator_Create")
+                    ?? TryInvokeResult(pcbLib, "Internal_LibraryIterator_Create");
+                if (iterator == null)
+                    yield break;
+
+                TryInvoke(iterator, "SetState_FilterAll");
+                object component = TryInvokeResult(iterator, "FirstPCBObject")
+                    ?? TryInvokeResult(iterator, "Internal_FirstPCBObject");
+                while (component != null)
+                {
+                    IPCB_Group libComponent = CoercePcbLibComponent(pcbLib, component);
+                    if (libComponent != null)
+                        yield return libComponent;
+
+                    component = TryInvokeResult(iterator, "NextPCBObject")
+                        ?? TryInvokeResult(iterator, "Internal_NextPCBObject");
+                }
+            }
+            finally
+            {
+                if (iterator != null)
+                    TryInvoke(pcbLib, "LibraryIterator_Destroy", iterator);
+            }
+        }
+
+        private static bool ComponentUsesBoard(IPCB_Group component, IPCB_Board activeBoard)
+        {
+            if (component == null || activeBoard == null)
+                return false;
+
+            IPCB_Board componentBoard = GetComponentBoard(component);
+            if (componentBoard == null)
+                return false;
+
+            if (ReferenceEquals(componentBoard, activeBoard))
+                return true;
+
+            return TryGetBoardId(componentBoard, out int componentBoardId)
+                && TryGetBoardId(activeBoard, out int activeBoardId)
+                && componentBoardId == activeBoardId;
+        }
+
+        private static IPCB_Board GetComponentBoard(object component)
+        {
+            if (component == null)
+                return null;
+
+            try
+            {
+                if (component is IPCB_LibComponent libComponent)
+                    return libComponent.GetState_Board();
+            }
+            catch
+            {
+            }
+
+            return TryInvokeResult(component, "GetState_Board") as IPCB_Board
+                ?? TryInvokeResult(component, "Internal_GetState_Board") as IPCB_Board;
+        }
+
+        public static IPCB_Board GetPcbGroupBoard(IPCB_Group component)
+        {
+            return GetComponentBoard(component);
+        }
+
+        private static bool TryGetBoardId(IPCB_Board board, out int boardId)
+        {
+            boardId = 0;
+            if (board == null)
+                return false;
+
+            return TryConvertToInt(TryInvokeResult(board, "GetState_BoardID"), out boardId)
+                && boardId != 0;
+        }
+
+        public static void AddToPCB(IPCB_Group c, object obj)
         {
             if (c == null || obj == null)
                 return;
 
-            c.GetState_Board().AddPCBObject(obj);
+            GetComponentBoard(c)?.AddPCBObject(obj);
             c.AddPCBObject(obj);
         }
 
@@ -127,7 +300,7 @@ namespace EasyEDA_Loader
             return width;
         }
 
-        public static IPCB_Track CreateLine(IPCB_LibComponent c, TLayerConstant layer, double x1, double y1, double x2, double y2, double width)
+        public static IPCB_Track CreateLine(IPCB_Group c, TLayerConstant layer, double x1, double y1, double x2, double y2, double width)
         {
             var track = AltiumApi.GlobalVars.PCBServer.PCBObjectFactory(TObjectId.eTrackObject, TDimensionKind.eNoDimension, TObjectCreationMode.eCreate_Default) as IPCB_Track;
             if (track == null) return null;
@@ -141,7 +314,7 @@ namespace EasyEDA_Loader
             return track;
         }
 
-        public static IPCB_Arc CreateArc(IPCB_LibComponent c, TLayerConstant layer, double x, double y, double rad, double width, double startAngle, double endAngle)
+        public static IPCB_Arc CreateArc(IPCB_Group c, TLayerConstant layer, double x, double y, double rad, double width, double startAngle, double endAngle)
         {
             var circle = AltiumApi.GlobalVars.PCBServer.PCBObjectFactory(TObjectId.eArcObject, TDimensionKind.eNoDimension, TObjectCreationMode.eCreate_Default) as IPCB_Arc;
             if (circle == null) return null;
@@ -156,7 +329,7 @@ namespace EasyEDA_Loader
             return circle;
         }
 
-        public static IPCB_Pad4 CreatePTH(IPCB_LibComponent c, TLayerConstant layer, TExtendedHoleType holeType, TShape padShape, double x, double y, double height, double width, double holeSize, string name, bool plated, double rotation)
+        public static IPCB_Pad4 CreatePTH(IPCB_Group c, TLayerConstant layer, TExtendedHoleType holeType, TShape padShape, double x, double y, double height, double width, double holeSize, string name, bool plated, double rotation)
         {
             var pth = AltiumApi.GlobalVars.PCBServer.PCBObjectFactory(TObjectId.ePadObject, TDimensionKind.eNoDimension, TObjectCreationMode.eCreate_Default) as IPCB_Pad4;
             if (pth == null) return null;
@@ -175,7 +348,7 @@ namespace EasyEDA_Loader
             return pth;
         }
 
-        public static IPCB_Via CreateVia(IPCB_LibComponent c, TLayerConstant layerStart, TLayerConstant layerEnd, double x, double y, double size, double holeSize)
+        public static IPCB_Via CreateVia(IPCB_Group c, TLayerConstant layerStart, TLayerConstant layerEnd, double x, double y, double size, double holeSize)
         {
             var via = AltiumApi.GlobalVars.PCBServer.PCBObjectFactory(TObjectId.eViaObject, TDimensionKind.eNoDimension, TObjectCreationMode.eCreate_Default) as IPCB_Via;
             if (via == null) return null;
@@ -188,7 +361,7 @@ namespace EasyEDA_Loader
             return via;
         }
 
-        public static IPCB_Text3 CreateText(IPCB_LibComponent c, TLayerConstant layer, string text, double x, double y, double width, double size, double rotation)
+        public static IPCB_Text3 CreateText(IPCB_Group c, TLayerConstant layer, string text, double x, double y, double width, double size, double rotation)
         {
             var textObject = AltiumApi.GlobalVars.PCBServer.PCBObjectFactory(TObjectId.eTextObject, TDimensionKind.eNoDimension, TObjectCreationMode.eCreate_Default) as IPCB_Text3;
             if (textObject == null) return null;
@@ -231,7 +404,7 @@ namespace EasyEDA_Loader
             textObject.SetState_Italic(false);
         }
 
-        public static void AddRectangle(IPCB_LibComponent c, TLayerConstant layer, double x1, double y1, double x2, double y2, double width)
+        public static void AddRectangle(IPCB_Group c, TLayerConstant layer, double x1, double y1, double x2, double y2, double width)
         {
             AddToPCB(c, CreateLine(c, layer, x1, y1, x2, y1, width));
             AddToPCB(c, CreateLine(c, layer, x2, y1, x2, y2, width));
@@ -239,7 +412,7 @@ namespace EasyEDA_Loader
             AddToPCB(c, CreateLine(c, layer, x1, y2, x1, y1, width));
         }
 
-        public static int Add3dBodyProjection(IPCB_LibComponent c, IReadOnlyList<StepSilhouettePrimitive> primitives)
+        public static int Add3dBodyProjection(IPCB_Group c, IReadOnlyList<StepSilhouettePrimitive> primitives)
         {
             if (c == null || primitives == null)
                 return 0;
@@ -267,7 +440,7 @@ namespace EasyEDA_Loader
             return count;
         }
 
-        public static void AddCourtyard(IPCB_LibComponent c, double width, double height)
+        public static void AddCourtyard(IPCB_Group c, double width, double height)
         {
             if (width <= 0 || height <= 0)
                 return;
@@ -281,13 +454,99 @@ namespace EasyEDA_Loader
             AddToPCB(c, CreateLine(c, TLayerConstant.eMechanical3, 0, -centerMark, 0, centerMark, MechanicalLineWidthMm));
         }
 
-        public static void AddAssemblyTexts(IPCB_LibComponent c, bool hasDesignator, bool hasComment, double bodyHeight, IReadOnlyList<StepSilhouettePrimitive> projectionPrimitives = null)
+        public static void AddAssemblyTexts(IPCB_Group c, bool hasDesignator, bool hasComment, double bodyHeight, IReadOnlyList<StepSilhouettePrimitive> projectionPrimitives = null)
         {
             ProjectionTextLocations locations = ChooseProjectionTextLocations(projectionPrimitives);
             if (!hasDesignator)
                 AddToPCB(c, CreateText(c, TLayerConstant.eMechanical2, ".Designator", locations.DesignatorX, locations.DesignatorY, MechanicalLineWidthMm, AssemblyTextSizeMm, 0));
             if (!hasComment)
                 AddToPCB(c, CreateText(c, TLayerConstant.eMechanical2, ".Comment", locations.CommentX, locations.CommentY, MechanicalLineWidthMm, AssemblyTextSizeMm, 0));
+        }
+
+        public static int ClearMechanical2Projection(IPCB_Group component)
+        {
+            if (component == null)
+                return 0;
+
+            var primitivesToRemove = new List<object>();
+            var seenPrimitives = new HashSet<object>();
+            foreach (object primitive in EnumerateComponentPrimitives(component))
+            {
+                if (IsPrimitiveOnLayer(primitive, TLayerConstant.eMechanical2) && seenPrimitives.Add(primitive))
+                    primitivesToRemove.Add(primitive);
+            }
+
+            IPCB_Board board = GetComponentBoard(component);
+            foreach (object primitive in EnumerateBoardPrimitives(board))
+            {
+                if (IsPrimitiveOnLayer(primitive, TLayerConstant.eMechanical2) && seenPrimitives.Add(primitive))
+                    primitivesToRemove.Add(primitive);
+            }
+
+            foreach (object primitive in primitivesToRemove)
+            {
+                TryInvoke(component, "RemovePCBObject", primitive);
+                TryInvoke(board, "RemovePCBObject", primitive);
+            }
+
+            return primitivesToRemove.Count;
+        }
+
+        public static int ReprojectComponentBodySilhouette(IPCB_Group component)
+        {
+            if (component == null)
+                return 0;
+
+            int projectionCount = 0;
+            var allProjectionPrimitives = new List<StepSilhouettePrimitive>();
+            foreach (IPCB_ComponentBody body in EnumerateComponentBodies(component))
+            {
+                if (!TryGetComponentBodyBoundsMm(component, body, out StepSilhouetteBounds bodyBounds))
+                    continue;
+
+                byte[] stepData = TryExportComponentBodyStep(body);
+                if (stepData == null || stepData.Length == 0)
+                    continue;
+
+                TryGetComponentBodyModelState(body, out double rotX, out double rotY, out double rotZ);
+                IReadOnlyList<StepSilhouettePrimitive> projectionPrimitives = StepSilhouetteProjection.Generate(
+                    stepData,
+                    new StepSilhouettePlacement
+                    {
+                        TargetBounds = bodyBounds,
+                        RotX = rotX,
+                        RotY = rotY,
+                        RotZ = rotZ
+                    });
+
+                projectionCount += Add3dBodyProjection(component, projectionPrimitives);
+                allProjectionPrimitives.AddRange(projectionPrimitives);
+            }
+
+            if (projectionCount == 0)
+                throw new InvalidOperationException("The active footprint does not contain an exportable 3D body to reproject.");
+
+            AddAssemblyTexts(component, false, false, 0, allProjectionPrimitives);
+            return projectionCount;
+        }
+
+        public static int AlignComponentBodiesToPads(IPCB_Group component)
+        {
+            if (component == null)
+                return 0;
+
+            StepSilhouetteBounds padBounds = MeasurePadBounds(component);
+            if (padBounds == null)
+                throw new InvalidOperationException("The active footprint does not contain pads to align against.");
+
+            int alignedCount = 0;
+            foreach (IPCB_ComponentBody body in EnumerateComponentBodies(component))
+            {
+                if (CenterComponentBodyMm(component, body, padBounds.CenterX, padBounds.CenterY))
+                    alignedCount++;
+            }
+
+            return alignedCount;
         }
 
         private static ProjectionTextLocations ChooseProjectionTextLocations(IReadOnlyList<StepSilhouettePrimitive> projectionPrimitives)
@@ -574,7 +833,7 @@ namespace EasyEDA_Loader
             public double CommentY { get; set; }
         }
 
-        public static IPCB_ComponentBody CreateComponentBody(IPCB_LibComponent c, string fileName, double rx, double ry, double rz, double x, double y, double z, string identifier = null, double overallHeightMm = 0)
+        public static IPCB_ComponentBody CreateComponentBody(IPCB_Group c, string fileName, double rx, double ry, double rz, double x, double y, double z, string identifier = null, double overallHeightMm = 0)
         {
             var stepModel = AltiumApi.GlobalVars.PCBServer.PCBObjectFactory(TObjectId.eComponentBodyObject, TDimensionKind.eNoDimension, TObjectCreationMode.eCreate_Default) as IPCB_ComponentBody;
             if (stepModel == null) return null;
@@ -599,7 +858,10 @@ namespace EasyEDA_Loader
             else
             {
                 // Some Altium builds expose body bounds only after insertion; keep the legacy origin move as a fallback.
-                stepModel.MoveByXY(AltiumApi.MmToCoord(x) + c.GetState_Board().GetState_XOrigin(), AltiumApi.MmToCoord(y) + c.GetState_Board().GetState_YOrigin());
+                IPCB_Board board = GetComponentBoard(c);
+                int originX = board != null ? board.GetState_XOrigin() : 0;
+                int originY = board != null ? board.GetState_YOrigin() : 0;
+                stepModel.MoveByXY(AltiumApi.MmToCoord(x) + originX, AltiumApi.MmToCoord(y) + originY);
             }
             return stepModel;
         }
@@ -618,20 +880,28 @@ namespace EasyEDA_Loader
             if (component == null || string.IsNullOrWhiteSpace(identifier))
                 return;
 
+            foreach (IPCB_ComponentBody body in EnumerateComponentBodies(component))
+                SetComponentBodyIdentifier(body, identifier);
+        }
+
+        private static IEnumerable<object> EnumerateComponentPrimitives(IPCB_Group component)
+        {
+            if (component == null)
+                yield break;
+
             object iterator = null;
             try
             {
                 iterator = TryInvokeResult(component, "GroupIterator_Create")
                     ?? TryInvokeResult(component, "Internal_GroupIterator_Create");
                 if (iterator == null)
-                    return;
+                    yield break;
 
                 object primitive = TryInvokeResult(iterator, "FirstPCBObject")
                     ?? TryInvokeResult(iterator, "Internal_FirstPCBObject");
                 while (primitive != null)
                 {
-                    if (primitive is IPCB_ComponentBody body)
-                        SetComponentBodyIdentifier(body, identifier);
+                    yield return primitive;
 
                     primitive = TryInvokeResult(iterator, "NextPCBObject")
                         ?? TryInvokeResult(iterator, "Internal_NextPCBObject");
@@ -642,6 +912,145 @@ namespace EasyEDA_Loader
                 if (iterator != null)
                     TryInvoke(component, "GroupIterator_Destroy", iterator);
             }
+        }
+
+        private static IEnumerable<object> EnumerateBoardPrimitives(IPCB_Board board)
+        {
+            if (board == null)
+                yield break;
+
+            object iterator = null;
+            try
+            {
+                iterator = TryInvokeResult(board, "BoardIterator_Create")
+                    ?? TryInvokeResult(board, "Internal_BoardIterator_Create");
+                if (iterator == null)
+                    yield break;
+
+                TryInvoke(iterator, "SetState_FilterAll");
+                object primitive = TryInvokeResult(iterator, "FirstPCBObject")
+                    ?? TryInvokeResult(iterator, "Internal_FirstPCBObject");
+                while (primitive != null)
+                {
+                    yield return primitive;
+
+                    primitive = TryInvokeResult(iterator, "NextPCBObject")
+                        ?? TryInvokeResult(iterator, "Internal_NextPCBObject");
+                }
+            }
+            finally
+            {
+                if (iterator != null)
+                    TryInvoke(board, "BoardIterator_Destroy", iterator);
+            }
+        }
+
+        private static IEnumerable<IPCB_ComponentBody> EnumerateComponentBodies(IPCB_Group component)
+        {
+            foreach (object primitive in EnumerateComponentPrimitives(component))
+            {
+                if (primitive is IPCB_ComponentBody body)
+                    yield return body;
+            }
+        }
+
+        private static byte[] TryExportComponentBodyStep(IPCB_ComponentBody body)
+        {
+            if (body == null)
+                return null;
+
+            string tempPath = Path.Combine(Path.GetTempPath(), "EasyEDA-Reproject-" + Guid.NewGuid().ToString("N") + ".step");
+            try
+            {
+                if (body.SaveModelToFile(tempPath) && File.Exists(tempPath))
+                    return File.ReadAllBytes(tempPath);
+
+                object modelObject = TryInvokeResult(body, "Internal_GetModel");
+                if (modelObject is IPCB_Model model)
+                {
+                    try
+                    {
+                        model.ExportToStep(tempPath);
+                        if (File.Exists(tempPath))
+                            return File.ReadAllBytes(tempPath);
+                    }
+                    catch
+                    {
+                    }
+
+                    string modelPath = model.GetFileName();
+                    if (!string.IsNullOrWhiteSpace(modelPath) && File.Exists(modelPath))
+                        return File.ReadAllBytes(modelPath);
+                }
+            }
+            catch (Exception ex)
+            {
+                EasyEDALoaderModule.Trace("Failed to export 3D body model for projection: " + ex);
+            }
+            finally
+            {
+                try
+                {
+                    if (File.Exists(tempPath))
+                        File.Delete(tempPath);
+                }
+                catch
+                {
+                }
+            }
+
+            return null;
+        }
+
+        private static void TryGetComponentBodyModelState(IPCB_ComponentBody body, out double rotX, out double rotY, out double rotZ)
+        {
+            rotX = 0;
+            rotY = 0;
+            rotZ = 0;
+            if (body == null)
+                return;
+
+            object modelObject = TryInvokeResult(body, "Internal_GetModel");
+            if (!(modelObject is IPCB_Model model))
+                return;
+
+            int dz = 0;
+            try
+            {
+                model.GetState(out rotX, out rotY, out rotZ, out dz);
+            }
+            catch
+            {
+                rotX = 0;
+                rotY = 0;
+                rotZ = model.GetRotation();
+            }
+        }
+
+        private static StepSilhouetteBounds MeasurePadBounds(IPCB_Group component)
+        {
+            StepSilhouetteBounds bounds = null;
+            foreach (object primitive in EnumerateComponentPrimitives(component))
+            {
+                if (!(primitive is IPCB_Pad))
+                    continue;
+
+                if (!TryGetPrimitiveBoundsMm(component, primitive, out StepSilhouetteBounds padBounds))
+                    continue;
+
+                if (bounds == null)
+                {
+                    bounds = padBounds;
+                    continue;
+                }
+
+                bounds.Left = Math.Min(bounds.Left, padBounds.Left);
+                bounds.Bottom = Math.Min(bounds.Bottom, padBounds.Bottom);
+                bounds.Right = Math.Max(bounds.Right, padBounds.Right);
+                bounds.Top = Math.Max(bounds.Top, padBounds.Top);
+            }
+
+            return bounds;
         }
 
         public static void SetComponentBodyHeights(IPCB_ComponentBody body, double standoffHeightMm, double overallHeightMm)
@@ -656,7 +1065,7 @@ namespace EasyEDA_Loader
                 body.SetOverallHeight(AltiumApi.MmToCoord(overallHeightMm));
         }
 
-        public static bool CenterComponentBodyMm(IPCB_LibComponent component, IPCB_ComponentBody body, double targetCenterX, double targetCenterY)
+        public static bool CenterComponentBodyMm(IPCB_Group component, IPCB_ComponentBody body, double targetCenterX, double targetCenterY)
         {
             if (!TryGetComponentBodyBoundsMm(component, body, out StepSilhouetteBounds currentBounds))
                 return false;
@@ -666,7 +1075,7 @@ namespace EasyEDA_Loader
                 return true;
 
             if (!TranslateComponentBodyModelOriginMm(body, move.XMm, move.YMm))
-                body.MoveByXY(AltiumApi.MmToCoord(move.XMm), AltiumApi.MmToCoord(move.YMm));
+                return false;
 
             body.GraphicallyInvalidate();
             return true;
@@ -726,7 +1135,7 @@ namespace EasyEDA_Loader
             }
         }
 
-        public static StepSilhouetteBounds GetComponentBodyBoundsMm(IPCB_LibComponent component, IPCB_ComponentBody body, double fallbackCenterX, double fallbackCenterY, double fallbackWidth, double fallbackHeight)
+        public static StepSilhouetteBounds GetComponentBodyBoundsMm(IPCB_Group component, IPCB_ComponentBody body, double fallbackCenterX, double fallbackCenterY, double fallbackWidth, double fallbackHeight)
         {
             StepSilhouetteBounds fallback = new StepSilhouetteBounds
             {
@@ -742,13 +1151,18 @@ namespace EasyEDA_Loader
             return bounds;
         }
 
-        private static bool TryGetComponentBodyBoundsMm(IPCB_LibComponent component, IPCB_ComponentBody body, out StepSilhouetteBounds bounds)
+        private static bool TryGetComponentBodyBoundsMm(IPCB_Group component, IPCB_ComponentBody body, out StepSilhouetteBounds bounds)
+        {
+            return TryGetPrimitiveBoundsMm(component, body, out bounds);
+        }
+
+        private static bool TryGetPrimitiveBoundsMm(IPCB_Group component, object primitive, out StepSilhouetteBounds bounds)
         {
             bounds = null;
-            if (component == null || body == null)
+            if (component == null || primitive == null)
                 return false;
 
-            object rect = TryInvokeResult(body, "Internal_BoundingRectangle");
+            object rect = TryInvokeResult(primitive, "Internal_BoundingRectangle");
             if (rect == null)
                 return false;
 
@@ -762,7 +1176,7 @@ namespace EasyEDA_Loader
             int originY = 0;
             try
             {
-                IPCB_Board board = component.GetState_Board();
+                IPCB_Board board = GetComponentBoard(component);
                 if (board != null)
                 {
                     originX = board.GetState_XOrigin();
@@ -789,10 +1203,65 @@ namespace EasyEDA_Loader
             return true;
         }
 
+        private static bool IsPrimitiveOnLayer(object primitive, TLayerConstant layer)
+        {
+            if (!TryGetPrimitiveLayerNumber(primitive, out int primitiveLayer))
+                return false;
+
+            int expectedLayer = (int)layer;
+            if (primitiveLayer == expectedLayer)
+                return true;
+
+            try
+            {
+                return primitiveLayer == new V7_Layer(layer).Number();
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static bool TryGetPrimitiveLayerNumber(object primitive, out int layer)
+        {
+            layer = 0;
+            if (primitive == null)
+                return false;
+
+            object raw = TryInvokeResult(primitive, "GetState_Layer")
+                ?? TryInvokeResult(primitive, "Internal_GetState_Layer");
+            if (TryConvertToInt(raw, out layer))
+                return true;
+
+            object v7Layer = TryInvokeResult(primitive, "Internal_GetState_V7Layer");
+            if (v7Layer is IV7_Layer layerObject)
+            {
+                try
+                {
+                    layer = new V7_Layer(layerObject).Number();
+                    return true;
+                }
+                catch
+                {
+                }
+            }
+
+            return false;
+        }
+
         private static bool TryGetRectCoord(object rect, string methodName, out int value)
         {
             value = 0;
             object raw = TryInvokeResult(rect, methodName);
+            if (raw == null)
+                return false;
+
+            return TryConvertToInt(raw, out value);
+        }
+
+        private static bool TryConvertToInt(object raw, out int value)
+        {
+            value = 0;
             if (raw == null)
                 return false;
 
@@ -824,6 +1293,42 @@ namespace EasyEDA_Loader
             if (target == null)
                 return null;
 
+            object directResult = TryInvokePcbLibrary(target, methodName, args);
+            if (directResult != Missing.Value)
+                return directResult;
+
+            directResult = TryInvokePcbBoard(target, methodName, args);
+            if (directResult != Missing.Value)
+                return directResult;
+
+            directResult = TryInvokePcbGroup(target, methodName, args);
+            if (directResult != Missing.Value)
+                return directResult;
+
+            directResult = TryInvokePcbComponent(target, methodName, args);
+            if (directResult != Missing.Value)
+                return directResult;
+
+            directResult = TryInvokePcbComponentBody(target, methodName, args);
+            if (directResult != Missing.Value)
+                return directResult;
+
+            directResult = TryInvokePcbModel(target, methodName, args);
+            if (directResult != Missing.Value)
+                return directResult;
+
+            directResult = TryInvokePcbPrimitive(target, methodName, args);
+            if (directResult != Missing.Value)
+                return directResult;
+
+            directResult = TryInvokePcbCoordObject(target, methodName, args);
+            if (directResult != Missing.Value)
+                return directResult;
+
+            directResult = TryInvokePcbAbstractIterator(target, methodName, args);
+            if (directResult != Missing.Value)
+                return directResult;
+
             foreach (var method in target.GetType().GetMethods(BindingFlags.Instance | BindingFlags.Public))
             {
                 if (method.Name != methodName || method.GetParameters().Length != args.Length)
@@ -839,6 +1344,284 @@ namespace EasyEDA_Loader
             }
 
             return null;
+        }
+
+        private static object TryInvokePcbLibrary(object target, string methodName, object[] args)
+        {
+            if (!(target is IPCB_Library pcbLib))
+                return Missing.Value;
+
+            try
+            {
+                switch (methodName)
+                {
+                    case "Internal_GetState_CurrentComponent" when args.Length == 0:
+                        return pcbLib.Internal_GetState_CurrentComponent();
+                    case "Internal_GetState_Board" when args.Length == 0:
+                        return pcbLib.Internal_GetState_Board();
+                    case "Internal_GetComponentByName" when args.Length == 1:
+                        return pcbLib.Internal_GetComponentByName(Convert.ToString(args[0], CultureInfo.InvariantCulture));
+                    case "Internal_LibraryIterator_Create" when args.Length == 0:
+                        return pcbLib.Internal_LibraryIterator_Create();
+                    case "ComponentCount" when args.Length == 0:
+                        return pcbLib.ComponentCount();
+                    case "SetState_CurrentComponent" when args.Length == 1:
+                        pcbLib.SetState_CurrentComponent(args[0]);
+                        return null;
+                    case "LibraryIterator_Destroy" when args.Length == 1:
+                        object iterator = args[0];
+                        pcbLib.LibraryIterator_Destroy(ref iterator);
+                        return null;
+                    default:
+                        return Missing.Value;
+                }
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private static object TryInvokePcbBoard(object target, string methodName, object[] args)
+        {
+            if (!(target is IPCB_Board board))
+                return Missing.Value;
+
+            try
+            {
+                switch (methodName)
+                {
+                    case "Internal_BoardIterator_Create" when args.Length == 0:
+                        return board.Internal_BoardIterator_Create();
+                    case "BoardIterator_Destroy" when args.Length == 1:
+                        object iterator = args[0];
+                        board.BoardIterator_Destroy(ref iterator);
+                        return null;
+                    case "RemovePCBObject" when args.Length == 1:
+                        board.RemovePCBObject(args[0]);
+                        return null;
+                    case "AddPCBObject" when args.Length == 1:
+                        board.AddPCBObject(args[0]);
+                        return null;
+                    default:
+                        return Missing.Value;
+                }
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private static object TryInvokePcbComponent(object target, string methodName, object[] args)
+        {
+            try
+            {
+                if (target is IPCB_LibComponent libComponent)
+                {
+                    switch (methodName)
+                    {
+                        case "GetState_Pattern" when args.Length == 0:
+                            return libComponent.GetState_Pattern();
+                        case "SetState_Pattern" when args.Length == 1:
+                            libComponent.SetState_Pattern(Convert.ToString(args[0], CultureInfo.InvariantCulture));
+                            return null;
+                    }
+                }
+
+                if (target is IPCB_Component component)
+                {
+                    switch (methodName)
+                    {
+                        case "GetState_Pattern" when args.Length == 0:
+                            return component.GetState_Pattern();
+                        case "Internal_GetState_Name" when args.Length == 0:
+                            return component.Internal_GetState_Name();
+                        case "SetState_Pattern" when args.Length == 1:
+                            component.SetState_Pattern(Convert.ToString(args[0], CultureInfo.InvariantCulture));
+                            return null;
+                    }
+                }
+            }
+            catch
+            {
+                return null;
+            }
+
+            return Missing.Value;
+        }
+
+        private static object TryInvokePcbComponentBody(object target, string methodName, object[] args)
+        {
+            if (!(target is IPCB_ComponentBody body))
+                return Missing.Value;
+
+            try
+            {
+                switch (methodName)
+                {
+                    case "Internal_GetModel" when args.Length == 0:
+                        return body.Internal_GetModel();
+                    default:
+                        return Missing.Value;
+                }
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private static object TryInvokePcbModel(object target, string methodName, object[] args)
+        {
+            if (!(target is IPCB_Model model))
+                return Missing.Value;
+
+            try
+            {
+                switch (methodName)
+                {
+                    case "Internal_GetOrigin" when args.Length == 0:
+                        return model.Internal_GetOrigin();
+                    case "GetFileName" when args.Length == 0:
+                        return model.GetFileName();
+                    case "ExportToStep" when args.Length == 1:
+                        model.ExportToStep(Convert.ToString(args[0], CultureInfo.InvariantCulture));
+                        return null;
+                    default:
+                        return Missing.Value;
+                }
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private static object TryInvokePcbGroup(object target, string methodName, object[] args)
+        {
+            if (!(target is IPCB_Group group))
+                return Missing.Value;
+
+            try
+            {
+                switch (methodName)
+                {
+                    case "Internal_GroupIterator_Create" when args.Length == 0:
+                        return group.Internal_GroupIterator_Create();
+                    case "GroupIterator_Destroy" when args.Length == 1:
+                        object iterator = args[0];
+                        group.GroupIterator_Destroy(ref iterator);
+                        return null;
+                    case "RemovePCBObject" when args.Length == 1:
+                        group.RemovePCBObject(args[0]);
+                        return null;
+                    case "AddPCBObject" when args.Length == 1:
+                        group.AddPCBObject(args[0]);
+                        return null;
+                    default:
+                        return Missing.Value;
+                }
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private static object TryInvokePcbPrimitive(object target, string methodName, object[] args)
+        {
+            if (!(target is IPCB_Primitive primitive))
+                return Missing.Value;
+
+            try
+            {
+                switch (methodName)
+                {
+                    case "Internal_BoundingRectangle" when args.Length == 0:
+                        return primitive.Internal_BoundingRectangle();
+                    case "Internal_GetState_Layer" when args.Length == 0:
+                        return primitive.Internal_GetState_Layer();
+                    case "Internal_GetState_V7Layer" when args.Length == 0:
+                        return primitive.Internal_GetState_V7Layer();
+                    case "SetState_V7Layer" when args.Length == 1 && args[0] is IV7_Layer v7Layer:
+                        primitive.SetState_V7Layer(v7Layer);
+                        return null;
+                    case "SetState_Layer" when args.Length == 1 && TryConvertToInt(args[0], out int layer):
+                        primitive.SetState_Layer(layer);
+                        return null;
+                    default:
+                        return Missing.Value;
+                }
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private static object TryInvokePcbCoordObject(object target, string methodName, object[] args)
+        {
+            try
+            {
+                if (target is ICoordRect rect)
+                {
+                    switch (methodName)
+                    {
+                        case "GetLeft" when args.Length == 0:
+                            return rect.GetLeft();
+                        case "GetRight" when args.Length == 0:
+                            return rect.GetRight();
+                        case "GetBottom" when args.Length == 0:
+                            return rect.GetBottom();
+                        case "GetTop" when args.Length == 0:
+                            return rect.GetTop();
+                    }
+                }
+
+                if (target is ICoordPoint point)
+                {
+                    switch (methodName)
+                    {
+                        case "GetX" when args.Length == 0:
+                            return point.GetX();
+                        case "GetY" when args.Length == 0:
+                            return point.GetY();
+                    }
+                }
+            }
+            catch
+            {
+                return null;
+            }
+
+            return Missing.Value;
+        }
+
+        private static object TryInvokePcbAbstractIterator(object target, string methodName, object[] args)
+        {
+            if (!(target is IPCB_AbstractIterator iterator))
+                return Missing.Value;
+
+            try
+            {
+                switch (methodName)
+                {
+                    case "SetState_FilterAll" when args.Length == 0:
+                        iterator.SetState_FilterAll();
+                        return null;
+                    case "Internal_FirstPCBObject" when args.Length == 0:
+                        return iterator.Internal_FirstPCBObject();
+                    case "Internal_NextPCBObject" when args.Length == 0:
+                        return iterator.Internal_NextPCBObject();
+                    default:
+                        return Missing.Value;
+                }
+            }
+            catch
+            {
+                return null;
+            }
         }
     }
 }

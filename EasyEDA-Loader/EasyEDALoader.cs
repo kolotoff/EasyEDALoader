@@ -32,6 +32,10 @@ namespace EasyEDA_Loader
             Trace("InitializeCommands.");
             RegisterCommand("EasyEDARun", new CommandProc(Run));
             RegisterCommand("EasyEDA-Loader:EasyEDARun", new CommandProc(Run));
+            RegisterCommand("EasyEDAReproject3D", new CommandProc(ReprojectActiveFootprint3D));
+            RegisterCommand("EasyEDA-Loader:EasyEDAReproject3D", new CommandProc(ReprojectActiveFootprint3D));
+            RegisterCommand("EasyEDAAlign3DModel", new CommandProc(AlignActiveFootprint3DModel));
+            RegisterCommand("EasyEDA-Loader:EasyEDAAlign3DModel", new CommandProc(AlignActiveFootprint3DModel));
         }
 
         private void RegisterCommand(string argCommandId, CommandProc commandProc)
@@ -121,10 +125,15 @@ namespace EasyEDA_Loader
             };
         }
 
-        private static string SelectPartNumber(ComponentSelection selection, ComponentInfo component, SymbolData symbolData)
+        private static string SelectPartNumber(ComponentSelection selection, ComponentInfo component, SymbolData symbolData, EasyedaApi.ProductInfo productInfo)
         {
             return SymbolImportRules.SelectDesignItemId(
-                manufacturerPart: symbolData?.Head?.Parameters?.ManufacturerPart,
+                manufacturerPart: FirstNonEmpty(
+                    symbolData?.Head?.Parameters?.ManufacturerPart,
+                    GetProductParameter(productInfo, "Manufacturer Part"),
+                    GetProductParameter(productInfo, "ManufacturerPart"),
+                    GetProductParameter(productInfo, "MPN"),
+                    GetProductParameter(productInfo, "Mfr. Part")),
                 symbolName: symbolData?.Head?.Parameters?.Name,
                 componentTitle: component?.Title,
                 searchResultName: selection?.PartInfo?.Name,
@@ -299,6 +308,82 @@ namespace EasyEDA_Loader
             Trace("Dialog closed with result: " + result);
         }
 
+        private void ReprojectActiveFootprint3D(
+          IServerDocumentView argContext,
+          ref string argParameters)
+        {
+            Trace("ReprojectActiveFootprint3D entered.");
+            IPCB_Group component = GetActivePcbLibComponentOrThrow();
+            int removedCount = 0;
+            int projectionCount = 0;
+            AltiumApi.GlobalVars.PCBServer.PreProcess();
+            try
+            {
+                removedCount = EEPCB.ClearMechanical2Projection(component);
+                projectionCount = EEPCB.ReprojectComponentBodySilhouette(component);
+            }
+            finally
+            {
+                AltiumApi.GlobalVars.PCBServer.PostProcess();
+            }
+
+            MarkCurrentDocumentModified();
+            EEPCB.GetPcbGroupBoard(component)?.ViewManager_FullUpdate();
+            Trace($"ReprojectActiveFootprint3D completed. Removed={removedCount} Projection={projectionCount}");
+            ShowInfo($"Reprojected 3D silhouette: removed {removedCount}, added {projectionCount} projection primitive(s).");
+        }
+
+        private void AlignActiveFootprint3DModel(
+          IServerDocumentView argContext,
+          ref string argParameters)
+        {
+            Trace("AlignActiveFootprint3DModel entered.");
+            IPCB_Group component = GetActivePcbLibComponentOrThrow();
+            int alignedCount = 0;
+            AltiumApi.GlobalVars.PCBServer.PreProcess();
+            try
+            {
+                alignedCount = EEPCB.AlignComponentBodiesToPads(component);
+            }
+            finally
+            {
+                AltiumApi.GlobalVars.PCBServer.PostProcess();
+            }
+
+            MarkCurrentDocumentModified();
+            EEPCB.GetPcbGroupBoard(component)?.ViewManager_FullUpdate();
+            Trace($"AlignActiveFootprint3DModel completed. Aligned={alignedCount}");
+            ShowInfo($"Aligned {alignedCount} 3D model body/bodies to pad bounds.");
+        }
+
+        private static IPCB_Group GetActivePcbLibComponentOrThrow()
+        {
+            IPCB_Group component = EEPCB.GetCurrentPcbLibComponent();
+            if (component == null)
+                throw new InvalidOperationException("Open a PCB library and select a footprint before running this command.");
+
+            return component;
+        }
+
+        private void MarkCurrentDocumentModified()
+        {
+            try
+            {
+                GetCurrentDocument()?.SetModified(true);
+            }
+            catch
+            {
+            }
+        }
+
+        private void ShowInfo(string message)
+        {
+            if (noGUIMode)
+                return;
+
+            MessageBox.Show(message, "EasyEDA Loader", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+
         private bool ImportSelectedComponents(
             IReadOnlyList<ComponentSelection> selections,
             Action<ImportProgressEvent> progress)
@@ -373,7 +458,8 @@ namespace EasyEDA_Loader
                     var ee_footprint = root.Component.PackageDetail?.Footprint;
                     var ee_symbol = root.Component.Symbol;
                     string package = FirstNonEmpty(ee_footprint?.Head?.Parameters?.Package, selection.PartInfo?.Name, selection.PartInfo?.Part);
-                    string partNumber = SelectPartNumber(selection, root.Component, ee_symbol);
+                    EasyedaApi.ProductInfo productInfo = selection.PartInfo?.Info;
+                    string partNumber = SelectPartNumber(selection, root.Component, ee_symbol, productInfo);
                     string partName = FirstNonEmpty(partNumber, ee_symbol?.Head?.Parameters?.Name, root.Component.Title, selection.PartInfo?.Name, selection.PartInfo?.Part);
                     string mounting = InferMounting(ee_footprint);
                     EeFootprint3dModel model = selection.Include3dModel ? ee_footprint?.GetModel() : null;
@@ -388,10 +474,13 @@ namespace EasyEDA_Loader
                     Task<byte[]> rawModelTask = model != null ? ModelCache.GetRawObjModelAsync(api, model.Uuid, ctx.Token) : null;
 
                     // Get product info (use cached from search if available)
-                    EasyedaApi.ProductInfo productInfo = selection.PartInfo?.Info;
                     string footprintName = FootprintMetadataSelector.SelectName(package, partNumber);
                     string footprintDescription = SelectFootprintDescription(root.Component, productInfo, partNumber, package, mounting);
                     double footprintHeight = SelectFootprintHeightMm(productInfo);
+                    ReportImportProgress(
+                        progress,
+                        $"Metadata selected: package='{package}', part='{partNumber}', footprint='{footprintName}', description='{footprintDescription}'",
+                        componentStartProgress + 2.0);
 
                     IPCB_Library targetPcbLib = null;
                     IServerDocument targetPcbDocument = null;
@@ -437,11 +526,13 @@ namespace EasyEDA_Loader
                             {
                                 libComp = EEPCB.CreateFootprintInLib(footprintName, footprintDescription, footprintHeight);
                                 createdFootprint = libComp != null;
+                                Trace($"PCB footprint create requested='{footprintName}' actual='{EEPCB.GetComponentPattern(libComp)}' description='{footprintDescription}'");
                             }
                             else
                             {
                                 EEPCB.SetFootprintMetadata(libComp, footprintDescription, footprintHeight);
                                 EEPCB.SetComponentBodyIdentifiers(libComp, partNumber);
+                                Trace($"PCB footprint update requested='{footprintName}' actual='{EEPCB.GetComponentPattern(libComp)}' description='{footprintDescription}'");
                             }
 
                             if (createdFootprint)

@@ -186,6 +186,9 @@ namespace StepCleaner.Tests
             if (IsOption(args[0], "--footprint-layers"))
                 return RunFootprintLayerTests();
 
+            if (IsOption(args[0], "--pcblib-actions"))
+                return RunPcbLibActionTests();
+
             if (IsOption(args[0], "--model-cache"))
                 return RunModelCacheTests();
 
@@ -198,6 +201,9 @@ namespace StepCleaner.Tests
             if (IsOption(args[0], "--silhouette"))
                 return SaveSilhouetteProjectionImage(args);
 
+            if (IsOption(args[0], "--silhouette-dump"))
+                return SaveSilhouettePrimitiveDump(args);
+
             Console.Error.WriteLine("Unknown command: " + args[0]);
             Console.Error.WriteLine("Usage: StepCleaner.Tests --metadata");
             Console.Error.WriteLine("Usage: StepCleaner.Tests --symbol-rules");
@@ -205,10 +211,12 @@ namespace StepCleaner.Tests
             Console.Error.WriteLine("Usage: StepCleaner.Tests --async-import");
             Console.Error.WriteLine("Usage: StepCleaner.Tests --footprint-placement");
             Console.Error.WriteLine("Usage: StepCleaner.Tests --footprint-layers");
+            Console.Error.WriteLine("Usage: StepCleaner.Tests --pcblib-actions");
             Console.Error.WriteLine("Usage: StepCleaner.Tests --model-cache");
             Console.Error.WriteLine("Usage: StepCleaner.Tests --silhouette-cleanup");
             Console.Error.WriteLine("Usage: StepCleaner.Tests --clean-text");
             Console.Error.WriteLine("Usage: StepCleaner.Tests --silhouette <input.step> <output.png> [--rotx deg] [--roty deg] [--rotz deg] [--rotation2d deg] [--size pixels] [--padding pixels] [--no-grid] [--no-axes] [--include-inactive-topology]");
+            Console.Error.WriteLine("Usage: StepCleaner.Tests --silhouette-dump <input.step> <output.csv>");
             return 2;
         }
 
@@ -580,6 +588,37 @@ namespace StepCleaner.Tests
             AssertNear(0.0, FootprintModelPlacement.ProjectionPlacementRotationDeg(0.0), 0.00001, "projection placement should not apply model Z rotation a second time", failures);
             AssertNear(355.0, FootprintModelPlacement.ProjectionPlacementRotationDeg(-5.0), 0.00001, "projection correction rotation should normalize negative angles", failures);
 
+            FootprintModelRotation c5334147Rotation = FootprintModelPlacement.ResolveAltiumModelRotationDeg(0.0, 0.0, 0.0);
+            AssertNear(0.0, c5334147Rotation.X, 0.00001, "C5334147 EasyEDA zero model rotation should preserve X rotation", failures);
+            AssertNear(0.0, c5334147Rotation.Y, 0.00001, "C5334147 EasyEDA zero model rotation should preserve Y rotation", failures);
+            AssertNear(0.0, c5334147Rotation.Z, 0.00001, "C5334147 EasyEDA zero model rotation should preserve Z rotation", failures);
+
+            FootprintModelRotation c5334147ProjectionRotation = FootprintModelPlacement.ResolveProjectionModelRotationDeg(c5334147Rotation);
+            AssertNear(0.0, c5334147ProjectionRotation.X, 0.00001, "C5334147 projection should preserve X rotation", failures);
+            AssertNear(0.0, c5334147ProjectionRotation.Y, 0.00001, "C5334147 projection should preserve Y rotation", failures);
+            AssertNear(0.0, c5334147ProjectionRotation.Z, 0.00001, "C5334147 projection should preserve Z rotation", failures);
+            AssertNear(180.0, FootprintModelPlacement.ProjectionPlacementRotationDeg(180.0), 0.00001, "C5334147 projection placement should rotate the silhouette 180 degrees", failures);
+
+            FootprintModelMove c5334147FootprintOrigin = FootprintModelPlacement.ResolveModelCenterMm(
+                0.0,
+                0.0,
+                -0.004826,
+                -0.193294);
+            AssertNear(-0.004826, c5334147FootprintOrigin.XMm, 0.00001, "C5334147 zero product transform should preserve footprint 3D origin X", failures);
+            AssertNear(-0.193294, c5334147FootprintOrigin.YMm, 0.00001, "C5334147 zero product transform should preserve footprint 3D origin Y", failures);
+
+            FootprintModelMove c5338332FootprintOrigin = FootprintModelPlacement.ResolveModelCenterMm(
+                0.0,
+                0.0000254,
+                0.0,
+                0.1599184);
+            AssertNear(0.0, c5338332FootprintOrigin.XMm, 0.00001, "C5338332 near-zero product transform should preserve footprint 3D origin X", failures);
+            AssertNear(0.1599184, c5338332FootprintOrigin.YMm, 0.00001, "C5338332 near-zero product transform should preserve footprint 3D origin Y", failures);
+
+            FootprintModelMove explicitModelCenter = FootprintModelPlacement.ResolveModelCenterMm(1.2, -0.4, -0.004826, -0.193294);
+            AssertNear(1.2, explicitModelCenter.XMm, 0.00001, "explicit non-zero model X offset must be preserved", failures);
+            AssertNear(-0.4, explicitModelCenter.YMm, 0.00001, "explicit non-zero model Y offset must be preserved", failures);
+
             if (failures.Count > 0)
             {
                 Console.Error.WriteLine("Footprint placement regression test failed.");
@@ -619,6 +658,48 @@ namespace StepCleaner.Tests
             }
 
             Console.WriteLine("Footprint layer regression test passed.");
+            return 0;
+        }
+
+        private static int RunPcbLibActionTests()
+        {
+            var failures = new List<string>();
+            string repoRoot = FindRepoRoot();
+            string ins = File.ReadAllText(Path.Combine(repoRoot, "EasyEDA-Loader", "EasyEDA-Loader.ins"));
+            string rcs = File.ReadAllText(Path.Combine(repoRoot, "EasyEDA-Loader", "EasyEDA-Loader.rcs"));
+            string module = File.ReadAllText(Path.Combine(repoRoot, "EasyEDA-Loader", "EasyEDALoader.cs"));
+            string eePcb = File.ReadAllText(Path.Combine(repoRoot, "EasyEDA-Loader", "EEPCB.cs"));
+
+            AssertContains(ins, "Command  Name = 'EasyEDAReproject3D'", "PcbLib action command must be declared in the INS file", failures);
+            AssertContains(ins, "Command  Name = 'EasyEDAAlign3DModel'", "PcbLib alignment command must be declared in the INS file", failures);
+
+            AssertContains(rcs, "Caption='&EasyEDA'", "PcbLib menu should expose an EasyEDA submenu", failures);
+            AssertContains(rcs, "Caption='&Loader...'", "Loader command should move under the EasyEDA submenu", failures);
+            AssertContains(rcs, "Caption='&Reproject 3D'", "Reproject 3D command should be available in the PcbLib EasyEDA submenu", failures);
+            AssertContains(rcs, "Caption='&Align 3D model'", "Align 3D model command should be available in the PcbLib EasyEDA submenu", failures);
+
+            AssertContains(module, "RegisterCommand(\"EasyEDAReproject3D\"", "module must register the Reproject 3D command", failures);
+            AssertContains(module, "RegisterCommand(\"EasyEDAAlign3DModel\"", "module must register the Align 3D model command", failures);
+            AssertContains(module, "ReprojectActiveFootprint3D", "Reproject command should dispatch to an active-footprint handler", failures);
+            AssertContains(module, "AlignActiveFootprint3DModel", "Align command should dispatch to an active-footprint handler", failures);
+
+            AssertContains(eePcb, "ClearMechanical2Projection", "Reproject 3D must clear Mechanical Layer 2 before regenerating projection", failures);
+            AssertContains(eePcb, "ReprojectComponentBodySilhouette", "Reproject 3D must regenerate silhouette primitives from a 3D body", failures);
+            AssertContains(eePcb, "AlignComponentBodiesToPads", "Align 3D model must align bodies using pad bounds", failures);
+            AssertContains(eePcb, "if (!TranslateComponentBodyModelOriginMm(body, move.XMm, move.YMm))", "Align 3D model must attempt body model-origin translation", failures);
+            AssertContains(eePcb, "return false;", "Align 3D model must not fall back to primitive MoveByXY because it can move the whole footprint in PcbLib", failures);
+            AssertDoesNotContain(eePcb, "body.MoveByXY", "Align 3D model must never move an already-owned component body with primitive MoveByXY in PcbLib", failures);
+            AssertContains(eePcb, "FindCurrentPcbLibComponentFallback", "PcbLib commands must find the active footprint even when CurrentComponent is not populated", failures);
+
+            if (failures.Count > 0)
+            {
+                Console.Error.WriteLine("PcbLib action regression test failed.");
+                foreach (string failure in failures)
+                    Console.Error.WriteLine("  " + failure);
+                return 1;
+            }
+
+            Console.WriteLine("PcbLib action regression test passed.");
             return 0;
         }
 
@@ -784,6 +865,94 @@ namespace StepCleaner.Tests
                 "C30170185-style metadata should synthesize a detailed footprint description",
                 failures);
 
+            string inferredConnectorDescription = FootprintMetadataSelector.SelectDescription(
+                productDescription: "CONN-SMD_DF56_40S_0.3V_51",
+                componentDescription: "DF56-40S-0.3V(51)",
+                packageTitle: "CONN-SMD_DF56_40S_0.3V_51",
+                packageName: "CONN-SMD_DF56_40S_0.3V_51",
+                partNumber: "CONN-SMD_DF56_40S_0.3V_51",
+                mounting: "SMT",
+                parameters: new Dictionary<string, string>(),
+                geometry: new FootprintDescriptionGeometry
+                {
+                    PositionCount = 40,
+                    PitchMm = 0.3,
+                    BodyWidthMm = 6.2,
+                    BodyHeightMm = 4.8
+                });
+
+            AssertEqual(
+                "HRS DF56, 40-position vertical SMT female connector, 0.3 mm pitch, 6.2 x 4.8 mm body",
+                inferredConnectorDescription,
+                "connector footprint descriptions should be synthesized from package identity and geometry without manufacturer metadata",
+                failures);
+
+            string catalogConnectorDescription = FootprintMetadataSelector.SelectDescription(
+                productDescription: "CONN-SMD_DF56_40S_0.3V_51",
+                componentDescription: "CONN-SMD_DF56_40S_0.3V_51",
+                packageTitle: "CONN-SMD_DF56_40S_0.3V_51",
+                packageName: "CONN-SMD_DF56_40S_0.3V_51",
+                partNumber: "C5334147",
+                mounting: "SMT",
+                parameters: new Dictionary<string, string>(),
+                geometry: new FootprintDescriptionGeometry
+                {
+                    PositionCount = 40,
+                    PitchMm = 0.3,
+                    BodyWidthMm = 6.2,
+                    BodyHeightMm = 4.8
+                });
+
+            AssertEqual(
+                "HRS DF56, 40-position vertical SMT female connector, 0.3 mm pitch, 6.2 x 4.8 mm body",
+                catalogConnectorDescription,
+                "connector footprint descriptions should ignore LCSC catalog IDs and use inferred manufacturer identity",
+                failures);
+
+            string parameterBlobConnectorDescription = FootprintMetadataSelector.SelectDescription(
+                productDescription: "Number of Pins:40P Pitch:0.6mm Mounting Type:Surface Mount,Vertical Number of Rows:2 Connection Type:Slot Type Butting Contact Material:Phosphor bronze Contact Plating:Tin",
+                componentDescription: "Number of Pins:40P Pitch:0.6mm Mounting Type:Surface Mount,Vertical Number of Rows:2 Connection Type:Slot Type Butting Contact Material:Phosphor bronze Contact Plating:Tin",
+                packageTitle: "CONN-SMD_DF56_40S_0.3V_51",
+                packageName: "CONN-SMD_DF56_40S_0.3V_51",
+                partNumber: "DF56C-40S-0.3V(51)",
+                mounting: "SMT",
+                parameters: new Dictionary<string, string>(),
+                geometry: new FootprintDescriptionGeometry
+                {
+                    PositionCount = 40,
+                    PitchMm = 0.3,
+                    BodyWidthMm = 6.2,
+                    BodyHeightMm = 4.8
+                });
+
+            AssertEqual(
+                "HRS DF56C, 40-position vertical SMT female connector, 0.3 mm pitch, 6.2 x 4.8 mm body",
+                parameterBlobConnectorDescription,
+                "connector footprint descriptions should synthesize rich text instead of keeping EasyEDA parameter blobs",
+                failures);
+
+            string genericPackageDescription = FootprintMetadataSelector.SelectDescription(
+                productDescription: "LM317",
+                componentDescription: "SOT-223",
+                packageTitle: "SOT-223",
+                packageName: "SOT-223",
+                partNumber: "LM317",
+                mounting: "SMT",
+                parameters: new Dictionary<string, string>(),
+                geometry: new FootprintDescriptionGeometry
+                {
+                    PositionCount = 3,
+                    PitchMm = 2.3,
+                    BodyWidthMm = 6.5,
+                    BodyHeightMm = 3.5
+                });
+
+            AssertEqual(
+                "SOT-223 package, 3-pad SMT footprint, 2.3 mm pitch, 6.5 x 3.5 mm body",
+                genericPackageDescription,
+                "generic footprint descriptions should use package, pad count, mounting, and body geometry",
+                failures);
+
             AssertEqual(
                 "SOT-223",
                 FootprintMetadataSelector.SelectName("SOT-223", "LM317"),
@@ -800,6 +969,42 @@ namespace StepCleaner.Tests
                 "DF56C-30S-0.3V(51)",
                 FootprintMetadataSelector.SelectName("CONN-SMD_30P-P0.60_DF56C-30S-0.3V-51", "DF56C-30S-0.3V(51)"),
                 "part-number-specific connector footprint names should handle package suffix notation variants",
+                failures);
+
+            AssertEqual(
+                "DF56C-26S-0.3V(51)",
+                FootprintMetadataSelector.SelectName("CONN-SMD_26P-P0.30_DF56C-26S-0.3V51", "DF56C-26S-0.3V(51)"),
+                "part-number-specific connector footprint names should handle omitted suffix separators",
+                failures);
+
+            AssertEqual(
+                "DF56-40S-0.3V(51)",
+                FootprintMetadataSelector.SelectName("CONN-SMD_DF56_40S_0.3V_51", "DF56-40S-0.3V(51)"),
+                "part-number-specific connector footprint names should handle underscore-separated package names",
+                failures);
+
+            AssertEqual(
+                "DF56C-40S-0.3V(51)",
+                FootprintMetadataSelector.SelectName("CONN-SMD_DF56_40S_0.3V_51", "DF56C-40S-0.3V(51)"),
+                "part-number-specific connector footprint names should prefer manufacturer part numbers even when package family omits a variant letter",
+                failures);
+
+            AssertEqual(
+                "DF56C-26S-0.3V(51)",
+                FootprintMetadataSelector.SelectName("CONN-SMD_26P-P0.30_DF56C-26S-0.3V51", "CONN-SMD_26P-P0.30_DF56C-26S-0.3V51"),
+                "part-number-specific connector footprint names should be inferred when import passes the package as the part number",
+                failures);
+
+            AssertEqual(
+                "DF56-40S-0.3V(51)",
+                FootprintMetadataSelector.SelectName("CONN-SMD_DF56_40S_0.3V_51", "CONN-SMD_DF56_40S_0.3V_51"),
+                "underscore-separated connector footprint names should be inferred when import passes the package as the part number",
+                failures);
+
+            AssertEqual(
+                "DF56-40S-0.3V(51)",
+                FootprintMetadataSelector.SelectName("CONN-SMD_DF56_40S_0.3V_51", "C5334147"),
+                "underscore-separated connector footprint names should be inferred when import passes an LCSC catalog ID",
                 failures);
 
             if (failures.Count > 0)
@@ -954,6 +1159,18 @@ namespace StepCleaner.Tests
                 failures.Add(message + ": expected '" + expected + "', got '" + actual + "'.");
         }
 
+        private static void AssertContains(string text, string expectedSubstring, string message, List<string> failures)
+        {
+            if (text == null || text.IndexOf(expectedSubstring, StringComparison.Ordinal) < 0)
+                failures.Add(message + ": missing '" + expectedSubstring + "'.");
+        }
+
+        private static void AssertDoesNotContain(string text, string unexpectedSubstring, string message, List<string> failures)
+        {
+            if (text != null && text.IndexOf(unexpectedSubstring, StringComparison.Ordinal) >= 0)
+                failures.Add(message + ": found '" + unexpectedSubstring + "'.");
+        }
+
         private static void AssertNear(double expected, double actual, double tolerance, string message, List<string> failures)
         {
             if (Math.Abs(expected - actual) > tolerance)
@@ -1096,6 +1313,60 @@ namespace StepCleaner.Tests
                 " arc(s), " +
                 primitives.Count.ToString(CultureInfo.InvariantCulture) +
                 " total.");
+            return 0;
+        }
+
+        private static int SaveSilhouettePrimitiveDump(string[] args)
+        {
+            if (args.Length < 3)
+            {
+                Console.Error.WriteLine("Usage: StepCleaner.Tests --silhouette-dump <input.step> <output.csv>");
+                return 2;
+            }
+
+            string inputPath = args[1];
+            string outputPath = args[2];
+            if (!File.Exists(inputPath))
+            {
+                Console.Error.WriteLine("STEP file does not exist: " + inputPath);
+                return 2;
+            }
+
+            IReadOnlyList<StepSilhouettePrimitive> primitives = StepSilhouetteProjection.Generate(
+                File.ReadAllBytes(inputPath),
+                CreateDefaultSilhouettePlacement());
+            using (var writer = new StreamWriter(outputPath, false, Encoding.UTF8))
+            {
+                writer.WriteLine("index,kind,x1,y1,x2,y2,centerX,centerY,radius,startAngle,endAngle");
+                for (int index = 0; index < primitives.Count; index++)
+                {
+                    StepSilhouettePrimitive primitive = primitives[index];
+                    writer.Write(index.ToString(CultureInfo.InvariantCulture));
+                    writer.Write(",");
+                    writer.Write(primitive.Kind.ToString());
+                    writer.Write(",");
+                    writer.Write(primitive.X1.ToString(CultureInfo.InvariantCulture));
+                    writer.Write(",");
+                    writer.Write(primitive.Y1.ToString(CultureInfo.InvariantCulture));
+                    writer.Write(",");
+                    writer.Write(primitive.X2.ToString(CultureInfo.InvariantCulture));
+                    writer.Write(",");
+                    writer.Write(primitive.Y2.ToString(CultureInfo.InvariantCulture));
+                    writer.Write(",");
+                    writer.Write(primitive.CenterX.ToString(CultureInfo.InvariantCulture));
+                    writer.Write(",");
+                    writer.Write(primitive.CenterY.ToString(CultureInfo.InvariantCulture));
+                    writer.Write(",");
+                    writer.Write(primitive.Radius.ToString(CultureInfo.InvariantCulture));
+                    writer.Write(",");
+                    writer.Write(primitive.StartAngle.ToString(CultureInfo.InvariantCulture));
+                    writer.Write(",");
+                    writer.WriteLine(primitive.EndAngle.ToString(CultureInfo.InvariantCulture));
+                }
+            }
+
+            Console.WriteLine("Silhouette primitive dump written: " + Path.GetFullPath(outputPath));
+            Console.WriteLine("Primitives: " + primitives.Count.ToString(CultureInfo.InvariantCulture));
             return 0;
         }
 
