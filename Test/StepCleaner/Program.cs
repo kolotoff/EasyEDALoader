@@ -195,6 +195,18 @@ namespace StepCleaner.Tests
             if (IsOption(args[0], "--silhouette-cleanup"))
                 return RunSilhouetteCleanupTests();
 
+            if (IsOption(args[0], "--occt-hlr-smoke"))
+                return OcctHiddenLineProjectionSmokeTests.Run();
+
+            if (IsOption(args[0], "--occt-hlr-report"))
+                return OcctHiddenLineProjectionReport.Run(args);
+
+            if (IsOption(args[0], "--occt-overlap-unit"))
+                return OcctOverlapCleanupTests.Run();
+
+            if (IsOption(args[0], "--occt-stage-report"))
+                return OcctSilhouetteStageReport.Run(args);
+
             if (IsOption(args[0], "--clean-text"))
                 return RunCleanTextTests();
 
@@ -214,6 +226,10 @@ namespace StepCleaner.Tests
             Console.Error.WriteLine("Usage: StepCleaner.Tests --pcblib-actions");
             Console.Error.WriteLine("Usage: StepCleaner.Tests --model-cache");
             Console.Error.WriteLine("Usage: StepCleaner.Tests --silhouette-cleanup");
+            Console.Error.WriteLine("Usage: StepCleaner.Tests --occt-hlr-smoke");
+            Console.Error.WriteLine("Usage: StepCleaner.Tests --occt-hlr-report [validated-dir] [report-dir]");
+            Console.Error.WriteLine("Usage: StepCleaner.Tests --occt-overlap-unit");
+            Console.Error.WriteLine("Usage: StepCleaner.Tests --occt-stage-report [output-dir]");
             Console.Error.WriteLine("Usage: StepCleaner.Tests --clean-text");
             Console.Error.WriteLine("Usage: StepCleaner.Tests --silhouette <input.step> <output.png> [--rotx deg] [--roty deg] [--rotz deg] [--rotation2d deg] [--size pixels] [--padding pixels] [--no-grid] [--no-axes] [--include-inactive-topology]");
             Console.Error.WriteLine("Usage: StepCleaner.Tests --silhouette-dump <input.step> <output.csv>");

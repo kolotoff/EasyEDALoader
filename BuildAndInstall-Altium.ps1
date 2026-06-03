@@ -30,12 +30,18 @@ function Assert-AltiumClosed {
 
 $repoRoot = $PSScriptRoot
 $projectPath = Join-Path $repoRoot "EasyEDA-Loader\EasyEDA-Loader.csproj"
+$helperProjectPath = Join-Path $repoRoot "StepOcctHlr\StepOcctHlr.csproj"
 $sourceDir = Split-Path -Parent $projectPath
+$helperSourceDir = Split-Path -Parent $helperProjectPath
 $installDir = Join-Path $AltiumProfile "Extensions\EasyEDA-Loader"
 $registryPath = Join-Path $AltiumProfile "Extensions\ExtensionsRegistry.xml"
 
 if (-not (Test-Path -LiteralPath $projectPath)) {
     throw "Project file was not found: $projectPath"
+}
+
+if (-not (Test-Path -LiteralPath $helperProjectPath)) {
+    throw "OCCT HLR helper project file was not found: $helperProjectPath"
 }
 
 if (-not (Test-Path -LiteralPath $registryPath)) {
@@ -51,7 +57,13 @@ Assert-AltiumClosed
 Write-Step "Building EasyEDA Loader ($Configuration)"
 dotnet build $projectPath -c $Configuration --nologo
 if ($LASTEXITCODE -ne 0) {
-    throw "dotnet build failed with exit code $LASTEXITCODE."
+    throw "dotnet build failed for EasyEDA Loader with exit code $LASTEXITCODE."
+}
+
+Write-Step "Building OCCT HLR helper ($Configuration)"
+dotnet build $helperProjectPath -c $Configuration --nologo
+if ($LASTEXITCODE -ne 0) {
+    throw "dotnet build failed for OCCT HLR helper with exit code $LASTEXITCODE."
 }
 
 Assert-AltiumClosed
@@ -68,13 +80,39 @@ if (-not (Test-Path -LiteralPath $builtDll)) {
     throw "Built DLL was not found: $builtDll"
 }
 
+[xml]$helperProjectXml = Get-Content -LiteralPath $helperProjectPath
+$helperTargetFramework = @($helperProjectXml.Project.PropertyGroup.TargetFramework | Where-Object { $_ } | Select-Object -First 1)[0]
+if ([string]::IsNullOrWhiteSpace($helperTargetFramework)) {
+    $helperTargetFramework = "net8.0-windows7.0"
+}
+
+$helperRuntimeIdentifier = @($helperProjectXml.Project.PropertyGroup.RuntimeIdentifier | Where-Object { $_ } | Select-Object -First 1)[0]
+$helperBuildDir = Join-Path $helperSourceDir "bin\$Configuration\$helperTargetFramework"
+if (-not [string]::IsNullOrWhiteSpace($helperRuntimeIdentifier)) {
+    $helperBuildDir = Join-Path $helperBuildDir $helperRuntimeIdentifier
+}
+
+$builtHelperExe = Join-Path $helperBuildDir "StepOcctHlr.exe"
+if (-not (Test-Path -LiteralPath $builtHelperExe)) {
+    throw "Built OCCT HLR helper executable was not found: $builtHelperExe"
+}
+
 Write-Step "Installing to Altium extension folder"
 New-Item -ItemType Directory -Path $installDir -Force | Out-Null
 Copy-Item -Path (Join-Path $buildDir "*") -Destination $installDir -Force
 Copy-Item -LiteralPath (Join-Path $sourceDir "EasyEDA-Loader.ins") -Destination $installDir -Force
 Copy-Item -LiteralPath (Join-Path $sourceDir "EasyEDA-Loader.rcs") -Destination $installDir -Force
 
+$helperInstallDir = Join-Path $installDir "StepOcctHlr"
+New-Item -ItemType Directory -Path $helperInstallDir -Force | Out-Null
+Copy-Item -Path (Join-Path $helperBuildDir "*") -Destination $helperInstallDir -Recurse -Force
+
 $installedDll = Join-Path $installDir "EasyEDA-Loader.dll"
+$installedHelperExe = Join-Path $helperInstallDir "StepOcctHlr.exe"
+if (-not (Test-Path -LiteralPath $installedHelperExe)) {
+    throw "Installed OCCT HLR helper executable was not found: $installedHelperExe"
+}
+
 $assembly = [System.Reflection.AssemblyName]::GetAssemblyName($installedDll)
 $version = $assembly.Version.ToString()
 $versionGuid = [guid]::NewGuid().ToString("B").ToUpperInvariant()
@@ -96,9 +134,12 @@ $nonItemNodes = @($registryXml.Extensions.ChildNodes | Where-Object { $_.LocalNa
 $easyEdaItem = @($registryXml.Extensions.Item | Where-Object { $_.HRID -eq "EasyEDA-Loader" }) | Select-Object -First 1
 
 $hash = (Get-FileHash -LiteralPath $installedDll -Algorithm SHA256).Hash
+$helperHash = (Get-FileHash -LiteralPath $installedHelperExe -Algorithm SHA256).Hash
 Write-Host "Installed DLL: $installedDll"
 Write-Host "Assembly version: $version"
 Write-Host "SHA256: $hash"
+Write-Host "Installed OCCT HLR helper: $installedHelperExe"
+Write-Host "OCCT HLR helper SHA256: $helperHash"
 Write-Host "Registry Items=$registryItems NonItem=$nonItemNodes EasyEDA=$($easyEdaItem.Version) VersionGuid=$($easyEdaItem.VersionGuid)"
 
 if (-not $NoLaunch) {

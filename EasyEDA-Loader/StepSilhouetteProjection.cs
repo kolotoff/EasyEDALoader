@@ -5,6 +5,7 @@ using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Text;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 using SkiaSharp;
 
@@ -98,6 +99,12 @@ namespace EasyEDA_Loader
         private const double PointEpsilonMm = 1e-5;
         private const int OutputCoordDecimals = 3;
         private const double OutputMinLineLengthMm = 0.03;
+        private const double OcctOutputMinLineLengthMm = 0.03;
+        private const double OcctOverlapCoverageThreshold = 0.90;
+        private const double OcctLineCenterlineBucketToleranceMm = 0.01;
+        private const double OcctLineCenterlineMergeToleranceMm = 0.001;
+        private const double OcctLineProjectedIntervalTouchToleranceMm = 0.001;
+        private const double OcctLineParallelCrossTolerance = 0.0001;
         private const double ProjectionLineWidthMm = 0.1;
         private const double OptimizePointGridMm = 0.001;
         private const double CollinearDistanceToleranceMm = 0.01;
@@ -174,6 +181,10 @@ namespace EasyEDA_Loader
                 return Array.Empty<StepSilhouettePrimitive>();
             if (placement == null || placement.TargetBounds == null)
                 return Array.Empty<StepSilhouettePrimitive>();
+
+            IReadOnlyList<StepSilhouettePrimitive> occtPrimitives = TryGenerateWithOcctHelper(stepData, placement);
+            if (occtPrimitives.Count > 0)
+                return occtPrimitives;
 
             string stepText = Encoding.Latin1.GetString(stepData);
             StepGeometry geometry = ParseStepGeometry(stepText);
@@ -1090,6 +1101,233 @@ namespace EasyEDA_Loader
                 targetCenterY + relX * sin + relY * cos);
         }
 
+        private static IReadOnlyList<StepSilhouettePrimitive> TryGenerateWithOcctHelper(
+            byte[] stepData,
+            StepSilhouettePlacement placement)
+        {
+            string helperPath = FindOcctHlrExecutable();
+            if (string.IsNullOrWhiteSpace(helperPath))
+                return Array.Empty<StepSilhouettePrimitive>();
+
+            string tempStep = null;
+            string tempJson = null;
+            try
+            {
+                tempStep = Path.Combine(Path.GetTempPath(), "EasyEDALoaderHlr_" + Guid.NewGuid().ToString("N") + ".step");
+                tempJson = Path.Combine(Path.GetTempPath(), "EasyEDALoaderHlr_" + Guid.NewGuid().ToString("N") + ".json");
+                File.WriteAllBytes(tempStep, stepData);
+
+                var startInfo = new ProcessStartInfo
+                {
+                    FileName = helperPath,
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true
+                };
+                startInfo.ArgumentList.Add(tempStep);
+                startInfo.ArgumentList.Add(tempJson);
+                startInfo.ArgumentList.Add("--rot-x");
+                startInfo.ArgumentList.Add(placement.RotX.ToString(CultureInfo.InvariantCulture));
+                startInfo.ArgumentList.Add("--rot-y");
+                startInfo.ArgumentList.Add(placement.RotY.ToString(CultureInfo.InvariantCulture));
+                startInfo.ArgumentList.Add("--rot-z");
+                startInfo.ArgumentList.Add(placement.RotZ.ToString(CultureInfo.InvariantCulture));
+                startInfo.ArgumentList.Add("--rotation2d");
+                startInfo.ArgumentList.Add(placement.Rotation2D.ToString(CultureInfo.InvariantCulture));
+
+                using (Process process = Process.Start(startInfo))
+                {
+                    if (process == null)
+                        return Array.Empty<StepSilhouettePrimitive>();
+                    process.BeginOutputReadLine();
+                    process.BeginErrorReadLine();
+                    if (!process.WaitForExit(30000))
+                    {
+                        try { process.Kill(); }
+                        catch { }
+                        return Array.Empty<StepSilhouettePrimitive>();
+                    }
+                    process.WaitForExit();
+
+                    if (process.ExitCode != 0 || !File.Exists(tempJson))
+                        return Array.Empty<StepSilhouettePrimitive>();
+                }
+
+                return ReadOcctProjectionJson(tempJson, placement.TargetBounds);
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine("OCCT HLR projection failed: " + ex.Message);
+                return Array.Empty<StepSilhouettePrimitive>();
+            }
+            finally
+            {
+                TryDeleteFile(tempStep);
+                TryDeleteFile(tempJson);
+            }
+        }
+
+        private static string FindOcctHlrExecutable()
+        {
+            string configuredPath = Environment.GetEnvironmentVariable("EASYEDA_LOADER_OCCT_HLR");
+            if (!string.IsNullOrWhiteSpace(configuredPath) && File.Exists(configuredPath))
+                return configuredPath;
+
+            string baseDirectory = AppContext.BaseDirectory;
+            string local = Path.Combine(baseDirectory, "StepOcctHlr.exe");
+            if (File.Exists(local))
+                return local;
+
+            string sibling = Path.Combine(baseDirectory, "StepOcctHlr", "StepOcctHlr.exe");
+            if (File.Exists(sibling))
+                return sibling;
+
+            string solutionDebug = Path.GetFullPath(Path.Combine(baseDirectory, "..", "..", "..", "..", "StepOcctHlr", "bin", "Debug", "net8.0-windows7.0", "win-x64", "StepOcctHlr.exe"));
+            if (File.Exists(solutionDebug))
+                return solutionDebug;
+
+            string solutionRelease = Path.GetFullPath(Path.Combine(baseDirectory, "..", "..", "..", "..", "StepOcctHlr", "bin", "Release", "net8.0-windows7.0", "win-x64", "StepOcctHlr.exe"));
+            if (File.Exists(solutionRelease))
+                return solutionRelease;
+
+            string testHarnessDebug = Path.GetFullPath(Path.Combine(baseDirectory, "..", "..", "..", "..", "..", "StepOcctHlr", "bin", "Debug", "net8.0-windows7.0", "win-x64", "StepOcctHlr.exe"));
+            if (File.Exists(testHarnessDebug))
+                return testHarnessDebug;
+
+            string testHarnessRelease = Path.GetFullPath(Path.Combine(baseDirectory, "..", "..", "..", "..", "..", "StepOcctHlr", "bin", "Release", "net8.0-windows7.0", "win-x64", "StepOcctHlr.exe"));
+            if (File.Exists(testHarnessRelease))
+                return testHarnessRelease;
+
+            return null;
+        }
+
+        private static IReadOnlyList<StepSilhouettePrimitive> ReadOcctProjectionJson(
+            string jsonPath,
+            StepSilhouetteBounds targetBounds)
+        {
+            string json = File.ReadAllText(jsonPath);
+            using (JsonDocument document = JsonDocument.Parse(json))
+            {
+                JsonElement root = document.RootElement;
+                if (!root.TryGetProperty("Success", out JsonElement successElement) || !successElement.GetBoolean())
+                    return Array.Empty<StepSilhouettePrimitive>();
+                if (!root.TryGetProperty("Primitives", out JsonElement primitivesElement) || primitivesElement.ValueKind != JsonValueKind.Array)
+                    return Array.Empty<StepSilhouettePrimitive>();
+
+                var sourcePrimitives = new List<StepSilhouettePrimitive>();
+                foreach (JsonElement primitiveElement in primitivesElement.EnumerateArray())
+                {
+                    string kind = primitiveElement.GetProperty("Kind").GetString();
+                    if (kind == "Line")
+                    {
+                        sourcePrimitives.Add(StepSilhouettePrimitive.Line(
+                            primitiveElement.GetProperty("X1").GetDouble(),
+                            primitiveElement.GetProperty("Y1").GetDouble(),
+                            primitiveElement.GetProperty("X2").GetDouble(),
+                            primitiveElement.GetProperty("Y2").GetDouble()));
+                    }
+                    else if (kind == "Arc")
+                    {
+                        sourcePrimitives.Add(StepSilhouettePrimitive.Arc(
+                            primitiveElement.GetProperty("CenterX").GetDouble(),
+                            primitiveElement.GetProperty("CenterY").GetDouble(),
+                            primitiveElement.GetProperty("Radius").GetDouble(),
+                            primitiveElement.GetProperty("StartAngle").GetDouble(),
+                            primitiveElement.GetProperty("EndAngle").GetDouble()));
+                    }
+                }
+
+                if (sourcePrimitives.Count == 0)
+                    return Array.Empty<StepSilhouettePrimitive>();
+
+                StepSilhouetteBounds sourceBounds = BoundsForPrimitives(sourcePrimitives);
+                if (sourceBounds == null)
+                    return Array.Empty<StepSilhouettePrimitive>();
+
+                List<StepSilhouettePrimitive> placed = PlacePrimitivesWithoutRescale(
+                    sourcePrimitives,
+                    targetBounds,
+                    sourceBounds,
+                    0.0);
+                return OptimizeOcctPrimitives(placed);
+            }
+        }
+
+        private static List<StepSilhouettePrimitive> PlacePrimitivesWithoutRescale(
+            List<StepSilhouettePrimitive> primitives,
+            StepSilhouetteBounds targetBounds,
+            StepSilhouetteBounds sourceBounds,
+            double minimumLengthMm = OutputMinLineLengthMm)
+        {
+            double sourceCenterX = sourceBounds.CenterX;
+            double sourceCenterY = sourceBounds.CenterY;
+            double targetCenterX = targetBounds.CenterX;
+            double targetCenterY = targetBounds.CenterY;
+            var placed = new List<StepSilhouettePrimitive>(primitives.Count);
+
+            foreach (StepSilhouettePrimitive primitive in primitives)
+            {
+                if (primitive.Kind == StepSilhouettePrimitiveKind.Line)
+                {
+                    Point2d a = MapPlacedPoint(primitive.X1, primitive.Y1, sourceCenterX, sourceCenterY, targetCenterX, targetCenterY, 1.0, 0.0);
+                    Point2d b = MapPlacedPoint(primitive.X2, primitive.Y2, sourceCenterX, sourceCenterY, targetCenterX, targetCenterY, 1.0, 0.0);
+                    Point2d roundedA = new Point2d(RoundCoord(a.X), RoundCoord(a.Y));
+                    Point2d roundedB = new Point2d(RoundCoord(b.X), RoundCoord(b.Y));
+                    if (Distance(roundedA, roundedB) >= minimumLengthMm)
+                        placed.Add(StepSilhouettePrimitive.Line(roundedA.X, roundedA.Y, roundedB.X, roundedB.Y));
+                }
+                else
+                {
+                    Point2d center = MapPlacedPoint(primitive.CenterX, primitive.CenterY, sourceCenterX, sourceCenterY, targetCenterX, targetCenterY, 1.0, 0.0);
+                    if (primitive.Radius >= minimumLengthMm)
+                    {
+                        placed.Add(StepSilhouettePrimitive.Arc(
+                            RoundCoord(center.X),
+                            RoundCoord(center.Y),
+                            RoundCoord(primitive.Radius),
+                            RoundCoord(primitive.StartAngle),
+                            RoundCoord(primitive.EndAngle)));
+                    }
+                }
+            }
+
+            return placed;
+        }
+
+        private static StepSilhouetteBounds BoundsForPrimitives(List<StepSilhouettePrimitive> primitives)
+        {
+            var bounds = new List<StepSilhouetteBounds>();
+            foreach (StepSilhouettePrimitive primitive in primitives)
+            {
+                if (primitive.Kind == StepSilhouettePrimitiveKind.Line)
+                {
+                    bounds.Add(new StepSilhouetteBounds
+                    {
+                        Left = Math.Min(primitive.X1, primitive.X2),
+                        Bottom = Math.Min(primitive.Y1, primitive.Y2),
+                        Right = Math.Max(primitive.X1, primitive.X2),
+                        Top = Math.Max(primitive.Y1, primitive.Y2)
+                    });
+                }
+                else
+                {
+                    bounds.Add(BoundsForArc(primitive.CenterX, primitive.CenterY, primitive.Radius, primitive.StartAngle, primitive.EndAngle));
+                }
+            }
+
+            if (bounds.Count == 0)
+                return null;
+
+            return new StepSilhouetteBounds
+            {
+                Left = bounds.Min(bound => bound.Left),
+                Bottom = bounds.Min(bound => bound.Bottom),
+                Right = bounds.Max(bound => bound.Right),
+                Top = bounds.Max(bound => bound.Top)
+            };
+        }
+
         private static IReadOnlyList<StepSilhouettePrimitive> OptimizeSegmentsToPrimitives(List<Segment2d> segments)
         {
             List<Segment2d> deduped = DedupeSegments(segments);
@@ -1221,6 +1459,288 @@ namespace EasyEDA_Loader
             }
 
             return result;
+        }
+
+        private static List<StepSilhouettePrimitive> RemoveFullyOverlappedOcctPrimitives(List<StepSilhouettePrimitive> primitives)
+        {
+            if (primitives == null || primitives.Count < 2)
+                return primitives ?? new List<StepSilhouettePrimitive>();
+
+            double coverageTolerance = ProjectionLineWidthMm;
+            double sampleStep = Math.Max(ProjectionLineWidthMm * StrokeCoverageSampleStepFactor, OptimizePointGridMm);
+            double[] lengths = primitives.Select(PrimitiveLength).ToArray();
+            StepSilhouetteBounds[] bounds = primitives
+                .Select(primitive => ExpandedPrimitiveBounds(primitive, coverageTolerance))
+                .ToArray();
+            int[] order = Enumerable.Range(0, primitives.Count)
+                .OrderByDescending(index => lengths[index])
+                .ThenBy(index => index)
+                .ToArray();
+            var remove = new bool[primitives.Count];
+            foreach (int candidateIndex in order)
+            {
+                if (remove[candidateIndex])
+                    continue;
+                if (lengths[candidateIndex] <= PointEpsilonMm)
+                    continue;
+
+                double coveredRatio = OcctStrokeAreaCoverageRatio(
+                    primitives,
+                    bounds,
+                    remove,
+                    candidateIndex,
+                    coverageTolerance,
+                    sampleStep);
+                if (coveredRatio >= OcctOverlapCoverageThreshold - PointEpsilonMm)
+                    remove[candidateIndex] = true;
+            }
+
+            var result = new List<StepSilhouettePrimitive>(primitives.Count);
+            for (int index = 0; index < primitives.Count; index++)
+            {
+                if (!remove[index])
+                    result.Add(primitives[index]);
+            }
+
+            return result;
+        }
+
+        private static List<StepSilhouettePrimitive> OptimizeOcctPrimitives(List<StepSilhouettePrimitive> primitives)
+        {
+            primitives = MergeTouchingOcctLinePrimitives(primitives ?? new List<StepSilhouettePrimitive>());
+            primitives = RemoveFullyOverlappedOcctPrimitives(primitives);
+            return RemoveSmallOcctPrimitives(primitives);
+        }
+
+        private static List<StepSilhouettePrimitive> RemoveSmallOcctPrimitives(List<StepSilhouettePrimitive> primitives)
+        {
+            if (primitives == null || primitives.Count == 0)
+                return new List<StepSilhouettePrimitive>();
+
+            var result = new List<StepSilhouettePrimitive>(primitives.Count);
+            foreach (StepSilhouettePrimitive primitive in primitives)
+            {
+                if (primitive.Kind == StepSilhouettePrimitiveKind.Line)
+                {
+                    var start = new Point2d(primitive.X1, primitive.Y1);
+                    var end = new Point2d(primitive.X2, primitive.Y2);
+                    if (Distance(start, end) >= OcctOutputMinLineLengthMm)
+                        result.Add(primitive);
+                }
+                else if (primitive.Radius >= OcctOutputMinLineLengthMm)
+                {
+                    result.Add(primitive);
+                }
+            }
+
+            return result;
+        }
+
+        private static List<StepSilhouettePrimitive> MergeTouchingOcctLinePrimitives(List<StepSilhouettePrimitive> primitives)
+        {
+            var groups = new Dictionary<string, List<LineInterval>>();
+            var passthrough = new List<StepSilhouettePrimitive>();
+            foreach (StepSilhouettePrimitive primitive in primitives)
+            {
+                if (primitive.Kind != StepSilhouettePrimitiveKind.Line)
+                {
+                    passthrough.Add(primitive);
+                    continue;
+                }
+
+                double dx = primitive.X2 - primitive.X1;
+                double dy = primitive.Y2 - primitive.Y1;
+                double length = Hypot(dx, dy);
+                if (length <= PointEpsilonMm)
+                    continue;
+
+                double ux = dx / length;
+                double uy = dy / length;
+                if (ux < -1e-12 || (Math.Abs(ux) <= 1e-12 && uy < 0.0))
+                {
+                    ux = -ux;
+                    uy = -uy;
+                }
+
+                double normalX = -uy;
+                double normalY = ux;
+                double offset = normalX * primitive.X1 + normalY * primitive.Y1;
+                double angle = Math.Atan2(uy, ux);
+                string key =
+                    ((int)Math.Round(angle / 0.001)).ToString(CultureInfo.InvariantCulture) +
+                    "|" +
+                    ((int)Math.Round(offset / OcctLineCenterlineBucketToleranceMm)).ToString(CultureInfo.InvariantCulture);
+                double t1 = ux * primitive.X1 + uy * primitive.Y1;
+                double t2 = ux * primitive.X2 + uy * primitive.Y2;
+                if (!groups.TryGetValue(key, out List<LineInterval> intervals))
+                {
+                    intervals = new List<LineInterval>();
+                    groups[key] = intervals;
+                }
+
+                intervals.Add(new LineInterval(Math.Min(t1, t2), Math.Max(t1, t2), ux, uy, normalX, normalY, offset));
+            }
+
+            var merged = new List<StepSilhouettePrimitive>();
+            foreach (List<LineInterval> intervals in groups.Values)
+            {
+                intervals.Sort((a, b) => a.Start.CompareTo(b.Start));
+                LineInterval current = intervals[0];
+                for (int index = 1; index < intervals.Count; index++)
+                {
+                    LineInterval next = intervals[index];
+                    if (CanMergeOcctLineIntervals(current, next))
+                    {
+                        current.End = Math.Max(current.End, next.End);
+                        continue;
+                    }
+
+                    AddMergedOcctLine(merged, current);
+                    current = next;
+                }
+
+                AddMergedOcctLine(merged, current);
+            }
+
+            passthrough.AddRange(merged);
+            return passthrough;
+        }
+
+        private static bool CanMergeOcctLineIntervals(LineInterval current, LineInterval next)
+        {
+            if (next.Start > current.End + OcctLineProjectedIntervalTouchToleranceMm)
+                return false;
+
+            double cross = Math.Abs(current.Ux * next.Uy - current.Uy * next.Ux);
+            if (cross > OcctLineParallelCrossTolerance)
+                return false;
+
+            double startDistance = DistanceFromLineIntervalCenterline(current, next, next.Start);
+            double endDistance = DistanceFromLineIntervalCenterline(current, next, next.End);
+            return startDistance <= OcctLineCenterlineMergeToleranceMm &&
+                endDistance <= OcctLineCenterlineMergeToleranceMm;
+        }
+
+        private static double DistanceFromLineIntervalCenterline(LineInterval centerline, LineInterval interval, double position)
+        {
+            double x = interval.Ux * position + interval.NormalX * interval.Offset;
+            double y = interval.Uy * position + interval.NormalY * interval.Offset;
+            return Math.Abs(centerline.NormalX * x + centerline.NormalY * y - centerline.Offset);
+        }
+
+        private static void AddMergedOcctLine(List<StepSilhouettePrimitive> merged, LineInterval interval)
+        {
+            var start = new Point2d(
+                interval.Ux * interval.Start + interval.NormalX * interval.Offset,
+                interval.Uy * interval.Start + interval.NormalY * interval.Offset);
+            var end = new Point2d(
+                interval.Ux * interval.End + interval.NormalX * interval.Offset,
+                interval.Uy * interval.End + interval.NormalY * interval.Offset);
+            if (Distance(start, end) <= PointEpsilonMm)
+                return;
+
+            merged.Add(StepSilhouettePrimitive.Line(
+                RoundCoord(start.X),
+                RoundCoord(start.Y),
+                RoundCoord(end.X),
+                RoundCoord(end.Y)));
+        }
+
+        private static double OcctStrokeAreaCoverageRatio(
+            List<StepSilhouettePrimitive> primitives,
+            StepSilhouetteBounds[] bounds,
+            bool[] remove,
+            int candidateIndex,
+            double toleranceMm,
+            double sampleStepMm)
+        {
+            StepSilhouettePrimitive candidate = primitives[candidateIndex];
+            double length = PrimitiveLength(candidate);
+            int segmentCount = Math.Max(1, Math.Min(512, (int)Math.Ceiling(length / sampleStepMm)));
+            double coveredAreaRatioSum = 0.0;
+            for (int segment = 0; segment < segmentCount; segment++)
+            {
+                Point2d sample = PrimitivePointAtFraction(candidate, (segment + 0.5) / segmentCount);
+                coveredAreaRatioSum += OcctStrokeAreaCoverageAtPoint(
+                    sample,
+                    primitives,
+                    bounds,
+                    remove,
+                    candidateIndex,
+                    toleranceMm);
+            }
+
+            return coveredAreaRatioSum / segmentCount;
+        }
+
+        private static double OcctStrokeAreaCoverageAtPoint(
+            Point2d point,
+            List<StepSilhouettePrimitive> primitives,
+            StepSilhouetteBounds[] bounds,
+            bool[] remove,
+            int candidateIndex,
+            double toleranceMm)
+        {
+            double coverage = 0.0;
+            for (int index = 0; index < primitives.Count; index++)
+            {
+                if (index == candidateIndex || remove[index])
+                    continue;
+                if (!PointInBounds(point, bounds[index]))
+                    continue;
+                double distance = DistancePointToPrimitive(point, primitives[index]);
+                if (distance > toleranceMm + PointEpsilonMm)
+                    continue;
+
+                coverage = Math.Max(coverage, Math.Max(0.0, 1.0 - distance / ProjectionLineWidthMm));
+                if (coverage >= 1.0 - PointEpsilonMm)
+                    return 1.0;
+            }
+
+            return coverage;
+        }
+
+        private static Point2d PrimitivePointAtFraction(StepSilhouettePrimitive primitive, double fraction)
+        {
+            fraction = Math.Max(0.0, Math.Min(1.0, fraction));
+            if (primitive.Kind == StepSilhouettePrimitiveKind.Line)
+            {
+                return new Point2d(
+                    primitive.X1 + (primitive.X2 - primitive.X1) * fraction,
+                    primitive.Y1 + (primitive.Y2 - primitive.Y1) * fraction);
+            }
+
+            double sweep = PrimitiveArcSweepDegrees(primitive);
+            return ArcEndpoint(primitive, primitive.StartAngle + sweep * fraction);
+        }
+
+        private static StepSilhouetteBounds ExpandedPrimitiveBounds(StepSilhouettePrimitive primitive, double paddingMm)
+        {
+            StepSilhouetteBounds bounds = primitive.Kind == StepSilhouettePrimitiveKind.Line
+                ? new StepSilhouetteBounds
+                {
+                    Left = Math.Min(primitive.X1, primitive.X2),
+                    Bottom = Math.Min(primitive.Y1, primitive.Y2),
+                    Right = Math.Max(primitive.X1, primitive.X2),
+                    Top = Math.Max(primitive.Y1, primitive.Y2)
+                }
+                : BoundsForArc(primitive.CenterX, primitive.CenterY, primitive.Radius, primitive.StartAngle, primitive.EndAngle);
+
+            return new StepSilhouetteBounds
+            {
+                Left = bounds.Left - paddingMm,
+                Bottom = bounds.Bottom - paddingMm,
+                Right = bounds.Right + paddingMm,
+                Top = bounds.Top + paddingMm
+            };
+        }
+
+        private static bool PointInBounds(Point2d point, StepSilhouetteBounds bounds)
+        {
+            return point.X >= bounds.Left - PointEpsilonMm &&
+                point.X <= bounds.Right + PointEpsilonMm &&
+                point.Y >= bounds.Bottom - PointEpsilonMm &&
+                point.Y <= bounds.Top + PointEpsilonMm;
         }
 
         private static List<StepSilhouettePrimitive> BuildFaceUnionContourPrimitives(
