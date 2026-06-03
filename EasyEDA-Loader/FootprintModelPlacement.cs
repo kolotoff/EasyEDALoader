@@ -30,6 +30,7 @@ namespace EasyEDA_Loader
 
     internal static class FootprintModelPlacement
     {
+        private const double AltiumProjectionPlacementCorrectionDeg = 180.0;
         private const double RotationEpsilonDeg = 1e-6;
         private const double ZeroModelOffsetEpsilonMm = 0.01;
 
@@ -84,6 +85,11 @@ namespace EasyEDA_Loader
         public static double ProjectionPlacementRotationDeg(double correctionDeg)
         {
             return NormalizeRotationDegrees(correctionDeg);
+        }
+
+        public static double ProjectionPlacementRotationDeg()
+        {
+            return ProjectionPlacementRotationDeg(AltiumProjectionPlacementCorrectionDeg);
         }
 
         private static double NormalizeRotationDegrees(double angleDeg)

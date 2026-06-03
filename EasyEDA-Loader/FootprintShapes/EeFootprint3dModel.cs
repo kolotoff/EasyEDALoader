@@ -175,7 +175,8 @@ namespace EasyEDA_Loader
                             TargetBounds = projectionBounds,
                             RotX = projectionRotation.X,
                             RotY = projectionRotation.Y,
-                            RotZ = projectionRotation.Z
+                            RotZ = projectionRotation.Z,
+                            Rotation2D = FootprintModelPlacement.ProjectionPlacementRotationDeg()
                         });
                     int projectionCount = EEPCB.Add3dBodyProjection(c, projectionPrimitives);
                     if (projectionCount > 0)

@@ -599,7 +599,8 @@ namespace EasyEDA_Loader
                         TargetBounds = bodyBounds,
                         RotX = rotX,
                         RotY = rotY,
-                        RotZ = rotZ
+                        RotZ = rotZ,
+                        Rotation2D = FootprintModelPlacement.ProjectionPlacementRotationDeg()
                     });
 
                 allProjectionPrimitives.AddRange(projectionPrimitives);

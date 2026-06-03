@@ -582,6 +582,7 @@ namespace StepCleaner.Tests
 
             AssertNear(0.0, FootprintModelPlacement.ProjectionPlacementRotationDeg(0.0), 0.00001, "projection placement should not apply model Z rotation a second time", failures);
             AssertNear(355.0, FootprintModelPlacement.ProjectionPlacementRotationDeg(-5.0), 0.00001, "projection correction rotation should normalize negative angles", failures);
+            AssertNear(180.0, FootprintModelPlacement.ProjectionPlacementRotationDeg(), 0.00001, "Altium projection placement should rotate imported silhouettes 180 degrees", failures);
 
             FootprintModelRotation c5334147Rotation = FootprintModelPlacement.ResolveAltiumModelRotationDeg(0.0, 0.0, 0.0);
             AssertNear(0.0, c5334147Rotation.X, 0.00001, "C5334147 EasyEDA zero model rotation should preserve X rotation", failures);
@@ -699,6 +700,8 @@ namespace StepCleaner.Tests
             AssertContains(eePcb, "AddFilter_ObjectSet", "Reproject 3D cleanup must filter iterators by projection object types", failures);
             AssertContains(eePcb, "AddFilter_LayerSet", "Reproject 3D cleanup must filter iterators by Mechanical 2", failures);
             AssertContains(eePcb, "ReprojectComponentBodySilhouette", "Reproject 3D must regenerate silhouette primitives from a 3D body", failures);
+            AssertContains(eePcb, "Rotation2D = FootprintModelPlacement.ProjectionPlacementRotationDeg()", "Reproject 3D must apply the common Altium 180-degree projection placement correction", failures);
+            AssertContains(File.ReadAllText(Path.Combine(repoRoot, "EasyEDA-Loader", "FootprintShapes", "EeFootprint3dModel.cs")), "Rotation2D = FootprintModelPlacement.ProjectionPlacementRotationDeg()", "3D model import must apply the common Altium 180-degree projection placement correction", failures);
             AssertContains(module, "ReprojectComponentBodySilhouette(component, out removedCount)", "Reproject 3D must only clear Mechanical 2 after projection generation succeeds", failures);
             AssertContains(eePcb, "BeginPcbPrimitiveModify(component)", "Reproject 3D must open a footprint primitive modify transaction for undo", failures);
             AssertContains(eePcb, "EndPcbPrimitiveModify(component, modifying, changed)", "Reproject 3D must close or cancel the footprint primitive modify transaction for undo", failures);
