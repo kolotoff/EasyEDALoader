@@ -17,6 +17,7 @@ namespace StepCleaner.Tests
             AssertTinyProjectedGapIsNotMerged(failures);
             AssertSlightlyAngledTouchingLinesAreNotMerged(failures);
             AssertOffsetParallelLinesAreNotMerged(failures);
+            AssertCircularContactChordLinesAreConvertedToArcs(failures);
             AssertGappedCollinearLinesAreKeptSeparate(failures);
             AssertCoveredLineIsRemoved(failures);
             AssertMostlyVisibleLineIsKept(failures);
@@ -93,6 +94,28 @@ namespace StepCleaner.Tests
 
             List<StepSilhouettePrimitive> merged = MergeTouchingOcctLinePrimitives(primitives);
             AssertEqual(2, merged.Count, "parallel OCCT lines on different centerlines should not merge", failures);
+        }
+
+        private static void AssertCircularContactChordLinesAreConvertedToArcs(List<string> failures)
+        {
+            var primitives = new List<StepSilhouettePrimitive>
+            {
+                StepSilhouettePrimitive.Arc(0.0, 0.0, 0.22, 0.0, 90.0),
+                StepSilhouettePrimitive.Arc(0.0, 0.0, 0.33, 90.0, 180.0),
+                StepSilhouettePrimitive.Arc(0.0, 0.0, 0.49, 180.0, 270.0),
+                StepSilhouettePrimitive.Arc(0.0, 0.0, 0.49, 270.0, 360.0),
+                StepSilhouettePrimitive.Line(0.13, 0.93, 0.93, 0.13),
+                StepSilhouettePrimitive.Line(-0.13, 0.93, -0.93, 0.13),
+                StepSilhouettePrimitive.Line(-0.13, -0.93, -0.93, -0.13),
+                StepSilhouettePrimitive.Line(0.13, -0.93, 0.93, -0.13),
+                StepSilhouettePrimitive.Line(-0.14, 0.0, 0.14, 0.0),
+                StepSilhouettePrimitive.Line(0.0, -0.14, 0.0, 0.14)
+            };
+
+            List<StepSilhouettePrimitive> optimized = OptimizeOcctPrimitives(primitives);
+            AssertEqual(8, CountKind(optimized, StepSilhouettePrimitiveKind.Arc), "circular contact chord lines should become arcs", failures);
+            AssertEqual(2, CountKind(optimized, StepSilhouettePrimitiveKind.Line), "contact center detail lines should remain", failures);
+            AssertEqual(4, CountArcsNearRadius(optimized, 0.939), "converted contact arcs should keep the chord radius", failures);
         }
 
         private static void AssertShortTouchingLinesAreMergedBeforeCutoff(List<string> failures)
@@ -174,6 +197,33 @@ namespace StepCleaner.Tests
         {
             if (expected != actual)
                 failures.Add(message + ": expected " + expected.ToString(CultureInfo.InvariantCulture) + ", got " + actual.ToString(CultureInfo.InvariantCulture));
+        }
+
+        private static int CountKind(List<StepSilhouettePrimitive> primitives, StepSilhouettePrimitiveKind kind)
+        {
+            int count = 0;
+            foreach (StepSilhouettePrimitive primitive in primitives)
+            {
+                if (primitive.Kind == kind)
+                    count++;
+            }
+
+            return count;
+        }
+
+        private static int CountArcsNearRadius(List<StepSilhouettePrimitive> primitives, double radius)
+        {
+            int count = 0;
+            foreach (StepSilhouettePrimitive primitive in primitives)
+            {
+                if (primitive.Kind == StepSilhouettePrimitiveKind.Arc &&
+                    Math.Abs(primitive.Radius - radius) <= 0.01)
+                {
+                    count++;
+                }
+            }
+
+            return count;
         }
 
         private static void AssertLineEnd(double expected, double actual, string message, List<string> failures)

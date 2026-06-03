@@ -187,6 +187,12 @@ namespace EasyEDA_Loader
                 catch (Exception projectionEx)
                 {
                     EasyEDALoaderModule.Trace("3D body projection failed: " + projectionEx);
+                    if (ctx.Exception != null && !ctx.Exception(new InvalidOperationException(
+                        "3D body projection failed: " + projectionEx.Message,
+                        projectionEx)))
+                    {
+                        return false;
+                    }
                 }
 
                 File.Delete(temp);

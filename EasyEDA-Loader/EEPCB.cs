@@ -498,6 +498,7 @@ namespace EasyEDA_Loader
                 return 0;
 
             int projectionCount = 0;
+            bool exportedBody = false;
             var allProjectionPrimitives = new List<StepSilhouettePrimitive>();
             foreach (IPCB_ComponentBody body in EnumerateComponentBodies(component))
             {
@@ -508,6 +509,7 @@ namespace EasyEDA_Loader
                 if (stepData == null || stepData.Length == 0)
                     continue;
 
+                exportedBody = true;
                 TryGetComponentBodyModelState(body, out double rotX, out double rotY, out double rotZ);
                 IReadOnlyList<StepSilhouettePrimitive> projectionPrimitives = StepSilhouetteProjection.Generate(
                     stepData,
@@ -524,7 +526,12 @@ namespace EasyEDA_Loader
             }
 
             if (projectionCount == 0)
+            {
+                if (exportedBody)
+                    throw new InvalidOperationException("OCCT HLR produced no Mechanical 2 projection primitives for the active footprint 3D body.");
+
                 throw new InvalidOperationException("The active footprint does not contain an exportable 3D body to reproject.");
+            }
 
             AddAssemblyTexts(component, false, false, 0, allProjectionPrimitives);
             return projectionCount;
