@@ -5,6 +5,13 @@ using System.Threading.Tasks;
 
 namespace EasyEDA_Loader
 {
+    public sealed class ModelCacheResult
+    {
+        public byte[] Data { get; set; }
+        public bool CacheHit { get; set; }
+        public string CachePath { get; set; }
+    }
+
     public static class ModelCache
     {
         public static Task<byte[]> GetStepModelAsync(EasyedaApi api, string modelUuid, CancellationToken cancellationToken)
@@ -29,15 +36,56 @@ namespace EasyEDA_Loader
                 cancellationToken);
         }
 
-        public static Task<byte[]> GetCleanStepModelAsync(string modelUuid, Func<Task<byte[]>> clean, CancellationToken cancellationToken)
+        public static async Task<byte[]> GetCleanStepModelAsync(string modelUuid, Func<Task<byte[]>> clean, CancellationToken cancellationToken)
         {
             if (clean == null)
                 throw new ArgumentNullException(nameof(clean));
 
-            return GetOrDownloadAsync(
-                GetCleanStepPath(modelUuid),
-                clean,
-                cancellationToken);
+            ModelCacheResult result = await GetCleanStepModelWithStatusAsync(modelUuid, clean, cancellationToken)
+                .ConfigureAwait(false);
+            return result.Data;
+        }
+
+        public static async Task<ModelCacheResult> GetCleanStepModelWithStatusAsync(
+            string modelUuid,
+            Func<Task<byte[]>> clean,
+            CancellationToken cancellationToken)
+        {
+            if (clean == null)
+                throw new ArgumentNullException(nameof(clean));
+
+            string cachePath = GetCleanStepPath(modelUuid);
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (File.Exists(cachePath))
+            {
+                byte[] cached = File.ReadAllBytes(cachePath);
+                if (cached.Length > 0)
+                {
+                    return new ModelCacheResult
+                    {
+                        Data = cached,
+                        CacheHit = true,
+                        CachePath = cachePath
+                    };
+                }
+            }
+
+            byte[] data = await clean().ConfigureAwait(false);
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (data != null && data.Length > 0)
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(cachePath));
+                File.WriteAllBytes(cachePath, data);
+            }
+
+            return new ModelCacheResult
+            {
+                Data = data,
+                CacheHit = false,
+                CachePath = cachePath
+            };
         }
 
         public static string GetOriginalStepPath(string modelUuid)

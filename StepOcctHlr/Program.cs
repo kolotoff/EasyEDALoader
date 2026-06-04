@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Text.Json;
@@ -7,7 +8,7 @@ namespace StepOcctHlr
 {
     internal static class Program
     {
-        private const string Usage = "Usage: StepOcctHlr <input.step|-> <output.json|-> [--rot-x deg] [--rot-y deg] [--rot-z deg] [--rotation2d deg]";
+        private const string Usage = "Usage: StepOcctHlr <input.step|-> <output.json|-> [--rot-x deg] [--rot-y deg] [--rot-z deg] [--rotation2d deg] [--views x_plus,y_plus,z_plus]";
 
         private static int Main(string[] args)
         {
@@ -24,14 +25,16 @@ namespace StepOcctHlr
                 string inputPath = ResolveInputPath(args[0], out tempInputPath);
                 outputPath = ResolveOutputPath(outputPath);
                 OcctConfiguration.Configure();
-                ProjectionOptions options = ParseOptions(args);
+                ParsedOptions options = ParseOptions(args);
                 if (!File.Exists(inputPath))
                 {
                     WriteResult(outputPath, new ProjectionResultDto { Success = false, Error = "STEP file not found: " + inputPath });
                     return 2;
                 }
 
-                ProjectionResultDto result = OcctHiddenLineExtractor.Extract(inputPath, options);
+                ProjectionResultDto result = options.ViewNames.Count > 0
+                    ? ExtractBatch(inputPath, options.ViewNames)
+                    : OcctHiddenLineExtractor.Extract(inputPath, options.SingleViewOptions);
                 WriteResult(outputPath, result);
                 return result.Success ? 0 : 1;
             }
@@ -73,26 +76,94 @@ namespace StepOcctHlr
             return outputArgument == "-" ? "-" : Path.GetFullPath(outputArgument);
         }
 
-        private static ProjectionOptions ParseOptions(string[] args)
+        private static ProjectionResultDto ExtractBatch(string inputPath, List<string> viewNames)
+        {
+            var requests = new List<ProjectionViewRequest>();
+            foreach (string viewName in viewNames)
+            {
+                requests.Add(new ProjectionViewRequest
+                {
+                    Name = viewName,
+                    Options = CreateViewOptions(viewName)
+                });
+            }
+
+            return OcctHiddenLineExtractor.ExtractBatch(inputPath, requests);
+        }
+
+        private static ProjectionOptions CreateViewOptions(string viewName)
         {
             var options = new ProjectionOptions();
+            if (string.Equals(viewName, "x_plus", StringComparison.OrdinalIgnoreCase))
+            {
+                options.RotY = 90.0;
+                options.Rotation2D = 90.0;
+            }
+            else if (string.Equals(viewName, "x_minus", StringComparison.OrdinalIgnoreCase))
+            {
+                options.RotY = -90.0;
+                options.Rotation2D = 270.0;
+            }
+            else if (string.Equals(viewName, "y_plus", StringComparison.OrdinalIgnoreCase))
+            {
+                options.RotX = -90.0;
+                options.Rotation2D = 180.0;
+            }
+            else if (string.Equals(viewName, "y_minus", StringComparison.OrdinalIgnoreCase))
+            {
+                options.RotX = 90.0;
+            }
+            else if (string.Equals(viewName, "z_minus", StringComparison.OrdinalIgnoreCase))
+            {
+                options.Rotation2D = 180.0;
+            }
+            else if (string.Equals(viewName, "z_plus", StringComparison.OrdinalIgnoreCase))
+            {
+                options.RotX = 180.0;
+                options.Rotation2D = 180.0;
+            }
+            else
+            {
+                throw new ArgumentException("Unknown view name: " + viewName);
+            }
+
+            return options;
+        }
+
+        private static ParsedOptions ParseOptions(string[] args)
+        {
+            var options = new ParsedOptions();
             for (int index = 2; index < args.Length; index++)
             {
                 string option = args[index];
                 if (index + 1 >= args.Length)
                     throw new ArgumentException("Missing value for " + option);
 
-                if (!double.TryParse(args[++index], NumberStyles.Float, CultureInfo.InvariantCulture, out double value))
-                    throw new ArgumentException("Invalid numeric value for " + option + ": " + args[index]);
+                string valueText = args[++index];
+                if (option == "--views")
+                {
+                    foreach (string viewName in valueText.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries))
+                        options.ViewNames.Add(viewName.Trim());
+                    continue;
+                }
 
-                if (option == "--rot-x") options.RotX = value;
-                else if (option == "--rot-y") options.RotY = value;
-                else if (option == "--rot-z") options.RotZ = value;
-                else if (option == "--rotation2d") options.Rotation2D = value;
+                if (!double.TryParse(valueText, NumberStyles.Float, CultureInfo.InvariantCulture, out double value))
+                    throw new ArgumentException("Invalid numeric value for " + option + ": " + valueText);
+
+                if (option == "--rot-x") options.SingleViewOptions.RotX = value;
+                else if (option == "--rot-y") options.SingleViewOptions.RotY = value;
+                else if (option == "--rot-z") options.SingleViewOptions.RotZ = value;
+                else if (option == "--rotation2d") options.SingleViewOptions.Rotation2D = value;
                 else throw new ArgumentException("Unknown option: " + option);
             }
 
             return options;
+        }
+
+        private sealed class ParsedOptions
+        {
+            public ProjectionOptions SingleViewOptions { get; } = new ProjectionOptions();
+            public List<string> ViewNames { get; } = new List<string>();
         }
 
         private static void WriteResult(string outputPath, ProjectionResultDto result)

@@ -117,7 +117,7 @@ Observed after seeding network artifacts into the normal cache because this sand
 - Modify: `EasyEDA-Loader/DialogWindow.cs`
 - Modify: `Test/StepCleaner/Program.cs`
 
-- [ ] **Step 1: Write failing cache-status regression**
+- [x] **Step 1: Write failing cache-status regression**
 
 Extend `RunModelCacheTests()` in `Test/StepCleaner/Program.cs` with source-level checks that the clean STEP cache path exposes hit/miss status instead of only returning bytes.
 
@@ -149,7 +149,7 @@ dotnet run --project Test/StepCleaner/StepCleaner.Tests.csproj -- --model-cache
 
 Expected before implementation: FAIL with missing `ModelCacheResult` / `GetCleanStepModelWithStatusAsync`.
 
-- [ ] **Step 2: Add cache-result API without changing existing callers**
+- [x] **Step 2: Add cache-result API without changing existing callers**
 
 In `EasyEDA-Loader/ModelCache.cs`, add:
 
@@ -171,7 +171,7 @@ Add `GetCleanStepModelWithStatusAsync(string modelUuid, Func<Task<byte[]>> clean
 - returns `{ Data = data, CacheHit = false, CachePath = cachePath }`;
 - leaves existing `GetCleanStepModelAsync()` as a wrapper returning `.Data`.
 
-- [ ] **Step 3: Trace clean cache status from import and preview**
+- [x] **Step 3: Trace clean cache status from import and preview**
 
 In `EasyEDA-Loader/FootprintShapes/EeFootprint3dModel.cs`, replace the current `ModelCache.GetCleanStepModelAsync(...)` call with `GetCleanStepModelWithStatusAsync(...)`, keep the same clean lambda, and trace:
 
@@ -185,7 +185,7 @@ EasyEDALoaderModule.Trace(
 
 In `EasyEDA-Loader/DialogWindow.cs`, update `GetOrCreateCleanStepPreviewFileAsync()` to use the same status API and trace the same hit/miss shape for preview generation.
 
-- [ ] **Step 4: Verify cache hit path stays cheap**
+- [x] **Step 4: Verify cache hit path stays cheap**
 
 Run:
 
@@ -197,7 +197,29 @@ dotnet build EasyEDA-Loader/EasyEDA-Loader.csproj
 
 Expected: all commands exit 0. The second `C5338332` measurement should keep `watermark_clean_cache_ms` in low single-digit milliseconds on a clean STEP cache hit.
 
-### Task 4: Replace F3D Verification Projection Rendering With OpenCascade HLR
+Recorded after implementation:
+
+```text
+dotnet run --project Test\StepCleaner\StepCleaner.Tests.csproj -- --model-cache
+Model cache regression test passed.
+
+dotnet run --project Test\StepCleaner\StepCleaner.Tests.csproj -- --measure-model-import C5338332 --repeat 2
+Run 1:
+  watermark_clean_cache_ms=3
+  raw_obj_z_info_ms=1
+  occt_hlr_projection_total_ms=1487
+  total_measured_ms=1515
+Run 2:
+  watermark_clean_cache_ms=1
+  raw_obj_z_info_ms=0
+  occt_hlr_projection_total_ms=1333
+  total_measured_ms=1337
+
+dotnet build EasyEDA-Loader\EasyEDA-Loader.csproj
+Build succeeded.
+```
+
+### Task 4: Add Gated OpenCascade HLR Verification Projection Backend
 
 **Files:**
 - Modify: `EasyEDA-Loader/StepProjectionRenderer.cs`
@@ -209,11 +231,11 @@ Expected: all commands exit 0. The second `C5338332` measurement should keep `wa
 - Modify: `Test/StepCleaner/Program.cs`
 - Modify: `Test/StepCleaner/OcctHiddenLineProjectionSmokeTests.cs`
 
-Do not cache silhouette projection output in this task. The target is replacing the F3D render backend used by watermark verification with an on-demand OpenCascade backend.
+Do not cache silhouette projection output in this task. The target is adding an on-demand OpenCascade backend for watermark verification projections, then promoting it only after visual equivalence is proven.
 
 This task is for monochrome/technical verification projections, not colored 3D previews. Do not use the managed `AIS_ColoredShape`/`XCAFDoc_ColorTool` color-render probe here; it has been verified to produce wrong colors for DF56. The correct OCCT color renderer would require native `XCAFPrs_AISObject`, which is not available in the current managed OCCT package.
 
-- [ ] **Step 1: Write failing backend-selection regression**
+- [x] **Step 1: Write failing backend-selection regression**
 
 Extend `RunSilhouetteCleanupTests()` in `Test/StepCleaner/Program.cs` with source-level checks:
 
@@ -244,7 +266,7 @@ dotnet run --project Test/StepCleaner/StepCleaner.Tests.csproj -- --silhouette-c
 
 Expected before implementation: FAIL with missing `TryRenderWithOpenCascade`.
 
-- [ ] **Step 2: Add OpenCascade render path that preserves existing projection transform**
+- [x] **Step 2: Add OpenCascade render path that preserves existing projection transform**
 
 In `EasyEDA-Loader/StepProjectionRenderer.cs`, change `RenderProjection(...)` order to:
 
@@ -269,7 +291,7 @@ Implement `TryRenderWithOpenCascade(...)` so it:
 - writes a PNG to `outputPath`;
 - returns `false` only if the helper is unavailable or OCCT projection fails.
 
-- [ ] **Step 3: Add transform-aware primitive PNG renderer**
+- [x] **Step 3: Add transform-aware primitive PNG renderer**
 
 In `EasyEDA-Loader/StepSilhouetteImageRenderer.cs`, add a method used by `StepProjectionRenderer`:
 
@@ -282,7 +304,7 @@ public static byte[] RenderPng(
 
 Or, if keeping rendering inside `StepProjectionRenderer` is simpler, add a private `RenderOcctPrimitives(...)` there. The important requirement is that OCCT output uses `StepProjectionRenderer`'s `ProjectionTransform` so `BuildAllowedChangeMask(...)` continues to line up with rendered pixels.
 
-- [ ] **Step 4: Avoid repeated OpenCascade process startup for multi-view verification**
+- [x] **Step 4: Avoid repeated OpenCascade process startup for multi-view verification**
 
 Extend `StepOcctHlr` with a batch mode:
 
@@ -294,7 +316,7 @@ Update `ProjectionResultDto` to support per-view primitive groups while keeping 
 
 In `EasyEDA-Loader/StepProjectionRenderer.cs`, when rendering multiple selected views for one STEP file, use the batch helper so the helper reads the STEP file once per model instead of once per model per view.
 
-- [ ] **Step 5: Verify OCCT projection backend against existing suites**
+- [x] **Step 5: Verify OCCT projection backend against existing suites**
 
 Run:
 
@@ -306,7 +328,33 @@ dotnet run --project Test/StepCleaner/StepCleaner.Tests.csproj
 dotnet build EasyEDA-Loader/EasyEDA-Loader.csproj
 ```
 
-Expected: all commands exit 0. `--silhouette-cleanup` should no longer require `STEPCLEANER_F3D_CONSOLE` / `f3d-console.exe` for primary verification rendering. F3D remains only as fallback.
+Expected: all commands exit 0. If the OCCT renderer is promoted in the future, `--silhouette-cleanup` should no longer require `STEPCLEANER_F3D_CONSOLE` / `f3d-console.exe` for primary verification rendering. For this iteration, F3D remains the default because the OCCT PNG renderer is still gated by visual-equivalence failures.
+
+Result: the OCCT primitive renderer, transform-aware drawing, and `StepOcctHlr --views` batch mode were implemented. Batch mode starts one helper process, reads the STEP root shape once, and projects the requested views from that loaded shape. The OCCT PNG verification renderer is not safe as the default yet: a full default-replacement run produced visual regressions, including `z_minus changed outside detected regions` on multiple validated models and some non-flat detail failures. The implementation is therefore gated behind:
+
+```text
+STEPCLEANER_USE_OCCT_PROJECTION_RENDERER=1
+```
+
+Default watermark verification keeps F3D rendering while OCCT remains available as an experimental backend for further visual-equivalence work. Fresh verification with the gate disabled:
+
+```text
+dotnet run --no-build --project Test\StepCleaner\StepCleaner.Tests.csproj -- --occt-hlr-smoke
+OCCT HLR smoke test passed for CONN-SMD_DF56_40S_0.3V_51.step
+Primitive totals: 299 line(s), 38 arc(s), 337 total.
+
+dotnet run --no-build --project Test\StepCleaner\StepCleaner.Tests.csproj -- --occt-overlap-unit
+OCCT overlap cleanup tests passed.
+
+dotnet run --no-build --project Test\StepCleaner\StepCleaner.Tests.csproj -- --silhouette-cleanup
+Silhouette cleanup regression test passed.
+
+dotnet run --no-build --project Test\StepCleaner\StepCleaner.Tests.csproj
+STEP cleaner regression test passed. Cleaned 16 original file(s), compared 16 validated file(s).
+
+dotnet build EasyEDA-Loader\EasyEDA-Loader.csproj
+Build succeeded.
+```
 
 ### Task 5: Speed Up OCCT Silhouette Projection
 
@@ -563,7 +611,7 @@ If these are not available, keep F3D as the colored renderer and continue only w
 
 Local check result: native OCCT colored replacement is still gated. `DRAWEXE` was not found, `vcpkg` was not found, `CASROOT` is unset, and `C:\Program Files\F3D` does not contain `XCAFPrs_AISObject.hxx`. Keep F3D as the color-correct renderer.
 
-- [ ] **Step 3: Keep direct libf3d as the practical color fallback**
+- [x] **Step 3: Keep direct libf3d as the practical color fallback**
 
 If colored PNG render process startup becomes important before native OCCT is available, prototype a persistent direct `libf3d` helper behind `StepProjectionRenderer.TryRenderWithF3D()` instead of spawning `f3d-console.exe` per render. It must use:
 
@@ -578,3 +626,5 @@ scene.camera.orthographic = true
 Expected: output colors match `f3d.exe --scalar-coloring --coloring-array=Colors --coloring-component=-2`. Treat one-shot `libf3d` timings around `2.2-2.9 s` as baseline; only promote this path if a persistent process proves faster than the existing warm CLI path.
 
 Keep `DialogWindow.StartF3DPreviewAsync()` as a separate, later UI task unless the work explicitly targets interactive preview startup. Replacing the embedded `f3d.exe` window with libf3d requires a new host/control model and should not be mixed into watermark-clean or projection-speed work.
+
+Decision recorded: do not promote a direct `libf3d` helper in this iteration. The one-shot helper preserved color correctness but measured around `2.2-2.9 s`, which is not a clear speed win over the existing warm F3D CLI path. Keep it as the practical future fallback only if a persistent helper is introduced and benchmarked faster.

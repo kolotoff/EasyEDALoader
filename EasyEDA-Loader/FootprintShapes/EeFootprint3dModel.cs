@@ -91,7 +91,7 @@ namespace EasyEDA_Loader
                 if (ctx.RemoveWatermark)
                 {
                     string cleanCacheKey = CleanStepCacheKeys.GetCleanModeKey(GetSafeCacheFileName(), ctx.CleanText);
-                    footprintModel = ModelImportTrace.Measure("watermark_clean_cache", modelTraceIdentifier, () => ModelCache.GetCleanStepModelAsync(
+                    ModelCacheResult cleanResult = ModelImportTrace.Measure("watermark_clean_cache", modelTraceIdentifier, () => ModelCache.GetCleanStepModelWithStatusAsync(
                             cleanCacheKey,
                             () => Task.Run(() => StepWatermarkCleanVerifier.CleanOrThrow(
                                 originalModel,
@@ -103,6 +103,14 @@ namespace EasyEDA_Loader
                         .ConfigureAwait(false)
                         .GetAwaiter()
                         .GetResult());
+                    EasyEDALoaderModule.Trace(
+                        "Clean STEP cache " +
+                        (cleanResult.CacheHit ? "hit" : "miss") +
+                        ": model=" +
+                        modelTraceIdentifier +
+                        " path=" +
+                        cleanResult.CachePath);
+                    footprintModel = cleanResult.Data;
                 }
 
                 string modelIdentifier = modelTraceIdentifier;

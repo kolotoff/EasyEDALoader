@@ -286,6 +286,7 @@ namespace StepCleaner.Tests
             }
 
             string footprint3dModel = File.ReadAllText(Path.Combine(repoRoot, "EasyEDA-Loader", "FootprintShapes", "EeFootprint3dModel.cs"));
+            string modelCache = File.ReadAllText(Path.Combine(repoRoot, "EasyEDA-Loader", "ModelCache.cs"));
             string easyEdaLoader = File.ReadAllText(Path.Combine(repoRoot, "EasyEDA-Loader", "EasyEDALoader.cs"));
             string dialogWindow = File.ReadAllText(Path.Combine(repoRoot, "EasyEDA-Loader", "DialogWindow.cs"));
             string stepProjectionRenderer = File.ReadAllText(Path.Combine(repoRoot, "EasyEDA-Loader", "StepProjectionRenderer.cs"));
@@ -293,8 +294,23 @@ namespace StepCleaner.Tests
             string stepCleanerProgram = File.ReadAllText(Path.Combine(repoRoot, "Test", "StepCleaner", "Program.cs"));
             AssertContains(
                 footprint3dModel,
-                "ModelCache.GetCleanStepModelAsync",
+                "ModelCache.GetCleanStepModelWithStatusAsync",
                 "footprint import should reuse the cleaned STEP model cache instead of cleaning every import",
+                failures);
+            AssertContains(
+                modelCache,
+                "public sealed class ModelCacheResult",
+                "model cache should expose whether clean STEP data came from cache",
+                failures);
+            AssertContains(
+                footprint3dModel,
+                "GetCleanStepModelWithStatusAsync",
+                "footprint import should trace clean STEP cache hit/miss status",
+                failures);
+            AssertContains(
+                dialogWindow,
+                "GetCleanStepModelWithStatusAsync",
+                "preview clean STEP generation should share the same cache-status path",
                 failures);
             AssertContains(
                 footprint3dModel,
@@ -1121,10 +1137,41 @@ namespace StepCleaner.Tests
             var failures = new List<string>();
             string repoRoot = FindRepoRoot();
             string verifier = File.ReadAllText(Path.Combine(repoRoot, "EasyEDA-Loader", "StepWatermarkCleanVerifier.cs"));
+            string projectionRenderer = File.ReadAllText(Path.Combine(repoRoot, "EasyEDA-Loader", "StepProjectionRenderer.cs"));
             AssertContains(
                 verifier,
                 "Task.WaitAll(originalProjectionTask, cleanProjectionTask)",
                 "watermark cleanup verification should render original and cleaned projections in parallel",
+                failures);
+            AssertContains(
+                projectionRenderer,
+                "TryRenderWithOpenCascade",
+                "watermark verification projections should keep an experimental OpenCascade render backend",
+                failures);
+            AssertContains(
+                projectionRenderer,
+                "IsOpenCascadeVerificationRendererEnabled",
+                "OpenCascade PNG verification rendering should stay gated until visual equivalence is proven",
+                failures);
+            AssertContains(
+                projectionRenderer,
+                "TryRenderWithOpenCascade(inputPath, outputPath, view, transform, options",
+                "OpenCascade renderer must use StepProjectionRenderer's existing transform so detection masks align",
+                failures);
+            AssertContains(
+                projectionRenderer,
+                "TryRenderWithOpenCascadeBatch",
+                "multi-view watermark verification projections should avoid repeated OpenCascade process startup",
+                failures);
+            AssertContains(
+                projectionRenderer,
+                "GenerateViewsFromFile",
+                "multi-view OpenCascade rendering should request all selected views from one helper process",
+                failures);
+            AssertContains(
+                projectionRenderer,
+                "TryRenderWithF3D",
+                "F3D should remain as fallback while OpenCascade rollout is verified",
                 failures);
 
             string dataRoot = FindDataRoot();

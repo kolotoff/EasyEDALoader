@@ -684,7 +684,7 @@ namespace EasyEDA_Loader
 
             string cleanModeKey = CleanStepCacheKeys.GetCleanModeKey(modelKey, cleanText);
             string safeName = ModelCache.GetSafeFileName(modelKey);
-            byte[] cleanStepData = await ModelCache.GetCleanStepModelAsync(
+            ModelCacheResult cleanResult = await ModelCache.GetCleanStepModelWithStatusAsync(
                 cleanModeKey,
                 () => Task.Run(() =>
                     StepWatermarkCleanVerifier.CleanOrThrow(
@@ -699,9 +699,17 @@ namespace EasyEDA_Loader
                         cleanText),
                     cancellationToken),
                 cancellationToken);
+            EasyEDALoaderModule.Trace(
+                "Clean STEP cache " +
+                (cleanResult.CacheHit ? "hit" : "miss") +
+                ": model=" +
+                safeName +
+                " path=" +
+                cleanResult.CachePath);
 
             cancellationToken.ThrowIfCancellationRequested();
 
+            byte[] cleanStepData = cleanResult.Data;
             if (cleanStepData == null || cleanStepData.Length == 0)
                 throw new InvalidOperationException("Clean STEP data is empty.");
 

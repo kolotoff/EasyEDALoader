@@ -1,9 +1,20 @@
 using System.Collections.Generic;
+using System.Text.Json.Serialization;
 
 namespace StepOcctHlr
 {
     internal sealed class ProjectionResultDto
     {
+        public bool Success { get; set; }
+        public string Error { get; set; }
+        public List<ProjectionPrimitiveDto> Primitives { get; set; } = new List<ProjectionPrimitiveDto>();
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public List<ProjectionViewResultDto> Views { get; set; }
+    }
+
+    internal sealed class ProjectionViewResultDto
+    {
+        public string Name { get; set; }
         public bool Success { get; set; }
         public string Error { get; set; }
         public List<ProjectionPrimitiveDto> Primitives { get; set; } = new List<ProjectionPrimitiveDto>();

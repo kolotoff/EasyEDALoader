@@ -124,6 +124,22 @@ namespace EasyEDA_Loader
             return GenerateWithOcctHelper(stepPath, null, placement);
         }
 
+        public static IReadOnlyDictionary<string, IReadOnlyList<StepSilhouettePrimitive>> GenerateViewsFromFile(
+            string stepPath,
+            IReadOnlyDictionary<string, StepSilhouettePlacement> placements)
+        {
+            if (string.IsNullOrWhiteSpace(stepPath) || !File.Exists(stepPath) || placements == null || placements.Count == 0)
+                return new Dictionary<string, IReadOnlyList<StepSilhouettePrimitive>>(StringComparer.OrdinalIgnoreCase);
+
+            string standardOutput = RunOcctHelper(stepPath, null, arguments =>
+            {
+                arguments.Add("--views");
+                arguments.Add(string.Join(",", placements.Keys));
+            });
+
+            return ModelImportTrace.Measure("projection_optimization", null, () => ReadOcctProjectionViewsJsonFromString(standardOutput, placements));
+        }
+
         private static IReadOnlyList<StepSilhouettePrimitive> GenerateWithOcctHelper(
             byte[] stepData,
             StepSilhouettePlacement placement)
@@ -143,67 +159,16 @@ namespace EasyEDA_Loader
 
             try
             {
-                var startInfo = new ProcessStartInfo
+                string standardOutput = RunOcctHelper(inputPath, stepData, arguments =>
                 {
-                    FileName = helperPath,
-                    WorkingDirectory = Path.GetDirectoryName(helperPath),
-                    UseShellExecute = false,
-                    CreateNoWindow = true,
-                    RedirectStandardInput = stepData != null,
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true
-                };
-                startInfo.ArgumentList.Add(inputPath);
-                startInfo.ArgumentList.Add("-");
-                startInfo.ArgumentList.Add("--rot-x");
-                startInfo.ArgumentList.Add(placement.RotX.ToString(CultureInfo.InvariantCulture));
-                startInfo.ArgumentList.Add("--rot-y");
-                startInfo.ArgumentList.Add(placement.RotY.ToString(CultureInfo.InvariantCulture));
-                startInfo.ArgumentList.Add("--rot-z");
-                startInfo.ArgumentList.Add(placement.RotZ.ToString(CultureInfo.InvariantCulture));
-                startInfo.ArgumentList.Add("--rotation2d");
-                startInfo.ArgumentList.Add(placement.Rotation2D.ToString(CultureInfo.InvariantCulture));
-
-                string standardOutput = "";
-                string standardError = "";
-                ModelImportTrace.Measure("occt_hlr_projection", null, () =>
-                {
-                    using (Process process = Process.Start(startInfo))
-                    {
-                        if (process == null)
-                            throw new InvalidOperationException("OCCT HLR helper process did not start: " + helperPath);
-
-                        Task<string> standardOutputTask = process.StandardOutput.ReadToEndAsync();
-                        Task<string> standardErrorTask = process.StandardError.ReadToEndAsync();
-                        if (UseStandardInputForStepData(stepData))
-                        {
-                            process.StandardInput.BaseStream.Write(stepData, 0, stepData.Length);
-                            process.StandardInput.Close();
-                        }
-
-                        if (!process.WaitForExit(30000))
-                        {
-                            try { process.Kill(); }
-                            catch { }
-                            throw new TimeoutException("OCCT HLR helper timed out after 30 seconds: " + helperPath);
-                        }
-                        process.WaitForExit();
-                        standardOutput = standardOutputTask.GetAwaiter().GetResult();
-                        standardError = standardErrorTask.GetAwaiter().GetResult();
-
-                        if (process.ExitCode != 0 || string.IsNullOrWhiteSpace(standardOutput))
-                        {
-                            string detail = FirstNonEmpty(
-                                standardError.Trim(),
-                                standardOutput.Trim(),
-                                "No error output.");
-                            throw new InvalidOperationException(
-                                "OCCT HLR helper failed with exit code " +
-                                process.ExitCode.ToString(CultureInfo.InvariantCulture) +
-                                ": " +
-                                detail);
-                        }
-                    }
+                    arguments.Add("--rot-x");
+                    arguments.Add(placement.RotX.ToString(CultureInfo.InvariantCulture));
+                    arguments.Add("--rot-y");
+                    arguments.Add(placement.RotY.ToString(CultureInfo.InvariantCulture));
+                    arguments.Add("--rot-z");
+                    arguments.Add(placement.RotZ.ToString(CultureInfo.InvariantCulture));
+                    arguments.Add("--rotation2d");
+                    arguments.Add(placement.Rotation2D.ToString(CultureInfo.InvariantCulture));
                 });
 
                 return ModelImportTrace.Measure("projection_optimization", null, () => ReadOcctProjectionJsonFromString(standardOutput, placement.TargetBounds));
@@ -213,6 +178,75 @@ namespace EasyEDA_Loader
                 Debug.WriteLine("OCCT HLR projection failed: " + ex.Message);
                 throw;
             }
+        }
+
+        private static string RunOcctHelper(
+            string inputPath,
+            byte[] stepData,
+            Action<System.Collections.ObjectModel.Collection<string>> addArguments)
+        {
+            string helperPath = FindOcctHlrExecutable();
+            if (string.IsNullOrWhiteSpace(helperPath))
+                throw new InvalidOperationException(
+                    "OCCT HLR helper was not found. Reinstall EasyEDA-Loader with the StepOcctHlr folder or set EASYEDA_LOADER_OCCT_HLR to StepOcctHlr.exe.");
+
+            var startInfo = new ProcessStartInfo
+            {
+                FileName = helperPath,
+                WorkingDirectory = Path.GetDirectoryName(helperPath),
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardInput = stepData != null,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true
+            };
+            startInfo.ArgumentList.Add(inputPath);
+            startInfo.ArgumentList.Add("-");
+            addArguments?.Invoke(startInfo.ArgumentList);
+
+            string standardOutput = "";
+            string standardError = "";
+            ModelImportTrace.Measure("occt_hlr_projection", null, () =>
+            {
+                using (Process process = Process.Start(startInfo))
+                {
+                    if (process == null)
+                        throw new InvalidOperationException("OCCT HLR helper process did not start: " + helperPath);
+
+                    Task<string> standardOutputTask = process.StandardOutput.ReadToEndAsync();
+                    Task<string> standardErrorTask = process.StandardError.ReadToEndAsync();
+                    if (UseStandardInputForStepData(stepData))
+                    {
+                        process.StandardInput.BaseStream.Write(stepData, 0, stepData.Length);
+                        process.StandardInput.Close();
+                    }
+
+                    if (!process.WaitForExit(30000))
+                    {
+                        try { process.Kill(); }
+                        catch { }
+                        throw new TimeoutException("OCCT HLR helper timed out after 30 seconds: " + helperPath);
+                    }
+                    process.WaitForExit();
+                    standardOutput = standardOutputTask.GetAwaiter().GetResult();
+                    standardError = standardErrorTask.GetAwaiter().GetResult();
+
+                    if (process.ExitCode != 0 || string.IsNullOrWhiteSpace(standardOutput))
+                    {
+                        string detail = FirstNonEmpty(
+                            standardError.Trim(),
+                            standardOutput.Trim(),
+                            "No error output.");
+                        throw new InvalidOperationException(
+                            "OCCT HLR helper failed with exit code " +
+                            process.ExitCode.ToString(CultureInfo.InvariantCulture) +
+                            ": " +
+                            detail);
+                    }
+                }
+            });
+
+            return standardOutput;
         }
 
         private static bool UseStandardInputForStepData(byte[] stepData)
@@ -306,43 +340,87 @@ namespace EasyEDA_Loader
                 if (!root.TryGetProperty("Primitives", out JsonElement primitivesElement) || primitivesElement.ValueKind != JsonValueKind.Array)
                     throw new InvalidDataException("OCCT HLR helper result does not contain a primitives array.");
 
-                var sourcePrimitives = new List<StepSilhouettePrimitive>();
-                foreach (JsonElement primitiveElement in primitivesElement.EnumerateArray())
+                return PlaceAndOptimizeOcctPrimitives(ReadOcctPrimitives(primitivesElement), targetBounds);
+            }
+        }
+
+        private static IReadOnlyDictionary<string, IReadOnlyList<StepSilhouettePrimitive>> ReadOcctProjectionViewsJsonFromString(
+            string json,
+            IReadOnlyDictionary<string, StepSilhouettePlacement> placements)
+        {
+            using (JsonDocument document = JsonDocument.Parse(json))
+            {
+                JsonElement root = document.RootElement;
+                if (!root.TryGetProperty("Success", out JsonElement successElement) || !successElement.GetBoolean())
+                    throw new InvalidOperationException("OCCT HLR helper failed: " + ReadOcctError(root));
+                if (!root.TryGetProperty("Views", out JsonElement viewsElement) || viewsElement.ValueKind != JsonValueKind.Array)
+                    throw new InvalidDataException("OCCT HLR helper batch result does not contain a views array.");
+
+                var results = new Dictionary<string, IReadOnlyList<StepSilhouettePrimitive>>(StringComparer.OrdinalIgnoreCase);
+                foreach (JsonElement viewElement in viewsElement.EnumerateArray())
                 {
-                    string kind = primitiveElement.GetProperty("Kind").GetString();
-                    if (kind == "Line")
-                    {
-                        sourcePrimitives.Add(StepSilhouettePrimitive.Line(
-                            primitiveElement.GetProperty("X1").GetDouble(),
-                            primitiveElement.GetProperty("Y1").GetDouble(),
-                            primitiveElement.GetProperty("X2").GetDouble(),
-                            primitiveElement.GetProperty("Y2").GetDouble()));
-                    }
-                    else if (kind == "Arc")
-                    {
-                        sourcePrimitives.Add(StepSilhouettePrimitive.Arc(
-                            primitiveElement.GetProperty("CenterX").GetDouble(),
-                            primitiveElement.GetProperty("CenterY").GetDouble(),
-                            primitiveElement.GetProperty("Radius").GetDouble(),
-                            primitiveElement.GetProperty("StartAngle").GetDouble(),
-                            primitiveElement.GetProperty("EndAngle").GetDouble()));
-                    }
+                    string name = viewElement.TryGetProperty("Name", out JsonElement nameElement)
+                        ? nameElement.GetString()
+                        : null;
+                    if (string.IsNullOrWhiteSpace(name) || !placements.TryGetValue(name, out StepSilhouettePlacement placement))
+                        continue;
+                    if (!viewElement.TryGetProperty("Success", out JsonElement viewSuccessElement) || !viewSuccessElement.GetBoolean())
+                        throw new InvalidOperationException("OCCT HLR helper failed for view " + name + ": " + ReadOcctError(viewElement));
+                    if (!viewElement.TryGetProperty("Primitives", out JsonElement primitivesElement) || primitivesElement.ValueKind != JsonValueKind.Array)
+                        throw new InvalidDataException("OCCT HLR helper batch result does not contain primitives for view " + name + ".");
+
+                    results[name] = PlaceAndOptimizeOcctPrimitives(ReadOcctPrimitives(primitivesElement), placement.TargetBounds);
                 }
 
-                if (sourcePrimitives.Count == 0)
-                    return Array.Empty<StepSilhouettePrimitive>();
-
-                StepSilhouetteBounds sourceBounds = BoundsForPrimitives(sourcePrimitives);
-                if (sourceBounds == null)
-                    return Array.Empty<StepSilhouettePrimitive>();
-
-                List<StepSilhouettePrimitive> placed = PlacePrimitivesWithoutRescale(
-                    sourcePrimitives,
-                    targetBounds,
-                    sourceBounds,
-                    0.0);
-                return OptimizeOcctPrimitives(placed);
+                return results;
             }
+        }
+
+        private static List<StepSilhouettePrimitive> ReadOcctPrimitives(JsonElement primitivesElement)
+        {
+            var sourcePrimitives = new List<StepSilhouettePrimitive>();
+            foreach (JsonElement primitiveElement in primitivesElement.EnumerateArray())
+            {
+                string kind = primitiveElement.GetProperty("Kind").GetString();
+                if (kind == "Line")
+                {
+                    sourcePrimitives.Add(StepSilhouettePrimitive.Line(
+                        primitiveElement.GetProperty("X1").GetDouble(),
+                        primitiveElement.GetProperty("Y1").GetDouble(),
+                        primitiveElement.GetProperty("X2").GetDouble(),
+                        primitiveElement.GetProperty("Y2").GetDouble()));
+                }
+                else if (kind == "Arc")
+                {
+                    sourcePrimitives.Add(StepSilhouettePrimitive.Arc(
+                        primitiveElement.GetProperty("CenterX").GetDouble(),
+                        primitiveElement.GetProperty("CenterY").GetDouble(),
+                        primitiveElement.GetProperty("Radius").GetDouble(),
+                        primitiveElement.GetProperty("StartAngle").GetDouble(),
+                        primitiveElement.GetProperty("EndAngle").GetDouble()));
+                }
+            }
+
+            return sourcePrimitives;
+        }
+
+        private static IReadOnlyList<StepSilhouettePrimitive> PlaceAndOptimizeOcctPrimitives(
+            List<StepSilhouettePrimitive> sourcePrimitives,
+            StepSilhouetteBounds targetBounds)
+        {
+            if (sourcePrimitives == null || sourcePrimitives.Count == 0)
+                return Array.Empty<StepSilhouettePrimitive>();
+
+            StepSilhouetteBounds sourceBounds = BoundsForPrimitives(sourcePrimitives);
+            if (sourceBounds == null)
+                return Array.Empty<StepSilhouettePrimitive>();
+
+            List<StepSilhouettePrimitive> placed = PlacePrimitivesWithoutRescale(
+                sourcePrimitives,
+                targetBounds,
+                sourceBounds,
+                0.0);
+            return OptimizeOcctPrimitives(placed);
         }
 
         private static string ReadOcctError(string jsonPath)

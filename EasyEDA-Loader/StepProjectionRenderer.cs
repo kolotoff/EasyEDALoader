@@ -96,12 +96,31 @@ namespace EasyEDA_Loader
 
             var outputFiles = new List<string>();
             string modelName = Path.GetFileNameWithoutExtension(inputPath);
+            IReadOnlyList<ViewSpec> selectedViews = GetSelectedViews(options);
+            Dictionary<string, ProjectionTransform> transformsByView = selectedViews.ToDictionary(
+                view => view.Name,
+                view => ProjectionTransform.Create(drawingModel.Bounds, view, options),
+                StringComparer.OrdinalIgnoreCase);
+            Dictionary<string, string> outputPathsByView = selectedViews.ToDictionary(
+                view => view.Name,
+                view => Path.Combine(outputDirectory, modelName + "__" + view.Name + ".png"),
+                StringComparer.OrdinalIgnoreCase);
+            bool renderedWithOpenCascadeBatch =
+                IsOpenCascadeVerificationRendererEnabled() &&
+                TryRenderWithOpenCascadeBatch(
+                    inputPath,
+                    selectedViews,
+                    transformsByView,
+                    outputPathsByView,
+                    options,
+                    null);
 
-            foreach (ViewSpec view in GetSelectedViews(options))
+            foreach (ViewSpec view in selectedViews)
             {
-                ProjectionTransform transform = ProjectionTransform.Create(drawingModel.Bounds, view, options);
-                string outputPath = Path.Combine(outputDirectory, modelName + "__" + view.Name + ".png");
-                RenderProjection(inputPath, drawingModel, view, transform, outputPath, options);
+                ProjectionTransform transform = transformsByView[view.Name];
+                string outputPath = outputPathsByView[view.Name];
+                if (!renderedWithOpenCascadeBatch)
+                    RenderProjection(inputPath, drawingModel, view, transform, outputPath, options);
                 outputFiles.Add(outputPath);
 
                 if (options.WriteMetadata)
@@ -172,6 +191,10 @@ namespace EasyEDA_Loader
             var outputFiles = new List<string>();
             string modelName = Path.GetFileNameWithoutExtension(inputPath);
             DeleteExistingDetectionProjectionFiles(outputDirectory, modelName);
+            var selectedDetectionViews = new List<ViewSpec>();
+            var transformsByView = new Dictionary<string, ProjectionTransform>(StringComparer.OrdinalIgnoreCase);
+            var outputPathsByView = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            var highlightsByView = new Dictionary<string, IReadOnlyList<ProjectionHighlight>>(StringComparer.OrdinalIgnoreCase);
 
             foreach (ViewSpec view in GetSelectedViews(options))
             {
@@ -183,7 +206,28 @@ namespace EasyEDA_Loader
 
                 ProjectionTransform transform = ProjectionTransform.Create(drawingModel.Bounds, view, options);
                 string outputPath = Path.Combine(outputDirectory, modelName + "__" + view.Name + ".png");
-                RenderProjection(inputPath, drawingModel, view, transform, outputPath, options, viewHighlights);
+                selectedDetectionViews.Add(view);
+                transformsByView[view.Name] = transform;
+                outputPathsByView[view.Name] = outputPath;
+                highlightsByView[view.Name] = viewHighlights;
+            }
+
+            bool renderedWithOpenCascadeBatch =
+                IsOpenCascadeVerificationRendererEnabled() &&
+                TryRenderWithOpenCascadeBatch(
+                    inputPath,
+                    selectedDetectionViews,
+                    transformsByView,
+                    outputPathsByView,
+                    options,
+                    highlightsByView);
+
+            foreach (ViewSpec view in selectedDetectionViews)
+            {
+                ProjectionTransform transform = transformsByView[view.Name];
+                string outputPath = outputPathsByView[view.Name];
+                if (!renderedWithOpenCascadeBatch)
+                    RenderProjection(inputPath, drawingModel, view, transform, outputPath, options, highlightsByView[view.Name]);
                 outputFiles.Add(outputPath);
 
                 if (options.WriteMetadata)
@@ -283,6 +327,10 @@ namespace EasyEDA_Loader
             StepProjectionOptions options,
             IReadOnlyList<ProjectionHighlight> highlights = null)
         {
+            if (IsOpenCascadeVerificationRendererEnabled() &&
+                TryRenderWithOpenCascade(inputPath, outputPath, view, transform, options, highlights))
+                return;
+
             if (TryRenderWithF3D(inputPath, outputPath, view, options))
             {
                 if (highlights != null && highlights.Count > 0)
@@ -297,6 +345,205 @@ namespace EasyEDA_Loader
 
             var image = RenderProjectionImage(model, view, transform, options, highlights);
             image.SavePng(outputPath);
+        }
+
+        private static bool TryRenderWithOpenCascade(
+            string inputPath,
+            string outputPath,
+            ViewSpec view,
+            ProjectionTransform transform,
+            StepProjectionOptions options,
+            IReadOnlyList<ProjectionHighlight> highlights = null)
+        {
+            try
+            {
+                if (string.IsNullOrWhiteSpace(inputPath) || !File.Exists(inputPath))
+                    return false;
+
+                StepSilhouettePlacement placement = CreateOpenCascadePlacement(view, transform);
+                IReadOnlyList<StepSilhouettePrimitive> primitives = StepSilhouetteProjection.GenerateFromFile(inputPath, placement);
+                if (primitives == null || primitives.Count == 0)
+                    return false;
+
+                RgbaImage image = RenderOpenCascadePrimitives(primitives, view, transform, options, highlights);
+                image.SavePng(outputPath);
+                return File.Exists(outputPath) && new FileInfo(outputPath).Length > 0;
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine("OpenCascade projection render failed: " + ex.Message);
+                return false;
+            }
+        }
+
+        private static bool IsOpenCascadeVerificationRendererEnabled()
+        {
+            string value = Environment.GetEnvironmentVariable("STEPCLEANER_USE_OCCT_PROJECTION_RENDERER");
+            return string.Equals(value, "1", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(value, "true", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool TryRenderWithOpenCascadeBatch(
+            string inputPath,
+            IReadOnlyList<ViewSpec> views,
+            IReadOnlyDictionary<string, ProjectionTransform> transformsByView,
+            IReadOnlyDictionary<string, string> outputPathsByView,
+            StepProjectionOptions options,
+            IReadOnlyDictionary<string, IReadOnlyList<ProjectionHighlight>> highlightsByView)
+        {
+            try
+            {
+                if (string.IsNullOrWhiteSpace(inputPath) || !File.Exists(inputPath))
+                    return false;
+                if (views == null || views.Count < 2)
+                    return false;
+
+                var placements = new Dictionary<string, StepSilhouettePlacement>(StringComparer.OrdinalIgnoreCase);
+                foreach (ViewSpec view in views)
+                {
+                    if (!transformsByView.TryGetValue(view.Name, out ProjectionTransform transform))
+                        return false;
+                    placements[view.Name] = CreateOpenCascadePlacement(view, transform);
+                }
+
+                IReadOnlyDictionary<string, IReadOnlyList<StepSilhouettePrimitive>> primitivesByView =
+                    StepSilhouetteProjection.GenerateViewsFromFile(inputPath, placements);
+                foreach (ViewSpec view in views)
+                {
+                    if (!primitivesByView.TryGetValue(view.Name, out IReadOnlyList<StepSilhouettePrimitive> primitives) ||
+                        primitives == null ||
+                        primitives.Count == 0 ||
+                        !outputPathsByView.TryGetValue(view.Name, out string outputPath))
+                    {
+                        return false;
+                    }
+
+                    IReadOnlyList<ProjectionHighlight> highlights = null;
+                    highlightsByView?.TryGetValue(view.Name, out highlights);
+                    RgbaImage image = RenderOpenCascadePrimitives(
+                        primitives,
+                        view,
+                        transformsByView[view.Name],
+                        options,
+                        highlights);
+                    image.SavePng(outputPath);
+                    if (!File.Exists(outputPath) || new FileInfo(outputPath).Length == 0)
+                        return false;
+                }
+
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine("OpenCascade batch projection render failed: " + ex.Message);
+                return false;
+            }
+        }
+
+        private static StepSilhouettePlacement CreateOpenCascadePlacement(
+            ViewSpec view,
+            ProjectionTransform transform)
+        {
+            var placement = new StepSilhouettePlacement
+            {
+                TargetBounds = new StepSilhouetteBounds
+                {
+                    Left = transform.UMin,
+                    Bottom = transform.VMin,
+                    Right = transform.UMax,
+                    Top = transform.VMax
+                }
+            };
+
+            switch (view.Name)
+            {
+                case "x_plus":
+                    placement.RotY = 90.0;
+                    placement.Rotation2D = 90.0;
+                    break;
+                case "x_minus":
+                    placement.RotY = -90.0;
+                    placement.Rotation2D = 270.0;
+                    break;
+                case "y_plus":
+                    placement.RotX = -90.0;
+                    placement.Rotation2D = 180.0;
+                    break;
+                case "y_minus":
+                    placement.RotX = 90.0;
+                    break;
+                case "z_minus":
+                    placement.Rotation2D = 180.0;
+                    break;
+                case "z_plus":
+                default:
+                    placement.RotX = 180.0;
+                    placement.Rotation2D = 180.0;
+                    break;
+            }
+
+            return placement;
+        }
+
+        private static RgbaImage RenderOpenCascadePrimitives(
+            IReadOnlyList<StepSilhouettePrimitive> primitives,
+            ViewSpec view,
+            ProjectionTransform transform,
+            StepProjectionOptions options,
+            IReadOnlyList<ProjectionHighlight> highlights)
+        {
+            var image = new RgbaImage(options.ImageSizePixels, options.ImageSizePixels);
+            image.Clear(new Rgba(250, 250, 250, 255));
+            foreach (StepSilhouettePrimitive primitive in primitives)
+                DrawOpenCascadePrimitive(image, transform, primitive, new Rgba(24, 24, 24, 255));
+
+            DrawDetectionHighlights(image, view, transform, highlights);
+            return image;
+        }
+
+        private static void DrawOpenCascadePrimitive(
+            RgbaImage image,
+            ProjectionTransform transform,
+            StepSilhouettePrimitive primitive,
+            Rgba color)
+        {
+            if (primitive.Kind == StepSilhouettePrimitiveKind.Line)
+            {
+                Point2i start = transform.ProjectUv(primitive.X1, primitive.Y1);
+                Point2i end = transform.ProjectUv(primitive.X2, primitive.Y2);
+                image.DrawLine(start.X, start.Y, end.X, end.Y, color);
+                return;
+            }
+
+            double sweep = NormalizeArcSweepDegrees(primitive.StartAngle, primitive.EndAngle);
+            int steps = Math.Max(6, (int)Math.Ceiling(sweep / 3.0));
+            Point2i previous = default;
+            bool hasPrevious = false;
+            for (int index = 0; index <= steps; index++)
+            {
+                double angle = primitive.StartAngle + sweep * index / steps;
+                double radians = angle * Math.PI / 180.0;
+                Point2i current = transform.ProjectUv(
+                    primitive.CenterX + Math.Cos(radians) * primitive.Radius,
+                    primitive.CenterY + Math.Sin(radians) * primitive.Radius);
+                if (hasPrevious)
+                    image.DrawLine(previous.X, previous.Y, current.X, current.Y, color);
+
+                previous = current;
+                hasPrevious = true;
+            }
+        }
+
+        private static double NormalizeArcSweepDegrees(double startAngle, double endAngle)
+        {
+            double sweep = endAngle - startAngle;
+            while (sweep < 0.0)
+                sweep += 360.0;
+            while (sweep > 360.0)
+                sweep -= 360.0;
+            if (Math.Abs(sweep) < 1e-9 && Math.Abs(endAngle - startAngle) > 1e-9)
+                return 360.0;
+            return sweep;
         }
 
         private static RgbaImage RenderProjectionImage(
@@ -2552,6 +2799,15 @@ namespace EasyEDA_Loader
                 double x = Padding + (u - UMin) * Scale;
                 double y = ImageSize - Padding - (v - VMin) * Scale;
                 return new Point2d(x, y);
+            }
+
+            public Point2i ProjectUv(double u, double v)
+            {
+                double x = Padding + (u - UMin) * Scale;
+                double y = ImageSize - Padding - (v - VMin) * Scale;
+                return new Point2i(
+                    (int)Math.Round(x, MidpointRounding.AwayFromZero),
+                    (int)Math.Round(y, MidpointRounding.AwayFromZero));
             }
 
             public double UnprojectU(double x)

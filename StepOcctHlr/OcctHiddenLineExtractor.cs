@@ -17,6 +17,12 @@ namespace StepOcctHlr
         public double Rotation2D { get; set; }
     }
 
+    internal sealed class ProjectionViewRequest
+    {
+        public string Name { get; set; }
+        public ProjectionOptions Options { get; set; }
+    }
+
     internal static class OcctHiddenLineExtractor
     {
         private static readonly Regex ShapeReferenceRegex = new Regex(@"[+-](\d+)\s+0", RegexOptions.Compiled);
@@ -30,13 +36,61 @@ namespace StepOcctHlr
                 options = new ProjectionOptions();
 
             var stopwatch = Stopwatch.StartNew();
+            ProjectionResultDto readFailure = TryReadRootShape(inputPath, stopwatch, out TopoDS_Shape shape);
+            if (readFailure != null)
+                return readFailure;
+
+            return ExtractFromShape(shape, options, stopwatch);
+        }
+
+        public static ProjectionResultDto ExtractBatch(
+            string inputPath,
+            IReadOnlyList<ProjectionViewRequest> views)
+        {
+            var stopwatch = Stopwatch.StartNew();
+            ProjectionResultDto readFailure = TryReadRootShape(inputPath, stopwatch, out TopoDS_Shape shape);
+            if (readFailure != null)
+                return readFailure;
+
+            var result = new ProjectionResultDto
+            {
+                Success = true,
+                Views = new List<ProjectionViewResultDto>()
+            };
+
+            foreach (ProjectionViewRequest view in views)
+            {
+                ProjectionResultDto viewResult = ExtractFromShape(shape, view.Options, stopwatch);
+                result.Views.Add(new ProjectionViewResultDto
+                {
+                    Name = view.Name,
+                    Success = viewResult.Success,
+                    Error = viewResult.Error,
+                    Primitives = viewResult.Primitives
+                });
+                if (!viewResult.Success)
+                    result.Success = false;
+            }
+
+            if (!result.Success)
+                result.Error = "One or more requested views failed.";
+
+            return result;
+        }
+
+        private static ProjectionResultDto TryReadRootShape(
+            string inputPath,
+            Stopwatch stopwatch,
+            out TopoDS_Shape shape)
+        {
+            shape = null;
             Trace(stopwatch, "StepReader read begin");
             var stepReader = new StepReader();
             if (!stepReader.ReadFromFile(inputPath))
                 return new ProjectionResultDto { Success = false, Error = "StepReader.ReadFromFile failed." };
             Trace(stopwatch, "StepReader read done");
             Trace(stopwatch, "StepReader GetRootShape begin");
-            TopoDS_Shape shape = stepReader.GetRootShape();
+            shape = stepReader.GetRootShape();
             Trace(stopwatch, "StepReader GetRootShape done");
             Trace(stopwatch, "Shape null check begin");
             if (shape == null)
@@ -45,6 +99,19 @@ namespace StepOcctHlr
             if (shape.IsNull)
                 return new ProjectionResultDto { Success = false, Error = "STEPControl_Reader.OneShape returned null shape." };
             Trace(stopwatch, "Shape IsNull done");
+
+            return null;
+        }
+
+        private static ProjectionResultDto ExtractFromShape(
+            TopoDS_Shape rootShape,
+            ProjectionOptions options,
+            Stopwatch stopwatch)
+        {
+            if (options == null)
+                options = new ProjectionOptions();
+
+            TopoDS_Shape shape = rootShape;
             shape = ApplyModelRotation(shape, options);
 
             var primitives = new List<ProjectionPrimitiveDto>();
