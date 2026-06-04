@@ -1650,7 +1650,7 @@ Decision note:
   - `EasyEDA-Loader/StepSilhouetteProjection.cs` and `StepOcctHlr/*` for `occt_hlr_projection_total_ms`
   - `EasyEDA-Loader/ModelZInfoCache.cs` for `raw_obj_z_info_ms`
 
-- [ ] **Step 1: Choose exactly one next target**
+- [x] **Step 1: Choose exactly one next target**
 
 Use this rule:
 
@@ -1660,7 +1660,7 @@ If occt_hlr_projection_total_ms is largest: optimize OCCT HLR projection first.
 If raw_obj_z_info_ms is largest on warm cache: optimize ModelZInfoCache/raw OBJ parsing first.
 ```
 
-- [ ] **Step 2: Add a guard before editing**
+- [x] **Step 2: Add a guard before editing**
 
 Add a source guard in `RunModelCacheTests()` for the selected optimization. Examples:
 
@@ -1682,11 +1682,11 @@ AssertContains(
     failures);
 ```
 
-- [ ] **Step 3: Implement the smallest measured optimization**
+- [x] **Step 3: Implement the smallest measured optimization**
 
 Do not batch unrelated edits. One commit should target one measured phase.
 
-- [ ] **Step 4: Verify with C5338332 and full guards**
+- [x] **Step 4: Verify with C5338332 and full guards**
 
 Run:
 
@@ -1697,7 +1697,25 @@ dotnet run --project Test\StepCleaner\StepCleaner.Tests.csproj -- --measure-mode
 
 Expected: guard test PASS and the chosen phase improves versus the Task 14 baseline.
 
-- [ ] **Step 5: Commit**
+Result:
+
+```text
+selected_target=occt_hlr_projection_total_ms
+optimization=replace BREP edge-reference regex parsing with TryReadFirstTwoShapeReferences
+guard=PASS: dotnet run --project Test\StepCleaner\StepCleaner.Tests.csproj -- --model-cache
+measurement=PASS: dotnet run --project Test\StepCleaner\StepCleaner.Tests.csproj -- --measure-model-import C5338332 --repeat 3
+
+Task 14 warm baseline:
+  occt_hlr_projection_total_ms=1781,1719,1579
+  total_measured_ms=1809,1722,1587
+
+After optimization:
+  occt_hlr_projection_total_ms=1554,1624,1473
+  total_measured_ms=1573,1627,1476
+  projection_primitives=344
+```
+
+- [x] **Step 5: Commit**
 
 Run:
 

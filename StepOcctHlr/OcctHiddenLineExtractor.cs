@@ -4,7 +4,6 @@ using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Text;
-using System.Text.RegularExpressions;
 using Occt;
 
 namespace StepOcctHlr
@@ -25,7 +24,6 @@ namespace StepOcctHlr
 
     internal static class OcctHiddenLineExtractor
     {
-        private static readonly Regex ShapeReferenceRegex = new Regex(@"[+-](\d+)\s+0", RegexOptions.Compiled);
         private const double GeometryTolerance = 1e-6;
         private const double CircleRadiusTolerance = 1e-5;
         private const double FullCircleRadiansTolerance = 1e-5;
@@ -367,12 +365,7 @@ namespace StepOcctHlr
             if (lineIndex >= lines.Length)
                 return;
 
-            MatchCollection matches = ShapeReferenceRegex.Matches(lines[lineIndex++]);
-            if (matches.Count < 2)
-                return;
-
-            if (!int.TryParse(matches[0].Groups[1].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out int firstVertex) ||
-                !int.TryParse(matches[1].Groups[1].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out int secondVertex))
+            if (!TryReadFirstTwoShapeReferences(lines[lineIndex++], out int firstVertex, out int secondVertex))
                 return;
 
             if (!vertices.TryGetValue(firstVertex, out Point2d a) ||
@@ -387,6 +380,56 @@ namespace StepOcctHlr
             }
 
             AddEndpointLine(primitives, a, b);
+        }
+
+        private static bool TryReadFirstTwoShapeReferences(string line, out int firstReference, out int secondReference)
+        {
+            firstReference = 0;
+            secondReference = 0;
+            int found = 0;
+            for (int index = 0; index < line.Length; index++)
+            {
+                char sign = line[index];
+                if (sign != '+' && sign != '-')
+                    continue;
+
+                int digitIndex = index + 1;
+                if (digitIndex >= line.Length || !IsAsciiDigit(line[digitIndex]))
+                    continue;
+
+                int value = 0;
+                while (digitIndex < line.Length && IsAsciiDigit(line[digitIndex]))
+                {
+                    value = value * 10 + (line[digitIndex] - '0');
+                    digitIndex++;
+                }
+
+                int zeroIndex = digitIndex;
+                while (zeroIndex < line.Length && char.IsWhiteSpace(line[zeroIndex]))
+                    zeroIndex++;
+                if (zeroIndex >= line.Length || line[zeroIndex] != '0')
+                    continue;
+                int afterZeroIndex = zeroIndex + 1;
+                if (afterZeroIndex < line.Length && IsAsciiDigit(line[afterZeroIndex]))
+                    continue;
+
+                if (found == 0)
+                    firstReference = value;
+                else
+                    secondReference = value;
+                found++;
+                if (found == 2)
+                    return true;
+
+                index = zeroIndex;
+            }
+
+            return false;
+        }
+
+        private static bool IsAsciiDigit(char value)
+        {
+            return value >= '0' && value <= '9';
         }
 
         private static EdgeCurveReference ParseEdgeCurveReference(string line)

@@ -412,6 +412,11 @@ namespace StepCleaner.Tests
                 failures);
             AssertContains(
                 occtHiddenLineExtractor,
+                "TryReadFirstTwoShapeReferences",
+                "OCCT HLR edge parsing should avoid regex work in the BREP edge hot loop",
+                failures);
+            AssertContains(
+                occtHiddenLineExtractor,
                 "IsIdentityModelRotation(options)",
                 "OCCT HLR helper should skip BRepBuilderAPI_Transform when model rotation is identity",
                 failures);
