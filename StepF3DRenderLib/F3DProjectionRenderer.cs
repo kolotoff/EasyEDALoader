@@ -158,15 +158,24 @@ namespace StepF3DRenderLib
             int sizePixels,
             IReadOnlyList<string> viewNames)
         {
+            return RenderRawImages(stepData, sizePixels, sizePixels, viewNames);
+        }
+
+        public static IReadOnlyList<F3DRenderedImage> RenderRawImages(
+            byte[] stepData,
+            int widthPixels,
+            int heightPixels,
+            IReadOnlyList<string> viewNames)
+        {
             if (stepData == null || stepData.Length == 0)
                 throw new ArgumentException("STEP data is required.", nameof(stepData));
 
             ViewSpec[] views = ParseViews(viewNames);
-            ValidateSize(sizePixels);
+            ValidateSize(widthPixels, heightPixels);
             ConfigureNativeAccess();
 
             lock (NativeRenderLock)
-                return RenderRawImagesCore(stepData, sizePixels, views);
+                return RenderRawImagesCore(stepData, widthPixels, heightPixels, views);
         }
 
         public static F3DPreviewSession CreatePreviewSession(byte[] originalStepData, byte[] cleanStepData)
@@ -203,13 +212,14 @@ namespace StepF3DRenderLib
 
         private static IReadOnlyList<F3DRenderedImage> RenderRawImagesCore(
             byte[] stepData,
-            int sizePixels,
+            int widthPixels,
+            int heightPixels,
             ViewSpec[] views)
         {
             IntPtr engine = CreateEngine();
             try
             {
-                ConfigureScene(engine, sizePixels);
+                ConfigureScene(engine, widthPixels, heightPixels);
                 IntPtr scene = GetScene(engine);
                 GCHandle pinnedStepData = GCHandle.Alloc(stepData, GCHandleType.Pinned);
                 try
@@ -241,6 +251,16 @@ namespace StepF3DRenderLib
             int sizePixels,
             IReadOnlyList<string> viewNames)
         {
+            return RenderPngFilesFromFile(inputPath, outputDirectory, sizePixels, sizePixels, viewNames);
+        }
+
+        public static IReadOnlyList<F3DRenderedFile> RenderPngFilesFromFile(
+            string inputPath,
+            string outputDirectory,
+            int widthPixels,
+            int heightPixels,
+            IReadOnlyList<string> viewNames)
+        {
             if (string.IsNullOrWhiteSpace(inputPath) || !File.Exists(inputPath))
                 throw new FileNotFoundException("Input STEP file was not found.", inputPath);
             if (string.IsNullOrWhiteSpace(outputDirectory))
@@ -254,24 +274,25 @@ namespace StepF3DRenderLib
             }
 
             ViewSpec[] views = ParseViews(viewNames);
-            ValidateSize(sizePixels);
+            ValidateSize(widthPixels, heightPixels);
             ConfigureNativeAccess();
             Directory.CreateDirectory(outputDirectory);
 
             lock (NativeRenderLock)
-                return RenderPngFilesFromFileCore(inputPath, outputDirectory, sizePixels, views);
+                return RenderPngFilesFromFileCore(inputPath, outputDirectory, widthPixels, heightPixels, views);
         }
 
         private static IReadOnlyList<F3DRenderedFile> RenderPngFilesFromFileCore(
             string inputPath,
             string outputDirectory,
-            int sizePixels,
+            int widthPixels,
+            int heightPixels,
             ViewSpec[] views)
         {
             IntPtr engine = CreateEngine();
             try
             {
-                ConfigureScene(engine, sizePixels);
+                ConfigureScene(engine, widthPixels, heightPixels);
                 IntPtr scene = GetScene(engine);
                 if (f3d_scene_add(scene, Path.GetFullPath(inputPath)) == 0)
                     throw new InvalidOperationException("F3D failed to load STEP file: " + inputPath);
@@ -305,8 +326,15 @@ namespace StepF3DRenderLib
 
         private static void ValidateSize(int sizePixels)
         {
-            if (sizePixels <= 0)
-                throw new ArgumentException("Image size must be greater than zero.", nameof(sizePixels));
+            ValidateSize(sizePixels, sizePixels);
+        }
+
+        private static void ValidateSize(int widthPixels, int heightPixels)
+        {
+            if (widthPixels <= 0)
+                throw new ArgumentException("Image width must be greater than zero.", nameof(widthPixels));
+            if (heightPixels <= 0)
+                throw new ArgumentException("Image height must be greater than zero.", nameof(heightPixels));
         }
 
         private static ViewSpec[] ParseViews(IReadOnlyList<string> viewNames)
@@ -361,7 +389,7 @@ namespace StepF3DRenderLib
             return engine;
         }
 
-        private static void ConfigureScene(IntPtr engine, int sizePixels)
+        private static void ConfigureScene(IntPtr engine, int widthPixels, int heightPixels)
         {
             IntPtr options = f3d_engine_get_options(engine);
             if (options == IntPtr.Zero)
@@ -369,7 +397,7 @@ namespace StepF3DRenderLib
             ConfigureRenderingOptions(options);
 
             IntPtr window = GetWindow(engine);
-            f3d_window_set_size(window, sizePixels, sizePixels);
+            f3d_window_set_size(window, widthPixels, heightPixels);
         }
 
         private static IntPtr GetScene(IntPtr engine)

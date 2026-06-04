@@ -464,11 +464,13 @@
 
                 <Border x:Name="modelProjectionViewport"
                         Grid.Row="5"
-                        Background="Black">
+                        Background="#FAFAFA">
                     <Image x:Name="modelProjectionImage"
                            Stretch="Uniform"
+                           Width="{Binding ActualWidth, ElementName=modelProjectionViewport}"
+                           Height="{Binding ActualHeight, ElementName=modelProjectionViewport}"
                            HorizontalAlignment="Stretch"
-                           VerticalAlignment="Stretch"
+                           VerticalAlignment="Top"
                            RenderOptions.BitmapScalingMode="HighQuality"
                            ClipToBounds="True"/>
                 </Border>

@@ -486,9 +486,12 @@ namespace EasyEDA_Loader
             if (stepData == null || stepData.Length == 0)
                 return;
 
+            GetModelProjectionPreviewImageSizePixels(out int imageWidthPixels, out int imageHeightPixels);
             var options = new StepProjectionOptions
             {
-                ImageSizePixels = 256,
+                ImageSizePixels = Math.Max(256, Math.Max(imageWidthPixels, imageHeightPixels)),
+                ImageWidthPixels = imageWidthPixels,
+                ImageHeightPixels = imageHeightPixels,
                 PaddingPixels = 16,
                 WriteMetadata = false
             };
@@ -500,6 +503,19 @@ namespace EasyEDA_Loader
                 return;
 
             modelProjectionImage.Source = LoadBitmapImage(projectionPng);
+        }
+
+        private void GetModelProjectionPreviewImageSizePixels(out int imageWidthPixels, out int imageHeightPixels)
+        {
+            double viewportWidth = modelProjectionViewport == null ? 0.0 : modelProjectionViewport.ActualWidth;
+            double viewportHeight = modelProjectionViewport == null ? 0.0 : modelProjectionViewport.ActualHeight;
+            if (double.IsNaN(viewportWidth) || double.IsInfinity(viewportWidth) || viewportWidth <= 0.0)
+                viewportWidth = 256.0;
+            if (double.IsNaN(viewportHeight) || double.IsInfinity(viewportHeight) || viewportHeight <= 0.0)
+                viewportHeight = 160.0;
+
+            imageWidthPixels = Math.Max(160, (int)Math.Round(viewportWidth));
+            imageHeightPixels = Math.Max(120, (int)Math.Round(viewportHeight));
         }
 
         private async Task ShowInteractiveModelPreviewAsync(EeFootprint3dModel modelInfo, CancellationToken cancellationToken)

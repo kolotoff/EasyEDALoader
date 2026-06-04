@@ -16,6 +16,8 @@ namespace EasyEDA_Loader
     public sealed class StepProjectionOptions
     {
         public int ImageSizePixels { get; set; } = 1600;
+        public int ImageWidthPixels { get; set; }
+        public int ImageHeightPixels { get; set; }
         public int PaddingPixels { get; set; } = 80;
         public bool WriteMetadata { get; set; } = true;
         public bool SkipGeometryModelForExternalRender { get; set; }
@@ -576,8 +578,8 @@ namespace EasyEDA_Loader
 
                 ProjectionTransform transform = ProjectionTransform.Create(drawingModel.Bounds, view, options);
                 foreach (DetectionRectangle detectionRectangle in BuildDetectionRectangles(
-                    options.ImageSizePixels,
-                    options.ImageSizePixels,
+                    GetImageWidthPixels(options),
+                    GetImageHeightPixels(options),
                     transform,
                     viewHighlights))
                 {
@@ -774,7 +776,7 @@ namespace EasyEDA_Loader
             StepProjectionOptions options,
             IReadOnlyList<ProjectionHighlight> highlights)
         {
-            var image = new RgbaImage(options.ImageSizePixels, options.ImageSizePixels);
+            var image = new RgbaImage(GetImageWidthPixels(options), GetImageHeightPixels(options));
             image.Clear(new Rgba(250, 250, 250, 255));
             foreach (StepSilhouettePrimitive primitive in primitives)
                 DrawOpenCascadePrimitive(image, transform, primitive, new Rgba(24, 24, 24, 255));
@@ -841,6 +843,8 @@ namespace EasyEDA_Loader
                 : new StepProjectionOptions
                 {
                     ImageSizePixels = options.ImageSizePixels * scale,
+                    ImageWidthPixels = GetImageWidthPixels(options) * scale,
+                    ImageHeightPixels = GetImageHeightPixels(options) * scale,
                     PaddingPixels = options.PaddingPixels * scale,
                     WriteMetadata = options.WriteMetadata,
                     SkipGeometryModelForExternalRender = options.SkipGeometryModelForExternalRender,
@@ -850,7 +854,7 @@ namespace EasyEDA_Loader
                 ? transform
                 : ProjectionTransform.Create(model.Bounds, view, renderOptions);
 
-            var image = new RgbaImage(renderOptions.ImageSizePixels, renderOptions.ImageSizePixels);
+            var image = new RgbaImage(GetImageWidthPixels(renderOptions), GetImageHeightPixels(renderOptions));
             image.Clear(new Rgba(250, 250, 250, 255));
             double[] zBuffer = CreateDepthBuffer(image.Width, image.Height);
             double lineDepthTolerance = Math.Max(0.000001, model.Bounds.Size.Get(view.DepthAxis) * 0.00001);
@@ -882,7 +886,7 @@ namespace EasyEDA_Loader
             }
 
             if (scale > 1)
-                image = image.Downsample(options.ImageSizePixels, options.ImageSizePixels);
+                image = image.Downsample(GetImageWidthPixels(options), GetImageHeightPixels(options));
 
             DrawDetectionHighlights(image, view, transform, highlights);
             return image;
@@ -920,7 +924,7 @@ namespace EasyEDA_Loader
             startInfo.ArgumentList.Add("--output");
             startInfo.ArgumentList.Add(outputPath);
             startInfo.ArgumentList.Add("--resolution");
-            startInfo.ArgumentList.Add(options.ImageSizePixels.ToString(CultureInfo.InvariantCulture) + "," + options.ImageSizePixels.ToString(CultureInfo.InvariantCulture));
+            startInfo.ArgumentList.Add(GetImageWidthPixels(options).ToString(CultureInfo.InvariantCulture) + "," + GetImageHeightPixels(options).ToString(CultureInfo.InvariantCulture));
             startInfo.ArgumentList.Add("--background-color");
             startInfo.ArgumentList.Add(F3DBackgroundColor);
             startInfo.ArgumentList.Add("--camera-orthographic");
@@ -980,7 +984,8 @@ namespace EasyEDA_Loader
                 F3DProjectionRenderer.RenderPngFilesFromFile(
                     inputPath,
                     outputDirectory,
-                    options.ImageSizePixels,
+                    GetImageWidthPixels(options),
+                    GetImageHeightPixels(options),
                     views.Select(view => view.Name).ToList());
 
                 foreach (ViewSpec view in views)
@@ -1023,7 +1028,8 @@ namespace EasyEDA_Loader
 
                 IReadOnlyList<F3DRenderedImage> renderedImages = F3DProjectionRenderer.RenderRawImages(
                     stepData,
-                    options.ImageSizePixels,
+                    GetImageWidthPixels(options),
+                    GetImageHeightPixels(options),
                     views.Select(view => view.Name).ToList());
                 var byName = new Dictionary<string, StepProjectionImage>(StringComparer.OrdinalIgnoreCase);
                 foreach (F3DRenderedImage renderedImage in renderedImages)
@@ -1840,8 +1846,8 @@ namespace EasyEDA_Loader
             AppendJson(builder, "projection", Path.GetFullPath(outputPath), comma: true, indent: 2);
             AppendJson(builder, "view", view.Name, comma: true, indent: 2);
             builder.AppendLine("  \"image\": {");
-            AppendJson(builder, "width", options.ImageSizePixels, comma: true, indent: 4);
-            AppendJson(builder, "height", options.ImageSizePixels, comma: true, indent: 4);
+            AppendJson(builder, "width", GetImageWidthPixels(options), comma: true, indent: 4);
+            AppendJson(builder, "height", GetImageHeightPixels(options), comma: true, indent: 4);
             AppendJson(builder, "padding", options.PaddingPixels, comma: false, indent: 4);
             builder.AppendLine("  },");
             builder.AppendLine("  \"model_axes\": {");
@@ -1949,11 +1955,32 @@ namespace EasyEDA_Loader
             if (options.ImageSizePixels < 256)
                 throw new ArgumentOutOfRangeException(nameof(options.ImageSizePixels), "Projection image size must be at least 256 pixels.");
 
-            if (options.PaddingPixels < 0 || options.PaddingPixels * 2 >= options.ImageSizePixels)
+            int imageWidthPixels = GetImageWidthPixels(options);
+            int imageHeightPixels = GetImageHeightPixels(options);
+            if (imageWidthPixels <= 0)
+                throw new ArgumentOutOfRangeException(nameof(options.ImageWidthPixels), "Projection image width must be greater than zero.");
+            if (imageHeightPixels <= 0)
+                throw new ArgumentOutOfRangeException(nameof(options.ImageHeightPixels), "Projection image height must be greater than zero.");
+
+            if (options.PaddingPixels < 0 || options.PaddingPixels * 2 >= Math.Min(imageWidthPixels, imageHeightPixels))
                 throw new ArgumentOutOfRangeException(nameof(options.PaddingPixels), "Projection padding must fit inside the image.");
 
             GetSelectedViews(options);
             return options;
+        }
+
+        private static int GetImageWidthPixels(StepProjectionOptions options)
+        {
+            return options != null && options.ImageWidthPixels > 0
+                ? options.ImageWidthPixels
+                : (options?.ImageSizePixels ?? 1600);
+        }
+
+        private static int GetImageHeightPixels(StepProjectionOptions options)
+        {
+            return options != null && options.ImageHeightPixels > 0
+                ? options.ImageHeightPixels
+                : (options?.ImageSizePixels ?? 1600);
         }
 
         private static StepProjectionOptions CloneSingleViewOptions(StepProjectionOptions options, string viewName)
@@ -1961,6 +1988,8 @@ namespace EasyEDA_Loader
             var clone = new StepProjectionOptions
             {
                 ImageSizePixels = options?.ImageSizePixels ?? 1600,
+                ImageWidthPixels = options?.ImageWidthPixels ?? 0,
+                ImageHeightPixels = options?.ImageHeightPixels ?? 0,
                 PaddingPixels = options?.PaddingPixels ?? 80,
                 WriteMetadata = false,
                 SkipGeometryModelForExternalRender = options?.SkipGeometryModelForExternalRender ?? false,
@@ -3224,7 +3253,8 @@ namespace EasyEDA_Loader
             public double VMax { get; private set; }
             private ViewSpec View { get; set; }
             private int Padding { get; set; }
-            private int ImageSize { get; set; }
+            private int ImageWidth { get; set; }
+            private int ImageHeight { get; set; }
 
             public static ProjectionTransform Create(Bounds bounds, ViewSpec view, StepProjectionOptions options)
             {
@@ -3238,18 +3268,22 @@ namespace EasyEDA_Loader
                 double vMin = Math.Min(v0, v1);
                 double vMax = Math.Max(v0, v1);
 
-                double usable = options.ImageSizePixels - options.PaddingPixels * 2.0;
+                int imageWidthPixels = GetImageWidthPixels(options);
+                int imageHeightPixels = GetImageHeightPixels(options);
+                double usableWidth = imageWidthPixels - options.PaddingPixels * 2.0;
+                double usableHeight = imageHeightPixels - options.PaddingPixels * 2.0;
                 double uSize = Math.Max(0.000001, uMax - uMin);
                 double vSize = Math.Max(0.000001, vMax - vMin);
-                double scale = usable / Math.Max(uSize, vSize);
+                double scale = Math.Min(usableWidth / uSize, usableHeight / vSize);
 
-                double uPad = (usable / scale - uSize) / 2.0;
-                double vPad = (usable / scale - vSize) / 2.0;
+                double uPad = (usableWidth / scale - uSize) / 2.0;
+                double vPad = (usableHeight / scale - vSize) / 2.0;
 
                 return new ProjectionTransform
                 {
                     View = view,
-                    ImageSize = options.ImageSizePixels,
+                    ImageWidth = imageWidthPixels,
+                    ImageHeight = imageHeightPixels,
                     Padding = options.PaddingPixels,
                     Scale = scale,
                     UMin = uMin - uPad,
@@ -3273,14 +3307,14 @@ namespace EasyEDA_Loader
                 double v = point.Get(View.VAxis) * View.VSign;
 
                 double x = Padding + (u - UMin) * Scale;
-                double y = ImageSize - Padding - (v - VMin) * Scale;
+                double y = ImageHeight - Padding - (v - VMin) * Scale;
                 return new Point2d(x, y);
             }
 
             public Point2i ProjectUv(double u, double v)
             {
                 double x = Padding + (u - UMin) * Scale;
-                double y = ImageSize - Padding - (v - VMin) * Scale;
+                double y = ImageHeight - Padding - (v - VMin) * Scale;
                 return new Point2i(
                     (int)Math.Round(x, MidpointRounding.AwayFromZero),
                     (int)Math.Round(y, MidpointRounding.AwayFromZero));
@@ -3293,7 +3327,7 @@ namespace EasyEDA_Loader
 
             public double UnprojectV(double y)
             {
-                return VMin + (ImageSize - Padding - y) / Scale;
+                return VMin + (ImageHeight - Padding - y) / Scale;
             }
 
             public Rect2i ProjectBounds(Bounds bounds, double paddingPixels)
@@ -3310,8 +3344,8 @@ namespace EasyEDA_Loader
 
                 double x0 = Padding + (uMin - UMin) * Scale - paddingPixels;
                 double x1 = Padding + (uMax - UMin) * Scale + paddingPixels;
-                double y0 = ImageSize - Padding - (vMax - VMin) * Scale - paddingPixels;
-                double y1 = ImageSize - Padding - (vMin - VMin) * Scale + paddingPixels;
+                double y0 = ImageHeight - Padding - (vMax - VMin) * Scale - paddingPixels;
+                double y1 = ImageHeight - Padding - (vMin - VMin) * Scale + paddingPixels;
 
                 return new Rect2i(
                     (int)Math.Floor(Math.Min(x0, x1)),

@@ -493,13 +493,73 @@ namespace StepCleaner.Tests
                 failures);
             AssertContains(
                 dialogWindowXaml,
+                "Background=\"#FAFAFA\"",
+                "middle-column projection preview should use a light viewport background so unfilled sides do not appear as black gutters",
+                failures);
+            AssertContains(
+                dialogWindowXaml,
                 "modelProjectionImage",
                 "middle-column projection preview should keep the projection image control",
                 failures);
             AssertContains(
                 dialogWindowXaml,
+                "Width=\"{Binding ActualWidth, ElementName=modelProjectionViewport}\"",
+                "middle-column projection preview should display at the exact column viewport width",
+                failures);
+            AssertContains(
+                dialogWindowXaml,
+                "Height=\"{Binding ActualHeight, ElementName=modelProjectionViewport}\"",
+                "middle-column projection preview should display at the exact row viewport height",
+                failures);
+            AssertContains(
+                dialogWindowXaml,
+                "VerticalAlignment=\"Top\"",
+                "middle-column projection preview should preserve its rendered height instead of vertically centering a shifted crop",
+                failures);
+            AssertContains(
+                dialogWindowXaml,
                 "Stretch=\"Uniform\"",
                 "middle-column projection and interactive 3D previews should fit their columns without crop-induced shifting",
+                failures);
+            AssertContains(
+                dialogWindow,
+                "GetModelProjectionPreviewImageSizePixels",
+                "middle-column projection preview should render the source bitmap at the column width",
+                failures);
+            AssertContains(
+                dialogWindow,
+                "modelProjectionViewport.ActualWidth",
+                "middle-column projection preview should size projection rendering from the current column width",
+                failures);
+            AssertContains(
+                dialogWindow,
+                "GetModelProjectionPreviewImageSizePixels(out int imageWidthPixels, out int imageHeightPixels)",
+                "middle-column projection preview should render a rectangular bitmap matching the preview viewport",
+                failures);
+            AssertContains(
+                dialogWindow,
+                "modelProjectionViewport.ActualHeight",
+                "middle-column projection preview should size projection rendering from the current row height",
+                failures);
+            AssertContains(
+                dialogWindow,
+                "ImageWidthPixels = imageWidthPixels",
+                "middle-column projection preview should pass the column width to the projection renderer",
+                failures);
+            AssertContains(
+                dialogWindow,
+                "ImageHeightPixels = imageHeightPixels",
+                "middle-column projection preview should pass the row height to the projection renderer",
+                failures);
+            AssertContains(
+                stepProjectionRenderer,
+                "public int ImageWidthPixels",
+                "STEP projection options should support non-square preview render width",
+                failures);
+            AssertContains(
+                stepProjectionRenderer,
+                "public int ImageHeightPixels",
+                "STEP projection options should support non-square preview render height",
                 failures);
             AssertDoesNotContain(
                 dialogWindowXaml,
