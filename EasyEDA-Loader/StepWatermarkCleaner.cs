@@ -4754,9 +4754,12 @@ namespace EasyEDA_Loader
         private static List<HashSet<int>> BuildFaceComponents(StepData data, List<int> faceIds)
         {
             var facesByPoint = new Dictionary<int, List<int>>();
+            var facePointsByFace = new Dictionary<int, HashSet<int>>();
             foreach (int faceId in faceIds)
             {
-                foreach (int pointId in data.GetPointIds(faceId, includeSurface: false))
+                var facePoints = data.GetPointIds(faceId, includeSurface: false);
+                facePointsByFace[faceId] = facePoints;
+                foreach (int pointId in facePoints)
                 {
                     if (!facesByPoint.TryGetValue(pointId, out var faces))
                     {
@@ -4784,7 +4787,10 @@ namespace EasyEDA_Loader
                     int currentFaceId = stack.Pop();
                     component.Add(currentFaceId);
 
-                    foreach (int pointId in data.GetPointIds(currentFaceId, includeSurface: false))
+                    if (!facePointsByFace.TryGetValue(currentFaceId, out var facePoints))
+                        continue;
+
+                    foreach (int pointId in facePoints)
                     {
                         if (!facesByPoint.TryGetValue(pointId, out var neighbors))
                             continue;

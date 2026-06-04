@@ -475,6 +475,11 @@ namespace StepCleaner.Tests
                 "host-plane selection should use prebuilt planar host candidates from SolidInfo",
                 failures);
             AssertContains(
+                stepWatermarkCleaner,
+                "facePointsByFace",
+                "watermark cleaner should cache face point ids while building face components",
+                failures);
+            AssertContains(
                 stepWatermarkCleanVerifier,
                 "CleanOrThrowWithReport",
                 "verifier should expose clean report timings for cache-miss measurement",
