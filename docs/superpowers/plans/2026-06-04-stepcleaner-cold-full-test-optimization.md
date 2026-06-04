@@ -1364,7 +1364,7 @@ Next target from this timing: `ProjectDetectionFile` dominates detection debug i
 **Files:**
 - Modify: `Test/StepCleaner/Program.cs`
 
-- [ ] **Step 1: Add a guard**
+- [x] **Step 1: Add a guard**
 
 In `RunModelCacheTests()`, add:
 
@@ -1376,7 +1376,7 @@ AssertContains(
     failures);
 ```
 
-- [ ] **Step 2: Add a byte equality helper**
+- [x] **Step 2: Add a byte equality helper**
 
 Add near `ProjectionPixelsEqual()`:
 
@@ -1394,7 +1394,7 @@ private static bool FilesEqualByLengthAndBytes(string leftPath, string rightPath
 }
 ```
 
-- [ ] **Step 3: Use the fast path**
+- [x] **Step 3: Use the fast path**
 
 At the start of `ProjectionPixelsEqual()`, add:
 
@@ -1405,7 +1405,7 @@ if (FilesEqualByLengthAndBytes(cleanProjectionPath, validatedProjectionPath))
 
 Do not add this shortcut to `VerifyPostCleanProjectionImage()`, because original-vs-clean still needs `VerifyCleanedRegionFlatness()` even when outside-region pixels do not change.
 
-- [ ] **Step 4: Verify**
+- [x] **Step 4: Verify**
 
 Run:
 
@@ -1415,6 +1415,15 @@ dotnet run --project Test\StepCleaner\StepCleaner.Tests.csproj
 ```
 
 Expected: PASS. Compare `clean_vs_validated_projection_compare_ms` before and after.
+
+Verified:
+
+```text
+model-cache guard: PASS
+full StepCleaner run: PASS
+clean_vs_validated_projection_compare_ms=6 ms
+full_test_wall_ms=300226
+```
 
 ### Task 13: Add Fast Pixel Buffer Comparison For Remaining PNG Compares
 

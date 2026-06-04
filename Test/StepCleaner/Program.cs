@@ -540,6 +540,11 @@ namespace StepCleaner.Tests
                 "detection debug image generation should expose detailed timing for the remaining bottleneck",
                 failures);
             AssertContains(
+                stepCleanerProgram,
+                "FilesEqualByLength" + "AndBytes",
+                "clean-vs-validated projection comparison should skip PNG decode when files are byte-identical",
+                failures);
+            AssertContains(
                 stepProjectionRenderer,
                 "ProjectFileImages(",
                 "internal projection rendering should expose an in-memory raw image API",
@@ -3232,6 +3237,9 @@ namespace StepCleaner.Tests
 
         private static bool ProjectionPixelsEqual(string cleanProjectionPath, string validatedProjectionPath)
         {
+            if (FilesEqualByLengthAndBytes(cleanProjectionPath, validatedProjectionPath))
+                return true;
+
             using (var cleanImage = SKBitmap.Decode(cleanProjectionPath))
             using (var validatedImage = SKBitmap.Decode(validatedProjectionPath))
             {
@@ -3252,6 +3260,18 @@ namespace StepCleaner.Tests
 
                 return true;
             }
+        }
+
+        private static bool FilesEqualByLengthAndBytes(string leftPath, string rightPath)
+        {
+            var leftInfo = new FileInfo(leftPath);
+            var rightInfo = new FileInfo(rightPath);
+            if (leftInfo.Length != rightInfo.Length)
+                return false;
+
+            byte[] leftBytes = File.ReadAllBytes(leftPath);
+            byte[] rightBytes = File.ReadAllBytes(rightPath);
+            return leftBytes.SequenceEqual(rightBytes);
         }
 
         private static void WriteFailedProjectionReport(
