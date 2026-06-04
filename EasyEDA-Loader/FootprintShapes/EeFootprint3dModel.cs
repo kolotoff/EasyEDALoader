@@ -152,7 +152,9 @@ namespace EasyEDA_Loader
                     modelIdentifier,
                     overallHeight);
                 EEPCB.AddToPCB(c, body);
+                EEPCB.SetImportedComponentBodyLayer(body);
                 EEPCB.CenterComponentBodyMm(c, body, modelX, modelY);
+                EEPCB.SetImportedComponentBodyLayer(body);
                 EEPCB.SetComponentBodyIdentifier(body, modelIdentifier);
                 EEPCB.SetComponentBodyHeights(body, standoffHeight, overallHeight);
 

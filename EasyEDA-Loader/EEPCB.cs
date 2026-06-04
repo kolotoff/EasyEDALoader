@@ -953,7 +953,7 @@ namespace EasyEDA_Loader
             stepModel.SetState_FromModel();
             model.SetState(rx, ry, rz, AltiumApi.MmToCoord(z));
             stepModel.SetModel(model);
-            TrySetLayer(stepModel, TLayerConstant.eMechanical1);
+            SetImportedComponentBodyLayer(stepModel);
             string modelIdentifier = !string.IsNullOrWhiteSpace(identifier)
                 ? identifier
                 : Path.GetFileNameWithoutExtension(fileName);
@@ -1624,6 +1624,7 @@ namespace EasyEDA_Loader
             model.SetOrigin(newOrigin);
             body.SetModel(model);
             body.SetState_FromModel();
+            SetImportedComponentBodyLayer(body);
             return true;
         }
 
@@ -1797,6 +1798,23 @@ namespace EasyEDA_Loader
             TryInvoke(target, "SetState_V7Layer", new V7_Layer(layer));
             TryInvoke(target, "SetState_Layer", new V7_Layer(layer));
             TryInvoke(target, "SetState_Layer", layer);
+        }
+
+        public static void SetImportedComponentBodyLayer(IPCB_ComponentBody body)
+        {
+            if (body == null)
+                return;
+
+            V7_Layer mechanicalLayer = V7_Layer.MechanicalLayer(1);
+            TrySetLayer(body, mechanicalLayer);
+        }
+
+        private static void TrySetLayer(object target, V7_Layer layer)
+        {
+            if (target == null || layer == null)
+                return;
+
+            TryInvoke(target, "SetState_V7Layer", layer);
         }
 
         private static void TryInvoke(object target, string methodName, params object[] args)

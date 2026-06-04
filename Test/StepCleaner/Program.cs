@@ -1683,7 +1683,11 @@ namespace StepCleaner.Tests
             AssertContains(eePcb, "TransferAllPrimitivesBackFromBoard", "Reproject 3D cleanup must call the PcbLib transfer-back API so visible board-view primitives are enumerable", failures);
             AssertContains(eePcb, "SyncPcbLibComponentToBoard(component)", "Reproject 3D must push regenerated projection primitives back to the active PcbLib board view", failures);
             AssertContains(eePcb, "private static void SyncPcbLibComponentToBoard", "Whole-footprint PcbLib component-to-board sync must stay scoped to reproject and not normal import", failures);
-            AssertContains(eePcb, "TrySetLayer(stepModel, TLayerConstant.eMechanical1)", "Footprint import must place imported 3D model bodies on Mechanical Layer 1", failures);
+            AssertContains(eePcb, "SetImportedComponentBodyLayer(stepModel)", "Footprint import must place imported 3D model bodies on Mechanical Layer 1", failures);
+            AssertContains(eePcb, "SetImportedComponentBodyLayer(body)", "3D body model-origin updates must restore Mechanical Layer 1 after SetState_FromModel", failures);
+            AssertContains(eePcb, "V7_Layer.MechanicalLayer(1)", "Imported 3D bodies must use Altium's V7 mechanical layer index 1 helper like altium-mcp", failures);
+            AssertDoesNotContain(eePcb, "TryInvoke(target, \"SetState_Layer\", layerNumber)", "Imported 3D bodies must not pass V7 layer number 1 into the legacy Layer setter", failures);
+            AssertContains(footprint3dModel, "EEPCB.SetImportedComponentBodyLayer(body)", "Footprint import must restore Mechanical Layer 1 after adding the 3D body to the PcbLib", failures);
             AssertContains(footprint3dModel, "Add3dBodyProjection(c, projectionPrimitives, true)", "Footprint import must add generated Mechanical 2 projection primitives directly to both component and board view", failures);
             AssertContains(footprintData, "AddAssemblyTexts(c, ctx.HasAssemblyDesignatorText, ctx.HasAssemblyCommentText, ctx.Box.Height, ctx.ProjectionPrimitives, true)", "Footprint import must add generated Mechanical 2 assembly texts directly to both component and board view", failures);
             AssertDoesNotContain(footprintData, "SyncPcbLibComponentToBoard(c)", "Footprint import must not transfer all component primitives onto the board because it can disturb pad locations", failures);
