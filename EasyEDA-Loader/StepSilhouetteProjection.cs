@@ -4,8 +4,8 @@ using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Linq;
-using System.Text;
 using System.Text.Json;
+using System.Threading.Tasks;
 
 namespace EasyEDA_Loader
 {
@@ -112,7 +112,27 @@ namespace EasyEDA_Loader
             return GenerateWithOcctHelper(stepData, placement);
         }
 
+        public static IReadOnlyList<StepSilhouettePrimitive> GenerateFromFile(
+            string stepPath,
+            StepSilhouettePlacement placement)
+        {
+            if (string.IsNullOrWhiteSpace(stepPath) || !File.Exists(stepPath))
+                return Array.Empty<StepSilhouettePrimitive>();
+            if (placement == null || placement.TargetBounds == null)
+                return Array.Empty<StepSilhouettePrimitive>();
+
+            return GenerateWithOcctHelper(stepPath, null, placement);
+        }
+
         private static IReadOnlyList<StepSilhouettePrimitive> GenerateWithOcctHelper(
+            byte[] stepData,
+            StepSilhouettePlacement placement)
+        {
+            return GenerateWithOcctHelper("-", stepData, placement);
+        }
+
+        private static IReadOnlyList<StepSilhouettePrimitive> GenerateWithOcctHelper(
+            string inputPath,
             byte[] stepData,
             StepSilhouettePlacement placement)
         {
@@ -121,25 +141,20 @@ namespace EasyEDA_Loader
                 throw new InvalidOperationException(
                     "OCCT HLR helper was not found. Reinstall EasyEDA-Loader with the StepOcctHlr folder or set EASYEDA_LOADER_OCCT_HLR to StepOcctHlr.exe.");
 
-            string tempStep = null;
-            string tempJson = null;
             try
             {
-                tempStep = Path.Combine(Path.GetTempPath(), "EasyEDALoaderHlr_" + Guid.NewGuid().ToString("N") + ".step");
-                tempJson = Path.Combine(Path.GetTempPath(), "EasyEDALoaderHlr_" + Guid.NewGuid().ToString("N") + ".json");
-                File.WriteAllBytes(tempStep, stepData);
-
                 var startInfo = new ProcessStartInfo
                 {
                     FileName = helperPath,
                     WorkingDirectory = Path.GetDirectoryName(helperPath),
                     UseShellExecute = false,
                     CreateNoWindow = true,
+                    RedirectStandardInput = stepData != null,
                     RedirectStandardOutput = true,
                     RedirectStandardError = true
                 };
-                startInfo.ArgumentList.Add(tempStep);
-                startInfo.ArgumentList.Add(tempJson);
+                startInfo.ArgumentList.Add(inputPath);
+                startInfo.ArgumentList.Add("-");
                 startInfo.ArgumentList.Add("--rot-x");
                 startInfo.ArgumentList.Add(placement.RotX.ToString(CultureInfo.InvariantCulture));
                 startInfo.ArgumentList.Add("--rot-y");
@@ -149,26 +164,23 @@ namespace EasyEDA_Loader
                 startInfo.ArgumentList.Add("--rotation2d");
                 startInfo.ArgumentList.Add(placement.Rotation2D.ToString(CultureInfo.InvariantCulture));
 
-                var standardOutput = new StringBuilder();
-                var standardError = new StringBuilder();
+                string standardOutput = "";
+                string standardError = "";
                 ModelImportTrace.Measure("occt_hlr_projection", null, () =>
                 {
                     using (Process process = Process.Start(startInfo))
                     {
                         if (process == null)
                             throw new InvalidOperationException("OCCT HLR helper process did not start: " + helperPath);
-                        process.OutputDataReceived += (sender, args) =>
+
+                        Task<string> standardOutputTask = process.StandardOutput.ReadToEndAsync();
+                        Task<string> standardErrorTask = process.StandardError.ReadToEndAsync();
+                        if (UseStandardInputForStepData(stepData))
                         {
-                            if (args.Data != null)
-                                standardOutput.AppendLine(args.Data);
-                        };
-                        process.ErrorDataReceived += (sender, args) =>
-                        {
-                            if (args.Data != null)
-                                standardError.AppendLine(args.Data);
-                        };
-                        process.BeginOutputReadLine();
-                        process.BeginErrorReadLine();
+                            process.StandardInput.BaseStream.Write(stepData, 0, stepData.Length);
+                            process.StandardInput.Close();
+                        }
+
                         if (!process.WaitForExit(30000))
                         {
                             try { process.Kill(); }
@@ -176,13 +188,14 @@ namespace EasyEDA_Loader
                             throw new TimeoutException("OCCT HLR helper timed out after 30 seconds: " + helperPath);
                         }
                         process.WaitForExit();
+                        standardOutput = standardOutputTask.GetAwaiter().GetResult();
+                        standardError = standardErrorTask.GetAwaiter().GetResult();
 
-                        if (process.ExitCode != 0 || !File.Exists(tempJson))
+                        if (process.ExitCode != 0 || string.IsNullOrWhiteSpace(standardOutput))
                         {
                             string detail = FirstNonEmpty(
-                                standardError.ToString().Trim(),
-                                standardOutput.ToString().Trim(),
-                                File.Exists(tempJson) ? ReadOcctError(tempJson) : null,
+                                standardError.Trim(),
+                                standardOutput.Trim(),
                                 "No error output.");
                             throw new InvalidOperationException(
                                 "OCCT HLR helper failed with exit code " +
@@ -193,18 +206,18 @@ namespace EasyEDA_Loader
                     }
                 });
 
-                return ModelImportTrace.Measure("projection_optimization", null, () => ReadOcctProjectionJson(tempJson, placement.TargetBounds));
+                return ModelImportTrace.Measure("projection_optimization", null, () => ReadOcctProjectionJsonFromString(standardOutput, placement.TargetBounds));
             }
             catch (Exception ex)
             {
                 Debug.WriteLine("OCCT HLR projection failed: " + ex.Message);
                 throw;
             }
-            finally
-            {
-                TryDeleteFile(tempStep);
-                TryDeleteFile(tempJson);
-            }
+        }
+
+        private static bool UseStandardInputForStepData(byte[] stepData)
+        {
+            return stepData != null && stepData.Length > 0;
         }
 
         private static string FindOcctHlrExecutable()
@@ -278,7 +291,13 @@ namespace EasyEDA_Loader
             string jsonPath,
             StepSilhouetteBounds targetBounds)
         {
-            string json = File.ReadAllText(jsonPath);
+            return ReadOcctProjectionJsonFromString(File.ReadAllText(jsonPath), targetBounds);
+        }
+
+        private static IReadOnlyList<StepSilhouettePrimitive> ReadOcctProjectionJsonFromString(
+            string json,
+            StepSilhouetteBounds targetBounds)
+        {
             using (JsonDocument document = JsonDocument.Parse(json))
             {
                 JsonElement root = document.RootElement;
@@ -466,6 +485,8 @@ namespace EasyEDA_Loader
             StepSilhouetteBounds[] bounds = primitives
                 .Select(primitive => ExpandedPrimitiveBounds(primitive, coverageTolerance))
                 .ToArray();
+            double bucketSizeMm = Math.Max(coverageTolerance * 4.0, sampleStep * 4.0);
+            Dictionary<string, List<int>> spatialBuckets = BuildPrimitiveSpatialBuckets(bounds, bucketSizeMm);
             int[] order = Enumerable.Range(0, primitives.Count)
                 .OrderByDescending(index => lengths[index])
                 .ThenBy(index => index)
@@ -481,10 +502,12 @@ namespace EasyEDA_Loader
                 double coveredRatio = OcctStrokeAreaCoverageRatio(
                     primitives,
                     bounds,
+                    spatialBuckets,
                     remove,
                     candidateIndex,
                     coverageTolerance,
-                    sampleStep);
+                    sampleStep,
+                    bucketSizeMm);
                 if (coveredRatio >= OcctOverlapCoverageThreshold - PointEpsilonMm)
                     remove[candidateIndex] = true;
             }
@@ -747,10 +770,12 @@ namespace EasyEDA_Loader
         private static double OcctStrokeAreaCoverageRatio(
             List<StepSilhouettePrimitive> primitives,
             StepSilhouetteBounds[] bounds,
+            Dictionary<string, List<int>> spatialBuckets,
             bool[] remove,
             int candidateIndex,
             double toleranceMm,
-            double sampleStepMm)
+            double sampleStepMm,
+            double bucketSizeMm)
         {
             StepSilhouettePrimitive candidate = primitives[candidateIndex];
             double length = PrimitiveLength(candidate);
@@ -763,9 +788,11 @@ namespace EasyEDA_Loader
                     sample,
                     primitives,
                     bounds,
+                    spatialBuckets,
                     remove,
                     candidateIndex,
-                    toleranceMm);
+                    toleranceMm,
+                    bucketSizeMm);
             }
 
             return coveredAreaRatioSum / segmentCount;
@@ -775,12 +802,20 @@ namespace EasyEDA_Loader
             Point2d point,
             List<StepSilhouettePrimitive> primitives,
             StepSilhouetteBounds[] bounds,
+            Dictionary<string, List<int>> spatialBuckets,
             bool[] remove,
             int candidateIndex,
-            double toleranceMm)
+            double toleranceMm,
+            double bucketSizeMm)
         {
+            if (spatialBuckets == null ||
+                !spatialBuckets.TryGetValue(PrimitiveSpatialBucketKey(point.X, point.Y, bucketSizeMm), out List<int> nearbyPrimitiveIndices))
+            {
+                return 0.0;
+            }
+
             double coverage = 0.0;
-            for (int index = 0; index < primitives.Count; index++)
+            foreach (int index in nearbyPrimitiveIndices)
             {
                 if (index == candidateIndex || remove[index])
                     continue;
@@ -796,6 +831,57 @@ namespace EasyEDA_Loader
             }
 
             return coverage;
+        }
+
+        private static Dictionary<string, List<int>> BuildPrimitiveSpatialBuckets(
+            StepSilhouetteBounds[] bounds,
+            double bucketSizeMm)
+        {
+            var buckets = new Dictionary<string, List<int>>();
+            if (bounds == null || bucketSizeMm <= PointEpsilonMm)
+                return buckets;
+
+            for (int index = 0; index < bounds.Length; index++)
+            {
+                StepSilhouetteBounds bound = bounds[index];
+                int left = PrimitiveSpatialBucketCoordinate(bound.Left, bucketSizeMm);
+                int right = PrimitiveSpatialBucketCoordinate(bound.Right, bucketSizeMm);
+                int bottom = PrimitiveSpatialBucketCoordinate(bound.Bottom, bucketSizeMm);
+                int top = PrimitiveSpatialBucketCoordinate(bound.Top, bucketSizeMm);
+                for (int x = left; x <= right; x++)
+                {
+                    for (int y = bottom; y <= top; y++)
+                    {
+                        string key = PrimitiveSpatialBucketKey(x, y);
+                        if (!buckets.TryGetValue(key, out List<int> indices))
+                        {
+                            indices = new List<int>();
+                            buckets[key] = indices;
+                        }
+
+                        indices.Add(index);
+                    }
+                }
+            }
+
+            return buckets;
+        }
+
+        private static string PrimitiveSpatialBucketKey(double x, double y, double bucketSizeMm)
+        {
+            return PrimitiveSpatialBucketKey(
+                PrimitiveSpatialBucketCoordinate(x, bucketSizeMm),
+                PrimitiveSpatialBucketCoordinate(y, bucketSizeMm));
+        }
+
+        private static string PrimitiveSpatialBucketKey(int x, int y)
+        {
+            return x.ToString(CultureInfo.InvariantCulture) + "|" + y.ToString(CultureInfo.InvariantCulture);
+        }
+
+        private static int PrimitiveSpatialBucketCoordinate(double value, double bucketSizeMm)
+        {
+            return (int)Math.Floor(value / bucketSizeMm);
         }
 
         private static Point2d PrimitivePointAtFraction(StepSilhouettePrimitive primitive, double fraction)
@@ -932,21 +1018,6 @@ namespace EasyEDA_Loader
         private static double AngleForPoint(Point2d center, Point2d point)
         {
             return PositiveModulo(RadiansToDegrees(Math.Atan2(point.Y - center.Y, point.X - center.X)), 360.0);
-        }
-
-        private static void TryDeleteFile(string path)
-        {
-            if (string.IsNullOrWhiteSpace(path))
-                return;
-
-            try
-            {
-                if (File.Exists(path))
-                    File.Delete(path);
-            }
-            catch
-            {
-            }
         }
 
         private static double Hypot(double x, double y)

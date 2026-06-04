@@ -7,7 +7,7 @@ namespace StepOcctHlr
 {
     internal static class Program
     {
-        private const string Usage = "Usage: StepOcctHlr <input.step> <output.json> [--rot-x deg] [--rot-y deg] [--rot-z deg] [--rotation2d deg]";
+        private const string Usage = "Usage: StepOcctHlr <input.step|-> <output.json|-> [--rot-x deg] [--rot-y deg] [--rot-z deg] [--rotation2d deg]";
 
         private static int Main(string[] args)
         {
@@ -18,10 +18,11 @@ namespace StepOcctHlr
             }
 
             string outputPath = args[1];
+            string tempInputPath = null;
             try
             {
-                string inputPath = Path.GetFullPath(args[0]);
-                outputPath = Path.GetFullPath(outputPath);
+                string inputPath = ResolveInputPath(args[0], out tempInputPath);
+                outputPath = ResolveOutputPath(outputPath);
                 OcctConfiguration.Configure();
                 ProjectionOptions options = ParseOptions(args);
                 if (!File.Exists(inputPath))
@@ -45,6 +46,31 @@ namespace StepOcctHlr
                 TryWriteResult(outputPath, new ProjectionResultDto { Success = false, Error = ex.ToString() });
                 return 1;
             }
+            finally
+            {
+                TryDeleteFile(tempInputPath);
+            }
+        }
+
+        private static string ResolveInputPath(string inputArgument, out string tempInputPath)
+        {
+            tempInputPath = null;
+            if (inputArgument != "-")
+                return Path.GetFullPath(inputArgument);
+
+            tempInputPath = Path.Combine(Path.GetTempPath(), "EasyEDALoaderHlr_" + Guid.NewGuid().ToString("N") + ".step");
+            using (Stream input = Console.OpenStandardInput())
+            using (FileStream output = File.Create(tempInputPath))
+            {
+                input.CopyTo(output);
+            }
+
+            return tempInputPath;
+        }
+
+        private static string ResolveOutputPath(string outputArgument)
+        {
+            return outputArgument == "-" ? "-" : Path.GetFullPath(outputArgument);
         }
 
         private static ProjectionOptions ParseOptions(string[] args)
@@ -71,12 +97,19 @@ namespace StepOcctHlr
 
         private static void WriteResult(string outputPath, ProjectionResultDto result)
         {
+            var jsonOptions = new JsonSerializerOptions { WriteIndented = true };
+            string json = JsonSerializer.Serialize(result, jsonOptions);
+            if (outputPath == "-")
+            {
+                Console.Out.Write(json);
+                return;
+            }
+
             string directory = Path.GetDirectoryName(outputPath);
             if (!string.IsNullOrEmpty(directory))
                 Directory.CreateDirectory(directory);
 
-            var jsonOptions = new JsonSerializerOptions { WriteIndented = true };
-            File.WriteAllText(outputPath, JsonSerializer.Serialize(result, jsonOptions));
+            File.WriteAllText(outputPath, json);
         }
 
         private static void TryWriteResult(string outputPath, ProjectionResultDto result)
@@ -88,6 +121,21 @@ namespace StepOcctHlr
             catch (Exception writeException)
             {
                 Console.Error.WriteLine("Failed to write result JSON: " + writeException.Message);
+            }
+        }
+
+        private static void TryDeleteFile(string path)
+        {
+            if (string.IsNullOrWhiteSpace(path))
+                return;
+
+            try
+            {
+                if (File.Exists(path))
+                    File.Delete(path);
+            }
+            catch
+            {
             }
         }
     }

@@ -25,6 +25,8 @@ namespace StepCleaner.Tests
         private const double MaxCleanedRegionEdgeRatio = 0.035;
         private const double MaxRetainedRegionEdgeRatio = 0.45;
         private const string DefaultMeasurePartNumber = "C5338332";
+        private const int OcctHlrBenchmarkMinimumExpectedLines = 290;
+        private const int OcctHlrBenchmarkMinimumExpectedArcs = 20;
 
         private static int Main(string[] args)
         {
@@ -206,6 +208,9 @@ namespace StepCleaner.Tests
             if (IsOption(args[0], "--occt-hlr-smoke"))
                 return OcctHiddenLineProjectionSmokeTests.Run();
 
+            if (IsOption(args[0], "--occt-hlr-benchmark"))
+                return RunOcctHlrBenchmark(args);
+
             if (IsOption(args[0], "--occt-overlap-unit"))
                 return OcctOverlapCleanupTests.Run();
 
@@ -233,6 +238,7 @@ namespace StepCleaner.Tests
             Console.Error.WriteLine("Usage: StepCleaner.Tests --measure-model-import [part-number] [--repeat count] [--clean-text]");
             Console.Error.WriteLine("Usage: StepCleaner.Tests --silhouette-cleanup");
             Console.Error.WriteLine("Usage: StepCleaner.Tests --occt-hlr-smoke");
+            Console.Error.WriteLine("Usage: StepCleaner.Tests --occt-hlr-benchmark <input.step> [--repeat count]");
             Console.Error.WriteLine("Usage: StepCleaner.Tests --occt-overlap-unit");
             Console.Error.WriteLine("Usage: StepCleaner.Tests --occt-stage-report [output-dir]");
             Console.Error.WriteLine("Usage: StepCleaner.Tests --clean-text");
@@ -281,6 +287,8 @@ namespace StepCleaner.Tests
 
             string footprint3dModel = File.ReadAllText(Path.Combine(repoRoot, "EasyEDA-Loader", "FootprintShapes", "EeFootprint3dModel.cs"));
             string easyEdaLoader = File.ReadAllText(Path.Combine(repoRoot, "EasyEDA-Loader", "EasyEDALoader.cs"));
+            string dialogWindow = File.ReadAllText(Path.Combine(repoRoot, "EasyEDA-Loader", "DialogWindow.cs"));
+            string stepProjectionRenderer = File.ReadAllText(Path.Combine(repoRoot, "EasyEDA-Loader", "StepProjectionRenderer.cs"));
             string stepSilhouetteProjection = File.ReadAllText(Path.Combine(repoRoot, "EasyEDA-Loader", "StepSilhouetteProjection.cs"));
             string stepCleanerProgram = File.ReadAllText(Path.Combine(repoRoot, "Test", "StepCleaner", "Program.cs"));
             AssertContains(
@@ -329,6 +337,71 @@ namespace StepCleaner.Tests
                 "projection parse/place/optimization phase should be timed",
                 failures);
             AssertContains(
+                stepSilhouetteProjection,
+                "UseStandardInputForStepData",
+                "OCCT silhouette projection should avoid writing a temp STEP file when the caller has bytes",
+                failures);
+            AssertContains(
+                stepSilhouetteProjection,
+                "ReadOcctProjectionJsonFromString",
+                "OCCT silhouette projection should parse helper JSON from stdout without a temp JSON file",
+                failures);
+            AssertContains(
+                stepSilhouetteProjection,
+                "BuildPrimitiveSpatialBuckets",
+                "OCCT overlap cleanup should use spatial buckets instead of scanning every primitive for every sample",
+                failures);
+            AssertContains(
+                dialogWindow,
+                "StartF3DPreviewAsync",
+                "interactive colored STEP preview should keep the F3D preview path until native XCAFPrs_AISObject support exists",
+                failures);
+            AssertContains(
+                dialogWindow,
+                "--scalar-coloring",
+                "interactive colored STEP preview should preserve F3D scalar-coloring",
+                failures);
+            AssertContains(
+                dialogWindow,
+                "--coloring-array=Colors",
+                "interactive colored STEP preview should use the STEP Colors array",
+                failures);
+            AssertContains(
+                dialogWindow,
+                "--coloring-component=-2",
+                "interactive colored STEP preview should use F3D RGB scalar components",
+                failures);
+            AssertDoesNotContain(
+                dialogWindow,
+                "AIS_ColoredShape",
+                "interactive colored STEP preview should not use the managed OCCT color probe with wrong DF56 colors",
+                failures);
+            AssertContains(
+                stepProjectionRenderer,
+                "TryRenderWithF3D",
+                "colored projection PNG rendering should keep F3D as the color-correct renderer until native XCAFPrs_AISObject support exists",
+                failures);
+            AssertContains(
+                stepProjectionRenderer,
+                "--scalar-coloring",
+                "colored projection PNG rendering should preserve F3D scalar-coloring",
+                failures);
+            AssertContains(
+                stepProjectionRenderer,
+                "--coloring-array=Colors",
+                "colored projection PNG rendering should use the STEP Colors array",
+                failures);
+            AssertContains(
+                stepProjectionRenderer,
+                "--coloring-component=-2",
+                "colored projection PNG rendering should use F3D RGB scalar components",
+                failures);
+            AssertDoesNotContain(
+                stepProjectionRenderer,
+                "AIS_ColoredShape",
+                "colored projection PNG rendering should not use the managed OCCT color probe with wrong DF56 colors",
+                failures);
+            AssertContains(
                 stepCleanerProgram,
                 "DefaultMeasure" + "PartNumber = \"C5338332\"",
                 "standalone model measurement should default to the C5338332 example",
@@ -347,6 +420,16 @@ namespace StepCleaner.Tests
                 stepCleanerProgram,
                 "--measure-" + "model-import",
                 "usage should document the standalone model import measurement command",
+                failures);
+            AssertContains(
+                stepCleanerProgram,
+                "--occt-hlr-" + "benchmark",
+                "usage should document the OCCT HLR benchmark command",
+                failures);
+            AssertContains(
+                stepCleanerProgram,
+                "RunOcctHlr" + "Benchmark(args)",
+                "test harness should expose a standalone OCCT HLR benchmark command",
                 failures);
             AssertContains(
                 stepCleanerProgram,
@@ -1935,6 +2018,74 @@ namespace StepCleaner.Tests
             Console.WriteLine("Silhouette primitive dump written: " + Path.GetFullPath(outputPath));
             Console.WriteLine("Primitives: " + primitives.Count.ToString(CultureInfo.InvariantCulture));
             return 0;
+        }
+
+        private static int RunOcctHlrBenchmark(string[] args)
+        {
+            if (args.Length < 2)
+            {
+                Console.Error.WriteLine("Usage: StepCleaner.Tests --occt-hlr-benchmark <input.step> [--repeat count]");
+                return 2;
+            }
+
+            string inputPath = args[1];
+            int repeatCount = 1;
+            for (int index = 2; index < args.Length; index++)
+            {
+                string option = args[index];
+                if (IsOption(option, "--repeat"))
+                {
+                    if (!TryReadIntOption(args, ref index, option, out repeatCount))
+                        return 2;
+                    repeatCount = Math.Max(1, repeatCount);
+                    continue;
+                }
+
+                Console.Error.WriteLine("Unknown OCCT HLR benchmark option: " + option);
+                return 2;
+            }
+
+            if (!File.Exists(inputPath))
+            {
+                Console.Error.WriteLine("STEP file does not exist: " + inputPath);
+                return 2;
+            }
+
+            byte[] stepData = File.ReadAllBytes(inputPath);
+            bool failed = false;
+            for (int runIndex = 1; runIndex <= repeatCount; runIndex++)
+            {
+                var stopwatch = Stopwatch.StartNew();
+                IReadOnlyList<StepSilhouettePrimitive> primitives = StepSilhouetteProjection.Generate(
+                    stepData,
+                    CreateDefaultSilhouettePlacement());
+                stopwatch.Stop();
+
+                int lineCount = primitives.Count(primitive => primitive.Kind == StepSilhouettePrimitiveKind.Line);
+                int arcCount = primitives.Count(primitive => primitive.Kind == StepSilhouettePrimitiveKind.Arc);
+                Console.WriteLine(
+                    "run_index=" + runIndex.ToString(CultureInfo.InvariantCulture) +
+                    " total_ms=" + stopwatch.ElapsedMilliseconds.ToString(CultureInfo.InvariantCulture) +
+                    " line_count=" + lineCount.ToString(CultureInfo.InvariantCulture) +
+                    " arc_count=" + arcCount.ToString(CultureInfo.InvariantCulture) +
+                    " primitive_count=" + primitives.Count.ToString(CultureInfo.InvariantCulture));
+
+                if (lineCount < OcctHlrBenchmarkMinimumExpectedLines ||
+                    arcCount < OcctHlrBenchmarkMinimumExpectedArcs)
+                {
+                    failed = true;
+                    Console.Error.WriteLine(
+                        "OCCT HLR benchmark primitive count below smoke threshold: " +
+                        lineCount.ToString(CultureInfo.InvariantCulture) +
+                        " line(s), " +
+                        arcCount.ToString(CultureInfo.InvariantCulture) +
+                        " arc(s), " +
+                        primitives.Count.ToString(CultureInfo.InvariantCulture) +
+                        " total.");
+                }
+            }
+
+            return failed ? 1 : 0;
         }
 
         private static StepSilhouettePlacement CreateDefaultSilhouettePlacement()

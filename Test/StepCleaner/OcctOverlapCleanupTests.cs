@@ -18,6 +18,7 @@ namespace StepCleaner.Tests
             AssertSlightlyAngledTouchingLinesAreNotMerged(failures);
             AssertOffsetParallelLinesAreNotMerged(failures);
             AssertCircularContactChordLinesAreConvertedToArcs(failures);
+            AssertMixedLineArcFixtureIsStable(failures);
             AssertGappedCollinearLinesAreKeptSeparate(failures);
             AssertCoveredLineIsRemoved(failures);
             AssertMostlyVisibleLineIsKept(failures);
@@ -116,6 +117,25 @@ namespace StepCleaner.Tests
             AssertEqual(8, CountKind(optimized, StepSilhouettePrimitiveKind.Arc), "circular contact chord lines should become arcs", failures);
             AssertEqual(2, CountKind(optimized, StepSilhouettePrimitiveKind.Line), "contact center detail lines should remain", failures);
             AssertEqual(4, CountArcsNearRadius(optimized, 0.939), "converted contact arcs should keep the chord radius", failures);
+        }
+
+        private static void AssertMixedLineArcFixtureIsStable(List<string> failures)
+        {
+            var primitives = new List<StepSilhouettePrimitive>
+            {
+                StepSilhouettePrimitive.Arc(2.0, 2.0, 0.5, 0.0, 180.0),
+                StepSilhouettePrimitive.Line(0.0, 0.0, 2.5, 0.0),
+                StepSilhouettePrimitive.Line(2.5, 0.0, 5.0, 0.0),
+                StepSilhouettePrimitive.Line(0.0, 1.0, 1.0, 1.0)
+            };
+
+            List<StepSilhouettePrimitive> optimized = OptimizeOcctPrimitives(primitives);
+            AssertEqual(3, optimized.Count, "mixed OCCT line/arc fixture should keep stable primitive count", failures);
+            AssertEqual(1, CountKind(optimized, StepSilhouettePrimitiveKind.Arc), "mixed fixture should keep its arc", failures);
+            AssertEqual(2, CountKind(optimized, StepSilhouettePrimitiveKind.Line), "mixed fixture should keep merged and separate lines", failures);
+            AssertContainsLine(optimized, 0.0, 0.0, 5.0, 0.0, "mixed fixture merged line", failures);
+            AssertContainsLine(optimized, 0.0, 1.0, 1.0, 1.0, "mixed fixture separate line", failures);
+            AssertContainsArc(optimized, 2.0, 2.0, 0.5, 0.0, 180.0, "mixed fixture arc", failures);
         }
 
         private static void AssertShortTouchingLinesAreMergedBeforeCutoff(List<string> failures)
@@ -253,6 +273,68 @@ namespace StepCleaner.Tests
                     expectedX2.ToString(CultureInfo.InvariantCulture) + "," +
                     expectedY2.ToString(CultureInfo.InvariantCulture));
             }
+        }
+
+        private static void AssertContainsLine(
+            List<StepSilhouettePrimitive> primitives,
+            double expectedX1,
+            double expectedY1,
+            double expectedX2,
+            double expectedY2,
+            string message,
+            List<string> failures)
+        {
+            foreach (StepSilhouettePrimitive primitive in primitives)
+            {
+                if (primitive.Kind == StepSilhouettePrimitiveKind.Line &&
+                    Math.Abs(expectedX1 - primitive.X1) <= 0.000001 &&
+                    Math.Abs(expectedY1 - primitive.Y1) <= 0.000001 &&
+                    Math.Abs(expectedX2 - primitive.X2) <= 0.000001 &&
+                    Math.Abs(expectedY2 - primitive.Y2) <= 0.000001)
+                {
+                    return;
+                }
+            }
+
+            failures.Add(message + ": expected line " +
+                expectedX1.ToString(CultureInfo.InvariantCulture) + "," +
+                expectedY1.ToString(CultureInfo.InvariantCulture) + " -> " +
+                expectedX2.ToString(CultureInfo.InvariantCulture) + "," +
+                expectedY2.ToString(CultureInfo.InvariantCulture));
+        }
+
+        private static void AssertContainsArc(
+            List<StepSilhouettePrimitive> primitives,
+            double expectedCenterX,
+            double expectedCenterY,
+            double expectedRadius,
+            double expectedStartAngle,
+            double expectedEndAngle,
+            string message,
+            List<string> failures)
+        {
+            foreach (StepSilhouettePrimitive primitive in primitives)
+            {
+                if (primitive.Kind == StepSilhouettePrimitiveKind.Arc &&
+                    Math.Abs(expectedCenterX - primitive.CenterX) <= 0.000001 &&
+                    Math.Abs(expectedCenterY - primitive.CenterY) <= 0.000001 &&
+                    Math.Abs(expectedRadius - primitive.Radius) <= 0.000001 &&
+                    Math.Abs(expectedStartAngle - primitive.StartAngle) <= 0.000001 &&
+                    Math.Abs(expectedEndAngle - primitive.EndAngle) <= 0.000001)
+                {
+                    return;
+                }
+            }
+
+            failures.Add(message + ": expected arc center " +
+                expectedCenterX.ToString(CultureInfo.InvariantCulture) + "," +
+                expectedCenterY.ToString(CultureInfo.InvariantCulture) +
+                " radius " +
+                expectedRadius.ToString(CultureInfo.InvariantCulture) +
+                " angles " +
+                expectedStartAngle.ToString(CultureInfo.InvariantCulture) +
+                " -> " +
+                expectedEndAngle.ToString(CultureInfo.InvariantCulture));
         }
     }
 }
