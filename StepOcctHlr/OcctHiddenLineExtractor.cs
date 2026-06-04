@@ -165,6 +165,9 @@ namespace StepOcctHlr
 
         private static TopoDS_Shape ApplyModelRotation(TopoDS_Shape shape, ProjectionOptions options)
         {
+            if (IsIdentityModelRotation(options))
+                return shape;
+
             double rx = DegreesToRadians(options.RotX);
             double ry = DegreesToRadians(options.RotY);
             double cx = Math.Cos(rx);
@@ -180,6 +183,17 @@ namespace StepOcctHlr
 
             var builder = new BRepBuilderAPI_Transform(shape, transform, true);
             return builder.Shape;
+        }
+
+        private static bool IsIdentityModelRotation(ProjectionOptions options)
+        {
+            return IsZeroRotation(options.RotX) && IsZeroRotation(options.RotY);
+        }
+
+        private static bool IsZeroRotation(double degrees)
+        {
+            double normalized = NormalizeDegrees(degrees);
+            return Math.Abs(normalized) < 1e-9 || Math.Abs(normalized - 360.0) < 1e-9;
         }
 
         private static void AddPrimitivesFromBrepText(List<ProjectionPrimitiveDto> primitives, string brepText, ProjectionOptions options)

@@ -564,7 +564,7 @@ namespace EasyEDA_Loader
                 .Select(primitive => ExpandedPrimitiveBounds(primitive, coverageTolerance))
                 .ToArray();
             double bucketSizeMm = Math.Max(coverageTolerance * 4.0, sampleStep * 4.0);
-            Dictionary<string, List<int>> spatialBuckets = BuildPrimitiveSpatialBuckets(bounds, bucketSizeMm);
+            Dictionary<long, List<int>> spatialBuckets = BuildPrimitiveSpatialBuckets(bounds, bucketSizeMm);
             int[] order = Enumerable.Range(0, primitives.Count)
                 .OrderByDescending(index => lengths[index])
                 .ThenBy(index => index)
@@ -848,7 +848,7 @@ namespace EasyEDA_Loader
         private static double OcctStrokeAreaCoverageRatio(
             List<StepSilhouettePrimitive> primitives,
             StepSilhouetteBounds[] bounds,
-            Dictionary<string, List<int>> spatialBuckets,
+            Dictionary<long, List<int>> spatialBuckets,
             bool[] remove,
             int candidateIndex,
             double toleranceMm,
@@ -880,7 +880,7 @@ namespace EasyEDA_Loader
             Point2d point,
             List<StepSilhouettePrimitive> primitives,
             StepSilhouetteBounds[] bounds,
-            Dictionary<string, List<int>> spatialBuckets,
+            Dictionary<long, List<int>> spatialBuckets,
             bool[] remove,
             int candidateIndex,
             double toleranceMm,
@@ -911,11 +911,11 @@ namespace EasyEDA_Loader
             return coverage;
         }
 
-        private static Dictionary<string, List<int>> BuildPrimitiveSpatialBuckets(
+        private static Dictionary<long, List<int>> BuildPrimitiveSpatialBuckets(
             StepSilhouetteBounds[] bounds,
             double bucketSizeMm)
         {
-            var buckets = new Dictionary<string, List<int>>();
+            var buckets = new Dictionary<long, List<int>>();
             if (bounds == null || bucketSizeMm <= PointEpsilonMm)
                 return buckets;
 
@@ -930,7 +930,7 @@ namespace EasyEDA_Loader
                 {
                     for (int y = bottom; y <= top; y++)
                     {
-                        string key = PrimitiveSpatialBucketKey(x, y);
+                        long key = PrimitiveSpatialBucketKey(x, y);
                         if (!buckets.TryGetValue(key, out List<int> indices))
                         {
                             indices = new List<int>();
@@ -945,16 +945,19 @@ namespace EasyEDA_Loader
             return buckets;
         }
 
-        private static string PrimitiveSpatialBucketKey(double x, double y, double bucketSizeMm)
+        private static long PrimitiveSpatialBucketKey(double x, double y, double bucketSizeMm)
         {
             return PrimitiveSpatialBucketKey(
                 PrimitiveSpatialBucketCoordinate(x, bucketSizeMm),
                 PrimitiveSpatialBucketCoordinate(y, bucketSizeMm));
         }
 
-        private static string PrimitiveSpatialBucketKey(int x, int y)
+        private static long PrimitiveSpatialBucketKey(int x, int y)
         {
-            return x.ToString(CultureInfo.InvariantCulture) + "|" + y.ToString(CultureInfo.InvariantCulture);
+            unchecked
+            {
+                return ((long)x << 32) ^ (uint)y;
+            }
         }
 
         private static int PrimitiveSpatialBucketCoordinate(double value, double bucketSizeMm)

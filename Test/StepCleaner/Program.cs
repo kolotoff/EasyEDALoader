@@ -293,6 +293,7 @@ namespace StepCleaner.Tests
             string stepWatermarkCleanVerifier = File.ReadAllText(Path.Combine(repoRoot, "EasyEDA-Loader", "StepWatermarkCleanVerifier.cs"));
             string stepProjectionRenderer = File.ReadAllText(Path.Combine(repoRoot, "EasyEDA-Loader", "StepProjectionRenderer.cs"));
             string stepSilhouetteProjection = File.ReadAllText(Path.Combine(repoRoot, "EasyEDA-Loader", "StepSilhouetteProjection.cs"));
+            string occtHiddenLineExtractor = File.ReadAllText(Path.Combine(repoRoot, "StepOcctHlr", "OcctHiddenLineExtractor.cs"));
             string stepCleanerProgram = File.ReadAllText(Path.Combine(repoRoot, "Test", "StepCleaner", "Program.cs"));
             AssertContains(
                 footprint3dModel,
@@ -378,6 +379,16 @@ namespace StepCleaner.Tests
                 stepSilhouetteProjection,
                 "BuildPrimitiveSpatialBuckets",
                 "OCCT overlap cleanup should use spatial buckets instead of scanning every primitive for every sample",
+                failures);
+            AssertContains(
+                stepSilhouetteProjection,
+                "Dictionary<long, List<int>> spatialBuckets",
+                "OCCT overlap cleanup spatial buckets should use numeric keys instead of allocating strings for every sample",
+                failures);
+            AssertContains(
+                occtHiddenLineExtractor,
+                "IsIdentityModelRotation(options)",
+                "OCCT HLR helper should skip BRepBuilderAPI_Transform when model rotation is identity",
                 failures);
             AssertContains(
                 dialogWindow,
@@ -511,8 +522,8 @@ namespace StepCleaner.Tests
                 failures);
             AssertContains(
                 stepCleanerProgram,
-                "StepSilhouette" + "Projection.Generate(cleanedStep",
-                "measurement command should exercise OCCT HLR projection generation and optimization",
+                "StepSilhouette" + "Projection.GenerateFromFile(cleanedStepPath",
+                "measurement command should project from the cleaned STEP file path to avoid duplicate stdin temp-file copy",
                 failures);
 
             string zInfoCacheDirectory = Path.Combine(Path.GetTempPath(), "EasyEDALoaderZInfo_" + Guid.NewGuid().ToString("N"));
@@ -741,11 +752,12 @@ namespace StepCleaner.Tests
                             cancellation.Token)).ConfigureAwait(false);
 
                     string cleanCacheKey = CleanStepCacheKeys.GetCleanModeKey(model.Uuid, cleanText);
+                    string cleanedStepPath = GetCleanStepPath(cleanCacheKey);
                     StepWatermarkCleanVerifierResult cleanMissResult = null;
                     byte[] cleanedStep = await timings.MeasureAsync(
                         "watermark_clean_cache",
                         () => GetOrDownloadBytesAsync(
-                            GetCleanStepPath(cleanCacheKey),
+                            cleanedStepPath,
                             () => System.Threading.Tasks.Task.Run(
                                 () =>
                                 {
@@ -766,7 +778,7 @@ namespace StepCleaner.Tests
 
                     IReadOnlyList<StepSilhouettePrimitive> projectionPrimitives = timings.Measure(
                         "occt_hlr_projection_total",
-                        () => StepSilhouetteProjection.Generate(cleanedStep, CreateMeasurementProjectionPlacement(model)));
+                        () => StepSilhouetteProjection.GenerateFromFile(cleanedStepPath, CreateMeasurementProjectionPlacement(model)));
 
                     Console.WriteLine("  original_step_bytes=" + originalStep.Length.ToString(CultureInfo.InvariantCulture));
                     Console.WriteLine("  raw_obj_bytes=" + rawObj.Length.ToString(CultureInfo.InvariantCulture));
@@ -1464,6 +1476,7 @@ namespace StepCleaner.Tests
             AssertContains(eePcb, "ReprojectComponentBodySilhouette", "Reproject 3D must regenerate silhouette primitives from a 3D body", failures);
             AssertContains(eePcb, "Rotation2D = FootprintModelPlacement.ProjectionPlacementRotationDeg()", "Reproject 3D must apply the common Altium 180-degree projection placement correction", failures);
             AssertContains(File.ReadAllText(Path.Combine(repoRoot, "EasyEDA-Loader", "FootprintShapes", "EeFootprint3dModel.cs")), "Rotation2D = FootprintModelPlacement.ProjectionPlacementRotationDeg()", "3D model import must apply the common Altium 180-degree projection placement correction", failures);
+            AssertContains(File.ReadAllText(Path.Combine(repoRoot, "EasyEDA-Loader", "FootprintShapes", "EeFootprint3dModel.cs")), "StepSilhouetteProjection.GenerateFromFile(temp", "3D model import should project from the already-written STEP temp file instead of sending duplicate bytes through helper stdin", failures);
             AssertContains(module, "ReprojectComponentBodySilhouette(component, out removedCount)", "Reproject 3D must only clear Mechanical 2 after projection generation succeeds", failures);
             AssertContains(eePcb, "BeginPcbPrimitiveModify(component)", "Reproject 3D must open a footprint primitive modify transaction for undo", failures);
             AssertContains(eePcb, "EndPcbPrimitiveModify(component, modifying, changed)", "Reproject 3D must close or cancel the footprint primitive modify transaction for undo", failures);
