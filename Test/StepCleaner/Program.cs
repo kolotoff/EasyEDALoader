@@ -463,8 +463,90 @@ namespace StepCleaner.Tests
                 failures);
             AssertContains(
                 dialogWindow,
-                "int maxEdge = isInteractive ? 320 : 720",
-                "interactive colored STEP preview should render smaller frames while dragging for lower latency",
+                "int maxEdge = isInteractive ? 960 : 1920",
+                "interactive colored STEP preview should keep enough resolution while rotating and use high-resolution idle frames",
+                failures);
+            AssertContains(
+                dialogWindow,
+                "RequestF3DPreviewIdleRender",
+                "interactive 3D preview should replace the low-resolution interaction frame with a high-resolution idle render",
+                failures);
+            AssertContains(
+                dialogWindow,
+                "isInteractive && _f3dPreviewDragStart == null",
+                "interactive 3D preview should schedule the high-resolution refresh after drag or wheel input settles",
+                failures);
+            AssertContains(
+                dialogWindowXaml,
+                "Width=\"1600\"",
+                "dialog should be wide enough for a 25 percent 3D preview column",
+                failures);
+            AssertContains(
+                dialogWindowXaml,
+                "<ColumnDefinition Width=\"37.5*\"/>",
+                "dialog should allocate 37.5 percent of the main content width to the interactive 3D preview",
+                failures);
+            AssertContains(
+                dialogWindowXaml,
+                "x:Name=\"modelProjectionViewport\"",
+                "middle-column projection preview should render inside a full-column viewport",
+                failures);
+            AssertContains(
+                dialogWindowXaml,
+                "modelProjectionImage",
+                "middle-column projection preview should keep the projection image control",
+                failures);
+            AssertContains(
+                dialogWindowXaml,
+                "Stretch=\"Uniform\"",
+                "middle-column projection and interactive 3D previews should fit their columns without crop-induced shifting",
+                failures);
+            AssertDoesNotContain(
+                dialogWindowXaml,
+                "Stretch=\"UniformToFill\"",
+                "projection and interactive 3D previews should not crop their bitmaps while fitting to the column",
+                failures);
+            AssertContains(
+                dialogWindowXaml,
+                "x:Name=\"f3dModelViewport\"",
+                "interactive 3D preview should render against the full preview column viewport",
+                failures);
+            AssertContains(
+                dialogWindowXaml,
+                "RenderOptions.BitmapScalingMode=\"HighQuality\"",
+                "interactive 3D preview should use high-quality WPF bitmap scaling",
+                failures);
+            AssertContains(
+                dialogWindow,
+                "f3dModelViewport.ActualWidth",
+                "interactive 3D preview should size F3D renders from the full preview column viewport width",
+                failures);
+            AssertContains(
+                dialogWindow,
+                "Task<byte[]> stepDataTask = ModelCache.GetStepModelAsync",
+                "3D model preview should start a shared STEP load as soon as the model UUID is known",
+                failures);
+            AssertContains(
+                dialogWindow,
+                "Task interactivePreviewTask = ShowInteractiveModelPreviewAsync(_currentModel, stepDataTask",
+                "interactive 3D preview should start from the shared STEP task independently of other preview data",
+                failures);
+            AssertContains(
+                dialogWindow,
+                "ShowModelProjectionPreviewAsync(_currentModel, stepDataTask",
+                "2D model projection should reuse the shared STEP task instead of loading the STEP model again",
+                failures);
+            AssertAppearsBefore(
+                dialogWindow,
+                "Task interactivePreviewTask = ShowInteractiveModelPreviewAsync(_currentModel, stepDataTask",
+                "eeFootprint.DrawToCanvas",
+                "interactive 3D preview should begin before footprint drawing blocks the UI preview path",
+                failures);
+            AssertAppearsBefore(
+                dialogWindow,
+                "Task interactivePreviewTask = ShowInteractiveModelPreviewAsync(_currentModel, stepDataTask",
+                "ShowModelProjectionPreviewAsync(_currentModel, stepDataTask",
+                "interactive 3D preview should begin before 2D projection rendering",
                 failures);
             AssertContains(
                 dialogWindow,
@@ -2571,6 +2653,27 @@ namespace StepCleaner.Tests
         {
             if (text != null && text.IndexOf(unexpectedSubstring, StringComparison.Ordinal) >= 0)
                 failures.Add(message + ": found '" + unexpectedSubstring + "'.");
+        }
+
+        private static void AssertAppearsBefore(
+            string text,
+            string earlierSubstring,
+            string laterSubstring,
+            string message,
+            List<string> failures)
+        {
+            int earlierIndex = text?.IndexOf(earlierSubstring, StringComparison.Ordinal) ?? -1;
+            int laterIndex = text?.IndexOf(laterSubstring, StringComparison.Ordinal) ?? -1;
+            if (earlierIndex < 0 || laterIndex < 0 || earlierIndex >= laterIndex)
+            {
+                failures.Add(
+                    message +
+                    ": expected '" +
+                    earlierSubstring +
+                    "' before '" +
+                    laterSubstring +
+                    "'.");
+            }
         }
 
         private static void AssertNear(double expected, double actual, double tolerance, string message, List<string> failures)

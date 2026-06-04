@@ -6,9 +6,9 @@
     mc:Ignorable="d"
     Title="EasyEDA Component Loader"
     Height="820"
-    Width="1280"
+    Width="1600"
     MinHeight="680"
-    MinWidth="1180"
+    MinWidth="1360"
     WindowStartupLocation="CenterScreen"
     ShowInTaskbar="False"
     ResizeMode="CanResize"
@@ -154,9 +154,9 @@
 
     <Grid x:Name="mainGrid" Background="{StaticResource DialogBackgroundBrush}">
         <Grid.ColumnDefinitions>
-            <ColumnDefinition Width="*"/>
-            <ColumnDefinition Width="330"/>
-            <ColumnDefinition Width="420"/>
+            <ColumnDefinition Width="42.5*"/>
+            <ColumnDefinition Width="20*"/>
+            <ColumnDefinition Width="37.5*"/>
         </Grid.ColumnDefinitions>
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
@@ -462,12 +462,15 @@
                             HorizontalAlignment="Left" VerticalAlignment="Top"/>
                 </ScrollViewer>
 
-                <Border Grid.Row="5"
+                <Border x:Name="modelProjectionViewport"
+                        Grid.Row="5"
                         Background="Black">
                     <Image x:Name="modelProjectionImage"
                            Stretch="Uniform"
                            HorizontalAlignment="Stretch"
-                           VerticalAlignment="Stretch"/>
+                           VerticalAlignment="Stretch"
+                           RenderOptions.BitmapScalingMode="HighQuality"
+                           ClipToBounds="True"/>
                 </Border>
             </Grid>
         </Border>
@@ -489,9 +492,14 @@
                            FontWeight="SemiBold"
                            Margin="0,0,0,10"/>
 
-                <Border Grid.Row="1" Background="White">
+                <Border x:Name="f3dModelViewport"
+                        Grid.Row="1"
+                        Background="White">
                     <Image x:Name="f3dModelImage"
                            Stretch="Uniform"
+                           HorizontalAlignment="Stretch"
+                           VerticalAlignment="Stretch"
+                           RenderOptions.BitmapScalingMode="HighQuality"
                            SnapsToDevicePixels="True"
                            MouseDown="F3DPreviewImage_MouseDown"
                            MouseMove="F3DPreviewImage_MouseMove"

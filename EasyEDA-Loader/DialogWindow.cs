@@ -340,6 +340,15 @@ namespace EasyEDA_Loader
 
                         UpdateModelActionButtonState();
 
+                        Task<byte[]> stepDataTask = null;
+                        if (_currentModel != null)
+                        {
+                            UpdatePreviewProgress("Loading 3D preview...", 62);
+                            stepDataTask = ModelCache.GetStepModelAsync(Api, _currentModel.Uuid, cancellationToken);
+                            Task interactivePreviewTask = ShowInteractiveModelPreviewAsync(_currentModel, stepDataTask, cancellationToken);
+                            ObservePreviewTask(interactivePreviewTask, "3D preview");
+                        }
+
                         EeFootprintContext ctx = new EeFootprintContext
                         {
                             Box = eeFootprint.BoundingBox,
@@ -363,7 +372,7 @@ namespace EasyEDA_Loader
                             try
                             {
                                 UpdatePreviewProgress("Rendering 3D projection...", 72);
-                                await ShowModelProjectionPreviewAsync(_currentModel, cancellationToken);
+                                await ShowModelProjectionPreviewAsync(_currentModel, stepDataTask, cancellationToken);
                             }
                             catch (OperationCanceledException)
                             {
@@ -373,18 +382,6 @@ namespace EasyEDA_Loader
                                 EasyEDALoaderModule.Trace($"3D projection preview failed: {ex}");
                             }
 
-                            try
-                            {
-                                UpdatePreviewProgress("Loading 3D preview...", 78);
-                                await ShowInteractiveModelPreviewAsync(_currentModel, cancellationToken);
-                            }
-                            catch (OperationCanceledException)
-                            {
-                            }
-                            catch (Exception ex)
-                            {
-                                EasyEDALoaderModule.Trace($"3D preview failed: {ex}");
-                            }
                         }
                     }
 
@@ -428,6 +425,22 @@ namespace EasyEDA_Loader
             }
         }
 
+        private static void ObservePreviewTask(Task task, string operationName)
+        {
+            if (task == null)
+                return;
+
+            _ = task.ContinueWith(
+                completedTask =>
+                {
+                    if (completedTask.Exception != null)
+                        EasyEDALoaderModule.Trace(operationName + " failed: " + completedTask.Exception.GetBaseException());
+                },
+                CancellationToken.None,
+                TaskContinuationOptions.OnlyOnFaulted,
+                TaskScheduler.Default);
+        }
+
         private void ClearPreview()
         {
             thumbnailImage.Source = null;
@@ -450,12 +463,24 @@ namespace EasyEDA_Loader
 
         private async Task ShowModelProjectionPreviewAsync(EeFootprint3dModel modelInfo, CancellationToken cancellationToken)
         {
+            if (modelInfo == null)
+                return;
+
+            Task<byte[]> stepDataTask = ModelCache.GetStepModelAsync(Api, modelInfo.Uuid, cancellationToken);
+            await ShowModelProjectionPreviewAsync(modelInfo, stepDataTask, cancellationToken);
+        }
+
+        private async Task ShowModelProjectionPreviewAsync(
+            EeFootprint3dModel modelInfo,
+            Task<byte[]> stepDataTask,
+            CancellationToken cancellationToken)
+        {
             modelProjectionImage.Source = null;
 
             if (modelInfo == null)
                 return;
 
-            byte[] stepData = await ModelCache.GetStepModelAsync(Api, modelInfo.Uuid, cancellationToken);
+            byte[] stepData = await stepDataTask.ConfigureAwait(true);
             cancellationToken.ThrowIfCancellationRequested();
 
             if (stepData == null || stepData.Length == 0)
@@ -479,13 +504,25 @@ namespace EasyEDA_Loader
 
         private async Task ShowInteractiveModelPreviewAsync(EeFootprint3dModel modelInfo, CancellationToken cancellationToken)
         {
+            if (modelInfo == null)
+                return;
+
+            Task<byte[]> stepDataTask = ModelCache.GetStepModelAsync(Api, modelInfo.Uuid, cancellationToken);
+            await ShowInteractiveModelPreviewAsync(modelInfo, stepDataTask, cancellationToken);
+        }
+
+        private async Task ShowInteractiveModelPreviewAsync(
+            EeFootprint3dModel modelInfo,
+            Task<byte[]> stepDataTask,
+            CancellationToken cancellationToken)
+        {
             F3DPreviewCameraSnapshot cameraSnapshot = CaptureF3DPreviewCameraSnapshot();
             StopF3DPreview();
 
             if (modelInfo == null)
                 return;
 
-            byte[] stepData = await ModelCache.GetStepModelAsync(Api, modelInfo.Uuid, cancellationToken);
+            byte[] stepData = await stepDataTask.ConfigureAwait(true);
             cancellationToken.ThrowIfCancellationRequested();
 
             if (stepData == null || stepData.Length == 0)
@@ -719,6 +756,13 @@ namespace EasyEDA_Loader
                 return;
 
             f3dModelImage.Source = CreateF3DBitmapSource(renderedImage);
+            if (isInteractive && _f3dPreviewDragStart == null && !HasPendingF3DPreviewInteractions())
+                RequestF3DPreviewIdleRender();
+        }
+
+        private void RequestF3DPreviewIdleRender()
+        {
+            _f3dPreviewRenderAgain = true;
         }
 
         private List<F3DPreviewInteraction> DrainF3DPreviewInteractions()
@@ -742,12 +786,16 @@ namespace EasyEDA_Loader
 
         private void GetF3DPreviewRenderSize(bool isInteractive, out int width, out int height)
         {
-            double actualWidth = f3dModelImage.ActualWidth;
-            double actualHeight = f3dModelImage.ActualHeight;
+            double actualWidth = f3dModelViewport?.ActualWidth > 0.0
+                ? f3dModelViewport.ActualWidth
+                : f3dModelImage.ActualWidth;
+            double actualHeight = f3dModelViewport?.ActualHeight > 0.0
+                ? f3dModelViewport.ActualHeight
+                : f3dModelImage.ActualHeight;
             width = Math.Max(160, (int)Math.Round(actualWidth));
             height = Math.Max(120, (int)Math.Round(actualHeight));
 
-            int maxEdge = isInteractive ? 320 : 720;
+            int maxEdge = isInteractive ? 960 : 1920;
             double scale = Math.Min(1.0, maxEdge / Math.Max(1.0, Math.Max(width, height)));
             if (scale < 1.0)
             {
@@ -762,7 +810,9 @@ namespace EasyEDA_Loader
             F3DPreviewInteractionKind kind,
             MouseButton button = MouseButton.Left)
         {
-            GetF3DPreviewRenderSize(_f3dPreviewDragStart != null, out int width, out int height);
+            bool usesInteractiveFrame = _f3dPreviewDragStart != null ||
+                kind == F3DPreviewInteractionKind.MouseWheel;
+            GetF3DPreviewRenderSize(usesInteractiveFrame, out int width, out int height);
             double imageWidth = Math.Max(1.0, image.ActualWidth);
             double imageHeight = Math.Max(1.0, image.ActualHeight);
             return new F3DPreviewInteraction
