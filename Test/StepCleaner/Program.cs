@@ -530,6 +530,11 @@ namespace StepCleaner.Tests
                 "full StepCleaner regression should reuse original-model detection reports between debug image generation and post-clean verification",
                 failures);
             AssertContains(
+                stepCleanerProgram,
+                "GetDetection" + "Regions(",
+                "full StepCleaner regression should reuse projected detection regions for original-vs-clean and clean-vs-validated comparisons",
+                failures);
+            AssertContains(
                 stepProjectionRenderer,
                 "ProjectFileImages(",
                 "internal projection rendering should expose an in-memory raw image API",
@@ -2539,16 +2544,12 @@ namespace StepCleaner.Tests
                     continue;
                 }
 
-                var detectionReport = projectionTimings.Measure(
+                projectionTimings.Measure(
                     "post_clean_detection_ms",
                     () => detectionCache.GetReport(originalFile));
                 var detectionRegions = projectionTimings.Measure(
                     "post_clean_detection_region_projection_ms",
-                    () => StepProjectionRenderer.ProjectDetectionRegions(
-                        originalFile,
-                        detectionReport,
-                        projectionOptions)
-                    .ToList());
+                    () => detectionCache.GetDetectionRegions(originalFile, projectionOptions).ToList());
 
                 string modelName = Path.GetFileNameWithoutExtension(fileName);
                 var detectedViewNames = detectionRegions
@@ -3464,6 +3465,8 @@ namespace StepCleaner.Tests
         {
             private readonly Dictionary<string, StepWatermarkDetectionReport> _reportsByFileName =
                 new Dictionary<string, StepWatermarkDetectionReport>(StringComparer.OrdinalIgnoreCase);
+            private readonly Dictionary<string, IReadOnlyList<StepProjectionDetectionRegion>> _regionsByKey =
+                new Dictionary<string, IReadOnlyList<StepProjectionDetectionRegion>>(StringComparer.OrdinalIgnoreCase);
 
             public StepWatermarkDetectionReport GetReport(string originalFile)
             {
@@ -3477,6 +3480,32 @@ namespace StepCleaner.Tests
                 }
 
                 return report;
+            }
+
+            public IReadOnlyList<StepProjectionDetectionRegion> GetDetectionRegions(
+                string originalFile,
+                StepProjectionOptions projectionOptions)
+            {
+                string key =
+                    Path.GetFileName(originalFile) +
+                    "|" +
+                    projectionOptions.ImageSizePixels.ToString(CultureInfo.InvariantCulture) +
+                    "|" +
+                    projectionOptions.PaddingPixels.ToString(CultureInfo.InvariantCulture) +
+                    "|" +
+                    string.Join(",", projectionOptions.ViewNames);
+
+                if (!_regionsByKey.TryGetValue(key, out IReadOnlyList<StepProjectionDetectionRegion> regions))
+                {
+                    regions = StepProjectionRenderer.ProjectDetectionRegions(
+                            originalFile,
+                            GetReport(originalFile),
+                            projectionOptions)
+                        .ToList();
+                    _regionsByKey[key] = regions;
+                }
+
+                return regions;
             }
         }
 

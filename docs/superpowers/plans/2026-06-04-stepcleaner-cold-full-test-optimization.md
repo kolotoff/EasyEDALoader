@@ -1186,7 +1186,7 @@ full_test_wall_ms=179388
 - Modify: `Test/StepCleaner/Program.cs`
 - Optional Modify: `EasyEDA-Loader/StepProjectionRenderer.cs`
 
-- [ ] **Step 1: Extend the guard**
+- [x] **Step 1: Extend the guard**
 
 In `RunModelCacheTests()`, add:
 
@@ -1198,7 +1198,7 @@ AssertContains(
     failures);
 ```
 
-- [ ] **Step 2: Extend `FullTestDetectionCache`**
+- [x] **Step 2: Extend `FullTestDetectionCache`**
 
 Add region storage:
 
@@ -1232,7 +1232,7 @@ public IReadOnlyList<StepProjectionDetectionRegion> GetDetectionRegions(
 }
 ```
 
-- [ ] **Step 3: Use cached regions in `VerifyPostCleanProjections`**
+- [x] **Step 3: Use cached regions in `VerifyPostCleanProjections`**
 
 Replace:
 
@@ -1254,11 +1254,11 @@ var detectionRegions = projectionTimings.Measure(
     () => detectionCache.GetDetectionRegions(originalFile, projectionOptions).ToList());
 ```
 
-- [ ] **Step 4: Keep debug-image region filtering separate**
+- [x] **Step 4: Keep debug-image region filtering separate**
 
 Do not reuse marked-region-filtered debug results for post-clean verification. `VerifyDetectionDebugImages()` uses marker sidecars, while post-clean verification must use unmarked automatic detection regions.
 
-- [ ] **Step 5: Verify**
+- [x] **Step 5: Verify**
 
 Run:
 
@@ -1268,6 +1268,18 @@ dotnet run --project Test\StepCleaner\StepCleaner.Tests.csproj
 ```
 
 Expected: PASS. Record `post_clean_detection_region_projection_ms` and `original_detection_side_projection_render_ms`.
+
+Verified:
+
+```text
+model-cache guard: PASS
+full StepCleaner run: PASS
+post_clean_detection_region_projection_ms=10492 ms
+original_detection_side_projection_render_ms=71333 ms
+full_test_wall_ms=318114
+```
+
+Note: this cache is now available through `FullTestDetectionCache.GetDetectionRegions(...)`, but the current harness only projects each unmarked original detection region set once per run. No standalone wall-time win is expected until a later comparison stage reuses the same keyed regions.
 
 ### Task 11: Add Fine-Grained Detection Debug Timings
 
