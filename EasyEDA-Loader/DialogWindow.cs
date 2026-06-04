@@ -49,6 +49,7 @@ namespace EasyEDA_Loader
         private MouseButton? _f3dPreviewDragButton;
         private bool _isCriticalOperationActive;
         private bool _operationCompleted;
+        private bool _isOperationLogVisible = true;
         private static readonly char[] PartNumberSeparators = { '\r', '\n', '\t', ' ', ',', ';', '|' };
         private static readonly string SessionStateFilePath = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
@@ -230,6 +231,7 @@ namespace EasyEDA_Loader
             operationProgressBar.IsIndeterminate = isVisible && (isIndeterminate || !progress.HasValue);
             operationProgressBar.Value = isVisible && progress.HasValue ? progress.Value : 0;
             operationProgressText.Text = isVisible ? (message ?? "Working...") : string.Empty;
+            UpdateOperationLogVisibility();
         }
 
         private void BeginCriticalOperation(string message)
@@ -274,6 +276,24 @@ namespace EasyEDA_Loader
             string prefix = isError ? "ERROR " : "";
             operationLogTextBox.AppendText(DateTime.Now.ToString("HH:mm:ss", CultureInfo.InvariantCulture) + "  " + prefix + message + Environment.NewLine);
             operationLogTextBox.ScrollToEnd();
+        }
+
+        private void ToggleOperationLogButton_Click(object sender, RoutedEventArgs e)
+        {
+            _isOperationLogVisible = !_isOperationLogVisible;
+            UpdateOperationLogVisibility();
+        }
+
+        private void UpdateOperationLogVisibility()
+        {
+            if (operationLogTextBox == null || operationLogRow == null || toggleOperationLogButton == null)
+                return;
+
+            operationLogTextBox.Visibility = _isOperationLogVisible ? Visibility.Visible : Visibility.Collapsed;
+            operationLogRow.Height = _isOperationLogVisible
+                ? new GridLength(1, GridUnitType.Star)
+                : new GridLength(0);
+            toggleOperationLogButton.Content = _isOperationLogVisible ? "Hide log" : "Show log";
         }
 
         private void PumpUi()
@@ -330,7 +350,7 @@ namespace EasyEDA_Loader
                     if (_currentComponent.Symbol?.Shapes != null)
                     {
                         UpdatePreviewProgress("Drawing symbol...", 30);
-                        SymbolDrawing.DrawComponent(symbolCanvas, _currentComponent.Symbol.Shapes);
+                        DrawSymbolPreviewSafely(_currentComponent.Symbol.Shapes);
                         _ = symbolCanvas.Dispatcher.InvokeAsync(() =>
                         {
                             _symbolHelper.FitToBoundingBox();
@@ -362,7 +382,7 @@ namespace EasyEDA_Loader
                             Exception = null,
                         };
 
-                        eeFootprint.DrawToCanvas(footprintCanvas, ctx);
+                        DrawFootprintPreviewSafely(eeFootprint, ctx);
                         
                         if (cancellationToken.IsCancellationRequested)
                             return;
@@ -438,6 +458,47 @@ namespace EasyEDA_Loader
             }
         }
 
+        private void DrawSymbolPreviewSafely(List<EeSymbolShape> shapes)
+        {
+            try
+            {
+                SymbolDrawing.DrawComponent(symbolCanvas, shapes);
+            }
+            catch (Exception ex)
+            {
+                EasyEDALoaderModule.Trace("Symbol preview failed: " + ex);
+                ShowCanvasPreviewMessage(symbolCanvas, "Symbol preview failed: " + ex.Message);
+            }
+        }
+
+        private void DrawFootprintPreviewSafely(FootprintData footprint, EeFootprintContext ctx)
+        {
+            try
+            {
+                footprint.DrawToCanvas(footprintCanvas, ctx);
+            }
+            catch (Exception ex)
+            {
+                EasyEDALoaderModule.Trace("Footprint preview failed: " + ex);
+                ShowCanvasPreviewMessage(footprintCanvas, "Footprint preview failed: " + ex.Message);
+            }
+        }
+
+        private static void ShowCanvasPreviewMessage(Canvas canvas, string message)
+        {
+            canvas.Children.Clear();
+            var textBlock = new TextBlock
+            {
+                Text = message,
+                Foreground = Brushes.Firebrick,
+                TextWrapping = TextWrapping.Wrap,
+                Width = Math.Max(100.0, canvas.ActualWidth > 0.0 ? canvas.ActualWidth : canvas.Width)
+            };
+            Canvas.SetLeft(textBlock, 8);
+            Canvas.SetTop(textBlock, 8);
+            canvas.Children.Add(textBlock);
+        }
+
         private static void ObservePreviewTask(Task task, string operationName)
         {
             if (task == null)
@@ -472,7 +533,19 @@ namespace EasyEDA_Loader
         {
             modelProjectionImage.Source = null;
             _f3dPreviewCameraSnapshot = null;
+            SetF3DPreviewStatus(null);
             StopF3DPreview();
+        }
+
+        private void SetF3DPreviewStatus(string message, bool isError = false)
+        {
+            if (f3dPreviewStatusTextBlock == null)
+                return;
+
+            bool isVisible = !string.IsNullOrWhiteSpace(message);
+            f3dPreviewStatusTextBlock.Text = message ?? string.Empty;
+            f3dPreviewStatusTextBlock.Visibility = isVisible ? Visibility.Visible : Visibility.Collapsed;
+            f3dPreviewStatusTextBlock.Foreground = isError ? Brushes.Firebrick : Brushes.DimGray;
         }
 
         private async Task ShowModelProjectionPreviewAsync(
@@ -558,38 +631,56 @@ namespace EasyEDA_Loader
             if (modelInfo == null)
                 return;
 
-            byte[] stepData = await stepDataTask.ConfigureAwait(true);
-            cancellationToken.ThrowIfCancellationRequested();
-
-            if (stepData == null || stepData.Length == 0)
-                return;
-
-            string stepPath = ModelCache.GetOriginalStepPath(modelInfo.Uuid);
-            if (!File.Exists(stepPath))
-            {
-                string directory = Path.GetDirectoryName(stepPath);
-                if (!string.IsNullOrEmpty(directory))
-                    Directory.CreateDirectory(directory);
-
-                File.WriteAllBytes(stepPath, stepData);
-            }
-
             try
             {
+                SetF3DPreviewStatus("Loading STEP preview...");
+                byte[] stepData = await stepDataTask.ConfigureAwait(true);
+                cancellationToken.ThrowIfCancellationRequested();
+
+                if (stepData == null || stepData.Length == 0)
+                {
+                    SetF3DPreviewStatus("3D preview failed: downloaded STEP data was empty.", true);
+                    return;
+                }
+
+                string stepPath = ModelCache.GetOriginalStepPath(modelInfo.Uuid);
+                if (!File.Exists(stepPath))
+                {
+                    string directory = Path.GetDirectoryName(stepPath);
+                    if (!string.IsNullOrEmpty(directory))
+                        Directory.CreateDirectory(directory);
+
+                    File.WriteAllBytes(stepPath, stepData);
+                }
+
                 bool removeWatermark = RemoveWatermark;
                 bool cleanText = CleanText;
                 string selectedComponentCacheKey = GetSelectedComponentCacheKey(resultsGrid?.SelectedItem as PartInfoViewModel, modelInfo);
-                byte[] previewStepData = removeWatermark
-                    ? await GetOrCreateCleanStepPreviewDataAsync(
-                        modelInfo,
-                        selectedComponentCacheKey,
-                        stepData,
-                        removeWatermark,
-                        cleanText,
-                        cancellationToken)
-                    : stepData;
+                bool showingCleanStep = false;
+                byte[] previewStepData = stepData;
+                if (removeWatermark)
+                {
+                    try
+                    {
+                        previewStepData = await GetOrCreateCleanStepPreviewDataAsync(
+                            modelInfo,
+                            selectedComponentCacheKey,
+                            stepData,
+                            removeWatermark,
+                            cleanText,
+                            cancellationToken);
+                        showingCleanStep = true;
+                    }
+                    catch (StepWatermarkCleanFailedException ex)
+                    {
+                        SetF3DPreviewStatus("Clean STEP preview failed; showing original STEP: " + ex.Message, true);
+                        ShowMarkdownReport(ex.ReportPath);
+                        EasyEDALoaderModule.Trace("Failed to create clean STEP preview, falling back to original STEP: " + ex);
+                    }
+                }
+
                 if (f3dPreviewTitleTextBlock != null)
-                    f3dPreviewTitleTextBlock.Text = removeWatermark ? "Clean STEP" : "Original STEP";
+                    f3dPreviewTitleTextBlock.Text = showingCleanStep ? "Clean STEP" : "Original STEP";
 
                 F3DProjectionRenderer.F3DPreviewSession previewSession = await Task.Run(
                     () => F3DProjectionRenderer.CreatePreviewSession(previewStepData, cameraSnapshot),
@@ -597,12 +688,17 @@ namespace EasyEDA_Loader
                 cancellationToken.ThrowIfCancellationRequested();
 
                 _f3dPreviewSession = previewSession;
+                SetF3DPreviewStatus("Rendering STEP preview...");
                 QueueF3DPreviewRender();
             }
-            catch (StepWatermarkCleanFailedException ex)
+            catch (OperationCanceledException)
             {
-                ShowMarkdownReport(ex.ReportPath);
-                EasyEDALoaderModule.Trace("Failed to create clean STEP preview: " + ex);
+                throw;
+            }
+            catch (Exception ex)
+            {
+                SetF3DPreviewStatus("3D preview failed: " + ex.Message, true);
+                EasyEDALoaderModule.Trace("3D preview failed: " + ex);
             }
         }
 
@@ -844,6 +940,7 @@ namespace EasyEDA_Loader
                 }
                 catch (Exception ex)
                 {
+                    SetF3DPreviewStatus("3D preview render failed: " + ex.Message, true);
                     EasyEDALoaderModule.Trace("F3D preview render failed: " + ex);
                 }
                 finally
@@ -880,6 +977,7 @@ namespace EasyEDA_Loader
                 return;
 
             f3dModelImage.Source = CreateF3DBitmapSource(renderedImage);
+            SetF3DPreviewStatus(null);
             if (isInteractive && _f3dPreviewDragStart == null && !HasPendingF3DPreviewInteractions())
                 RequestF3DPreviewIdleRender();
         }

@@ -578,6 +578,11 @@ namespace StepCleaner.Tests
                 failures);
             AssertContains(
                 dialogWindowXaml,
+                "x:Name=\"f3dPreviewStatusTextBlock\"",
+                "interactive STEP preview should show a visible status or failure message when rendering cannot start",
+                failures);
+            AssertContains(
+                dialogWindowXaml,
                 "Background=\"#FAFAFA\"",
                 "middle-column projection preview should use a light viewport background so unfilled sides do not appear as black gutters",
                 failures);
@@ -642,6 +647,36 @@ namespace StepCleaner.Tests
                 "middle-column projection preview should pass the row height to the projection renderer",
                 failures);
             AssertContains(
+                dialogWindow,
+                "SetF3DPreviewStatus(\"3D preview failed: \" + ex.Message",
+                "interactive STEP preview failures should be visible in the dialog instead of trace-only",
+                failures);
+            AssertContains(
+                dialogWindow,
+                "Clean STEP preview failed; showing original STEP",
+                "interactive STEP preview should fall back to the original STEP when clean STEP generation fails",
+                failures);
+            AssertContains(
+                dialogWindow,
+                "byte[] previewStepData = stepData;",
+                "interactive STEP preview should keep original STEP data available as the fallback preview model",
+                failures);
+            AssertContains(
+                dialogWindow,
+                "SetF3DPreviewStatus(\"3D preview render failed: \" + ex.Message",
+                "interactive STEP render failures should be visible in the dialog instead of trace-only",
+                failures);
+            AssertContains(
+                dialogWindow,
+                "DrawSymbolPreviewSafely",
+                "symbol preview drawing failures should not abort footprint and 3D preview loading",
+                failures);
+            AssertContains(
+                dialogWindow,
+                "DrawFootprintPreviewSafely",
+                "footprint preview drawing failures should not abort 3D preview loading",
+                failures);
+            AssertContains(
                 stepProjectionRenderer,
                 "public int ImageWidthPixels",
                 "STEP projection options should support non-square preview render width",
@@ -704,8 +739,8 @@ namespace StepCleaner.Tests
             AssertAppearsBefore(
                 dialogWindow,
                 "interactivePreviewTask = ShowInteractiveModelPreviewAsync(_currentModel, stepDataTask",
-                "eeFootprint.DrawToCanvas",
-                "interactive 3D preview should begin before footprint drawing blocks the UI preview path",
+                "DrawFootprintPreviewSafely",
+                "interactive 3D preview should begin before footprint drawing runs through the safe UI preview path",
                 failures);
             AssertAppearsBefore(
                 dialogWindow,
@@ -757,6 +792,21 @@ namespace StepCleaner.Tests
                 dialogWindow,
                 "HasSelectedComponentForCache(out PartInfoViewModel partViewModel)",
                 "Remove cache should act on the selected part instead of requiring a completed preview",
+                failures);
+            AssertContains(
+                dialogWindowXaml,
+                "toggleOperationLogButton",
+                "operation log panel should expose a button to hide and show the log",
+                failures);
+            AssertContains(
+                dialogWindow,
+                "ToggleOperationLogButton_Click",
+                "operation log hide/show button should be wired to code-behind",
+                failures);
+            AssertContains(
+                dialogWindow,
+                "operationLogTextBox.Visibility",
+                "operation log hide/show button should collapse the log text box",
                 failures);
             AssertContains(
                 dialogWindow,

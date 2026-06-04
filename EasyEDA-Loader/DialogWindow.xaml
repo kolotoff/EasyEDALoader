@@ -287,16 +287,28 @@
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto"/>
                     <RowDefinition Height="Auto"/>
-                    <RowDefinition Height="*"/>
+                    <RowDefinition x:Name="operationLogRow" Height="*"/>
                 </Grid.RowDefinitions>
-                <TextBlock x:Name="operationProgressText"
-                           Grid.Row="0"
-                           Text="Importing..."
-                           FontWeight="SemiBold"
-                           Margin="0,0,0,8"/>
+                <Grid Grid.Row="0" Margin="0,0,0,8">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBlock x:Name="operationProgressText"
+                               Grid.Column="0"
+                               Text="Importing..."
+                               FontWeight="SemiBold"
+                               VerticalAlignment="Center"/>
+                    <Button x:Name="toggleOperationLogButton"
+                            Grid.Column="1"
+                            Content="Hide log"
+                            Width="80"
+                            Height="24"
+                            Click="ToggleOperationLogButton_Click"/>
+                </Grid>
                 <ProgressBar x:Name="operationProgressBar"
-                             Grid.Row="1"
-                             IsIndeterminate="True"
+                              Grid.Row="1"
+                              IsIndeterminate="True"
                              Margin="0,0,0,8"/>
                 <TextBox x:Name="operationLogTextBox"
                          Grid.Row="2"
@@ -511,17 +523,28 @@
                 <Border x:Name="f3dModelViewport"
                         Grid.Row="1"
                         Background="White">
-                    <Image x:Name="f3dModelImage"
-                           Stretch="Uniform"
-                           HorizontalAlignment="Stretch"
-                           VerticalAlignment="Stretch"
-                           RenderOptions.BitmapScalingMode="HighQuality"
-                           SnapsToDevicePixels="True"
-                           MouseDown="F3DPreviewImage_MouseDown"
-                           MouseMove="F3DPreviewImage_MouseMove"
-                           MouseUp="F3DPreviewImage_MouseUp"
-                           MouseWheel="F3DPreviewImage_MouseWheel"
-                           SizeChanged="F3DPreviewImage_SizeChanged"/>
+                    <Grid>
+                        <Image x:Name="f3dModelImage"
+                               Stretch="Uniform"
+                               HorizontalAlignment="Stretch"
+                               VerticalAlignment="Stretch"
+                               RenderOptions.BitmapScalingMode="HighQuality"
+                               SnapsToDevicePixels="True"
+                               MouseDown="F3DPreviewImage_MouseDown"
+                               MouseMove="F3DPreviewImage_MouseMove"
+                               MouseUp="F3DPreviewImage_MouseUp"
+                               MouseWheel="F3DPreviewImage_MouseWheel"
+                               SizeChanged="F3DPreviewImage_SizeChanged"/>
+                        <TextBlock x:Name="f3dPreviewStatusTextBlock"
+                                   Text=""
+                                   Visibility="Collapsed"
+                                   TextWrapping="Wrap"
+                                   HorizontalAlignment="Center"
+                                   VerticalAlignment="Center"
+                                   Margin="20"
+                                   TextAlignment="Center"
+                                   Foreground="#4B4B4B"/>
+                    </Grid>
                 </Border>
             </Grid>
         </Border>
