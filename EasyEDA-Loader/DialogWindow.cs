@@ -335,7 +335,11 @@ namespace EasyEDA_Loader
                 UpdateModelActionButtonState();
                 SetPreviewProgress(true, "Loading component data...", 5);
 
-                var root = await ModelCache.GetComponentJsonAsync(Api, partViewModel.PartInfo.Part, cancellationToken);
+                var previewComponent = await LoadPreviewComponentJsonAsync(partViewModel, cancellationToken);
+                var root = previewComponent.Root;
+                string previewPartNumber = previewComponent.PartNumber;
+                if (string.IsNullOrWhiteSpace(previewPartNumber))
+                    previewPartNumber = GetPrimaryPartNumber(partViewModel);
 
                 if (cancellationToken.IsCancellationRequested)
                     return;
@@ -344,6 +348,7 @@ namespace EasyEDA_Loader
                 {
                     _currentComponent = root.Component;
                     _currentRoot = root;
+                    _currentPreviewPartNumber = previewPartNumber;
                     Task<byte[]> stepDataTask = null;
                     Task interactivePreviewTask = null;
 
@@ -351,10 +356,16 @@ namespace EasyEDA_Loader
                     {
                         UpdatePreviewProgress("Drawing symbol...", 30);
                         DrawSymbolPreviewSafely(_currentComponent.Symbol.Shapes);
+                        if (symbolCanvas.Children.Count == 0)
+                            ShowCanvasPreviewMessage(symbolCanvas, "No symbol preview data was returned for this part.");
                         _ = symbolCanvas.Dispatcher.InvokeAsync(() =>
                         {
                             _symbolHelper.FitToBoundingBox();
                         }, DispatcherPriority.Loaded);
+                    }
+                    else
+                    {
+                        ShowCanvasPreviewMessage(symbolCanvas, "No symbol preview data was returned for this part.");
                     }
 
                     if (_currentComponent.PackageDetail?.Footprint != null)
@@ -362,7 +373,6 @@ namespace EasyEDA_Loader
                         UpdatePreviewProgress("Drawing footprint...", 60);
                         var eeFootprint = _currentComponent.PackageDetail.Footprint;
                         _currentModel = eeFootprint.GetModel();
-                        _currentPreviewPartNumber = partViewModel.PartInfo.Part;
 
                         UpdateModelActionButtonState();
 
@@ -383,6 +393,8 @@ namespace EasyEDA_Loader
                         };
 
                         DrawFootprintPreviewSafely(eeFootprint, ctx);
+                        if (footprintCanvas.Children.Count == 0)
+                            ShowCanvasPreviewMessage(footprintCanvas, "No footprint preview data was returned for this part.");
                         
                         if (cancellationToken.IsCancellationRequested)
                             return;
@@ -405,9 +417,22 @@ namespace EasyEDA_Loader
                             catch (Exception ex)
                             {
                                 EasyEDALoaderModule.Trace($"3D projection preview failed: {ex}");
+                                ShowModelProjectionPreviewMessage("3D projection preview failed: " + ex.Message, true);
                             }
 
                         }
+                    }
+                    else
+                    {
+                        ShowCanvasPreviewMessage(footprintCanvas, "No footprint preview data was returned for this part.");
+                        ShowModelProjectionPreviewMessage("No footprint preview data was returned for this part.");
+                        SetF3DPreviewStatus("No 3D model preview data was returned for this part.");
+                    }
+
+                    if (_currentComponent.PackageDetail?.Footprint != null && _currentModel == null)
+                    {
+                        ShowModelProjectionPreviewMessage("No 3D model preview data was returned for this part.");
+                        SetF3DPreviewStatus("No 3D model preview data was returned for this part.");
                     }
 
                     Task cacheWarmTask = WarmSelectedComponentCacheAsync(partViewModel, _currentModel, stepDataTask, interactivePreviewTask, cancellationToken);
@@ -421,7 +446,7 @@ namespace EasyEDA_Loader
                             byte[] thumbnailData = await ModelCache.GetPngImageAsync(
                                 Api,
                                 _currentComponent.Thumb,
-                                partViewModel.PartInfo.Part,
+                                previewPartNumber,
                                 cancellationToken);
                             
                             if (cancellationToken.IsCancellationRequested)
@@ -443,6 +468,10 @@ namespace EasyEDA_Loader
                         }
                     }
                 }
+                else
+                {
+                    ShowMissingPreviewData(partViewModel, "No component preview data was returned for this part.");
+                }
             }
             catch (OperationCanceledException)
             {
@@ -450,12 +479,83 @@ namespace EasyEDA_Loader
             catch (Exception ex)
             {
                 EasyEDALoaderModule.Trace($"Preview failed: {ex}");
+                ShowMissingPreviewData(partViewModel, "Preview failed: " + ex.Message);
             }
             finally
             {
                 if (!cancellationToken.IsCancellationRequested)
                     SetPreviewProgress(false);
             }
+        }
+
+        private async Task<(Root Root, string PartNumber)> LoadPreviewComponentJsonAsync(
+            PartInfoViewModel partViewModel,
+            CancellationToken cancellationToken)
+        {
+            foreach (string partNumber in GetPreviewPartCandidates(partViewModel))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                Root root = null;
+                try
+                {
+                    root = await ModelCache.GetComponentJsonAsync(Api, partNumber, cancellationToken);
+                    cancellationToken.ThrowIfCancellationRequested();
+                }
+                catch (OperationCanceledException)
+                {
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    EasyEDALoaderModule.Trace("Preview component JSON failed for " + partNumber + ": " + ex);
+                }
+
+                if (root?.Component != null)
+                    return (root, partNumber);
+
+                EasyEDALoaderModule.Trace("Preview component JSON returned no component data for " + partNumber + ".");
+            }
+
+            return (null, GetPrimaryPartNumber(partViewModel));
+        }
+
+        private static IEnumerable<string> GetPreviewPartCandidates(PartInfoViewModel partViewModel)
+        {
+            var candidates = new[]
+            {
+                partViewModel?.PartInfo?.Part,
+                partViewModel?.PartInfo?.Name,
+                partViewModel?.Name,
+            };
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (string candidate in candidates)
+            {
+                if (string.IsNullOrWhiteSpace(candidate))
+                    continue;
+
+                string trimmed = candidate.Trim();
+                if (seen.Add(trimmed))
+                    yield return trimmed;
+            }
+        }
+
+        private static string GetPrimaryPartNumber(PartInfoViewModel partViewModel)
+        {
+            return GetPreviewPartCandidates(partViewModel).FirstOrDefault();
+        }
+
+        private void ShowMissingPreviewData(PartInfoViewModel partViewModel, string message)
+        {
+            string partNumber = GetPrimaryPartNumber(partViewModel);
+            if (!string.IsNullOrWhiteSpace(partNumber))
+                _currentPreviewPartNumber = partNumber;
+
+            ShowCanvasPreviewMessage(symbolCanvas, message);
+            ShowCanvasPreviewMessage(footprintCanvas, message);
+            ShowModelProjectionPreviewMessage(message);
+            SetF3DPreviewStatus(message);
+            UpdateModelActionButtonState();
         }
 
         private void DrawSymbolPreviewSafely(List<EeSymbolShape> shapes)
@@ -533,8 +633,20 @@ namespace EasyEDA_Loader
         {
             modelProjectionImage.Source = null;
             _f3dPreviewCameraSnapshot = null;
+            ShowModelProjectionPreviewMessage(null);
             SetF3DPreviewStatus(null);
             StopF3DPreview();
+        }
+
+        private void ShowModelProjectionPreviewMessage(string message, bool isError = false)
+        {
+            if (modelProjectionStatusTextBlock == null)
+                return;
+
+            bool isVisible = !string.IsNullOrWhiteSpace(message);
+            modelProjectionStatusTextBlock.Text = message ?? string.Empty;
+            modelProjectionStatusTextBlock.Visibility = isVisible ? Visibility.Visible : Visibility.Collapsed;
+            modelProjectionStatusTextBlock.Foreground = isError ? Brushes.Firebrick : Brushes.DimGray;
         }
 
         private void SetF3DPreviewStatus(string message, bool isError = false)
@@ -555,6 +667,7 @@ namespace EasyEDA_Loader
             CancellationToken cancellationToken)
         {
             modelProjectionImage.Source = null;
+            ShowModelProjectionPreviewMessage(null);
 
             if (modelInfo == null)
                 return;
@@ -593,9 +706,13 @@ namespace EasyEDA_Loader
             cancellationToken.ThrowIfCancellationRequested();
 
             if (projectionPng == null || projectionPng.Length == 0)
+            {
+                ShowModelProjectionPreviewMessage("No 3D model preview data was returned for this part.");
                 return;
+            }
 
             modelProjectionImage.Source = LoadBitmapImage(projectionPng);
+            ShowModelProjectionPreviewMessage(null);
         }
 
         private void GetModelProjectionPreviewImageSizePixels(out int imageWidthPixels, out int imageHeightPixels)
@@ -976,7 +1093,15 @@ namespace EasyEDA_Loader
             if (requestId != _f3dPreviewRenderRequestId || !ReferenceEquals(session, _f3dPreviewSession))
                 return;
 
-            f3dModelImage.Source = CreateF3DBitmapSource(renderedImage);
+            BitmapSource bitmapSource = CreateF3DBitmapSource(renderedImage);
+            if (bitmapSource == null)
+            {
+                f3dModelImage.Source = null;
+                SetF3DPreviewStatus("3D preview failed: renderer returned no image.", true);
+                return;
+            }
+
+            f3dModelImage.Source = bitmapSource;
             SetF3DPreviewStatus(null);
             if (isInteractive && _f3dPreviewDragStart == null && !HasPendingF3DPreviewInteractions())
                 RequestF3DPreviewIdleRender();
@@ -1272,9 +1397,9 @@ namespace EasyEDA_Loader
         private bool IsCurrentPreviewForSelectedComponent(out PartInfoViewModel partViewModel)
         {
             partViewModel = resultsGrid?.SelectedItem as PartInfoViewModel;
-            string selectedPartNumber = partViewModel?.PartInfo?.Part;
-            return !string.IsNullOrWhiteSpace(selectedPartNumber) &&
-                string.Equals(selectedPartNumber, _currentPreviewPartNumber, StringComparison.OrdinalIgnoreCase);
+            return !string.IsNullOrWhiteSpace(_currentPreviewPartNumber) &&
+                GetPreviewPartCandidates(partViewModel).Any(
+                    partNumber => string.Equals(partNumber, _currentPreviewPartNumber, StringComparison.OrdinalIgnoreCase));
         }
 
         private bool HasSelectedComponentForCache(out PartInfoViewModel partViewModel)
@@ -1866,10 +1991,14 @@ namespace EasyEDA_Loader
 
                 string selectedComponentCacheKey = GetSelectedComponentCacheKey(partViewModel, _currentModel);
                 string modelUuid = _currentModel?.Uuid;
-                int deletedCount = ModelCache.DeleteSelectedComponentCache(
-                    partViewModel.PartInfo.Part,
-                    selectedComponentCacheKey,
-                    modelUuid);
+                int deletedCount = 0;
+                foreach (string partNumber in GetPreviewPartCandidates(partViewModel))
+                {
+                    deletedCount += ModelCache.DeleteSelectedComponentCache(
+                        partNumber,
+                        selectedComponentCacheKey,
+                        modelUuid);
+                }
                 ReportImportProgress(new ImportProgressEvent
                 {
                     Message = "Deleted " + deletedCount.ToString(CultureInfo.InvariantCulture) + " cache file(s).",

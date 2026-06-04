@@ -677,6 +677,56 @@ namespace StepCleaner.Tests
                 "footprint preview drawing failures should not abort 3D preview loading",
                 failures);
             AssertContains(
+                dialogWindow,
+                "LoadPreviewComponentJsonAsync",
+                "preview loading should retry component JSON by the row part number and display name before giving up",
+                failures);
+            AssertContains(
+                dialogWindow,
+                "GetPreviewPartCandidates",
+                "preview loading should derive stable fallback identifiers from the selected result row",
+                failures);
+            AssertContains(
+                dialogWindow,
+                "ShowMissingPreviewData",
+                "preview loading should show visible pane messages when EasyEDA returns no drawable component data",
+                failures);
+            AssertContains(
+                dialogWindow,
+                "No component preview data was returned",
+                "blank component JSON responses should be visible in the preview panes",
+                failures);
+            AssertContains(
+                dialogWindow,
+                "No footprint preview data was returned",
+                "parts without footprint payloads should show a visible footprint preview message",
+                failures);
+            AssertContains(
+                dialogWindow,
+                "No 3D model preview data was returned",
+                "parts without usable 3D payloads should show a visible original STEP preview message",
+                failures);
+            AssertContains(
+                dialogWindow,
+                "if (symbolCanvas.Children.Count == 0)",
+                "symbol preview should show a visible message when a non-null symbol payload draws no primitives",
+                failures);
+            AssertContains(
+                dialogWindow,
+                "if (footprintCanvas.Children.Count == 0)",
+                "footprint preview should show a visible message when a non-null footprint payload draws no primitives",
+                failures);
+            AssertContains(
+                dialogWindow,
+                "BitmapSource bitmapSource = CreateF3DBitmapSource(renderedImage);",
+                "interactive STEP preview should inspect renderer bitmap creation before clearing failure status",
+                failures);
+            AssertContains(
+                dialogWindow,
+                "3D preview failed: renderer returned no image.",
+                "interactive STEP preview should show a visible message when F3D returns an empty image",
+                failures);
+            AssertContains(
                 stepProjectionRenderer,
                 "public int ImageWidthPixels",
                 "STEP projection options should support non-square preview render width",
