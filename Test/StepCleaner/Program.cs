@@ -6,6 +6,7 @@ using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Net.Http;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
 using System.Threading;
@@ -543,6 +544,11 @@ namespace StepCleaner.Tests
                 stepCleanerProgram,
                 "FilesEqualByLength" + "AndBytes",
                 "clean-vs-validated projection comparison should skip PNG decode when files are byte-identical",
+                failures);
+            AssertContains(
+                stepCleanerProgram,
+                "CopyBitmapPixels" + "ToInt32Rows",
+                "projection comparison should avoid per-pixel SKBitmap.GetPixel calls in hot loops",
                 failures);
             AssertContains(
                 stepProjectionRenderer,
@@ -2688,16 +2694,19 @@ namespace StepCleaner.Tests
                 int changedOutsideRegion = 0;
                 int firstOutsideX = -1;
                 int firstOutsideY = -1;
+                int[] originalPixels = CopyBitmapPixelsToInt32Rows(originalImage);
+                int[] cleanPixels = CopyBitmapPixelsToInt32Rows(cleanImage);
 
                 for (int y = 0; y < originalImage.Height; y++)
                 {
                     int row = y * originalImage.Width;
                     for (int x = 0; x < originalImage.Width; x++)
                     {
-                        if (!PixelsDifferent(originalImage.GetPixel(x, y), cleanImage.GetPixel(x, y), ProjectionDifferenceTolerance))
+                        int pixelIndex = row + x;
+                        if (!PixelsDifferent(originalPixels[pixelIndex], cleanPixels[pixelIndex], ProjectionDifferenceTolerance))
                             continue;
 
-                        if (allowedMask[row + x])
+                        if (allowedMask[pixelIndex])
                             continue;
 
                         changedOutsideRegion++;
@@ -2873,6 +2882,16 @@ namespace StepCleaner.Tests
         {
             return ColorDistance(left, right) > tolerance ||
                 Math.Abs(left.Alpha - right.Alpha) > tolerance;
+        }
+
+        private static bool PixelsDifferent(int left, int right, int tolerance)
+        {
+            int color0 = Math.Abs((left & 0xFF) - (right & 0xFF));
+            int color1 = Math.Abs(((left >> 8) & 0xFF) - ((right >> 8) & 0xFF));
+            int color2 = Math.Abs(((left >> 16) & 0xFF) - ((right >> 16) & 0xFF));
+            int alpha = Math.Abs(((left >> 24) & 0xFF) - ((right >> 24) & 0xFF));
+            return Math.Max(color0, Math.Max(color1, color2)) > tolerance ||
+                alpha > tolerance;
         }
 
         private static int ColorDistance(SKColor left, SKColor right)
@@ -3249,17 +3268,39 @@ namespace StepCleaner.Tests
                 if (cleanImage.Width != validatedImage.Width || cleanImage.Height != validatedImage.Height)
                     return false;
 
-                for (int y = 0; y < cleanImage.Height; y++)
+                int[] cleanPixels = CopyBitmapPixelsToInt32Rows(cleanImage);
+                int[] validatedPixels = CopyBitmapPixelsToInt32Rows(validatedImage);
+                for (int i = 0; i < cleanPixels.Length; i++)
                 {
-                    for (int x = 0; x < cleanImage.Width; x++)
-                    {
-                        if (cleanImage.GetPixel(x, y) != validatedImage.GetPixel(x, y))
-                            return false;
-                    }
+                    if (cleanPixels[i] != validatedPixels[i])
+                        return false;
                 }
 
                 return true;
             }
+        }
+
+        private static int[] CopyBitmapPixelsToInt32Rows(SKBitmap bitmap)
+        {
+            if (bitmap == null)
+                throw new ArgumentNullException(nameof(bitmap));
+
+            int[] pixels = new int[bitmap.Width * bitmap.Height];
+            IntPtr source = bitmap.GetPixels();
+            if (source == IntPtr.Zero)
+                return pixels;
+
+            int bytesPerPixel = bitmap.BytesPerPixel;
+            if (bytesPerPixel != 4)
+                return pixels;
+
+            for (int y = 0; y < bitmap.Height; y++)
+            {
+                IntPtr row = IntPtr.Add(source, y * bitmap.RowBytes);
+                Marshal.Copy(row, pixels, y * bitmap.Width, bitmap.Width);
+            }
+
+            return pixels;
         }
 
         private static bool FilesEqualByLengthAndBytes(string leftPath, string rightPath)

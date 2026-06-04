@@ -1430,7 +1430,7 @@ full_test_wall_ms=300226
 **Files:**
 - Modify: `Test/StepCleaner/Program.cs`
 
-- [ ] **Step 1: Add a guard**
+- [x] **Step 1: Add a guard**
 
 In `RunModelCacheTests()`, add:
 
@@ -1442,7 +1442,7 @@ AssertContains(
     failures);
 ```
 
-- [ ] **Step 2: Add a row-copy helper**
+- [x] **Step 2: Add a row-copy helper**
 
 Add:
 
@@ -1471,7 +1471,7 @@ private static int[] CopyBitmapPixelsToInt32Rows(SKBitmap bitmap)
 }
 ```
 
-- [ ] **Step 3: Use copied buffers in `ProjectionPixelsEqual()`**
+- [x] **Step 3: Use copied buffers in `ProjectionPixelsEqual()`**
 
 After decoding and validating image dimensions, replace nested `GetPixel()` calls with:
 
@@ -1489,11 +1489,11 @@ return true;
 
 If tolerance must be preserved, add a small `PixelsDifferent(int left, int right, int tolerance)` overload that extracts RGBA bytes from the packed integer and matches the existing `PixelsDifferent(SKColor, SKColor, int)` semantics.
 
-- [ ] **Step 4: Use copied buffers in `VerifyPostCleanProjectionImage()`**
+- [x] **Step 4: Use copied buffers in `VerifyPostCleanProjectionImage()`**
 
 Only do this after `ProjectionPixelsEqual()` is green. Replace the hot nested `GetPixel()` loop with indexed buffers while preserving `allowedMask`, `ProjectionDifferenceTolerance`, and `VerifyCleanedRegionFlatness()` behavior.
 
-- [ ] **Step 5: Verify**
+- [x] **Step 5: Verify**
 
 Run:
 
@@ -1503,6 +1503,16 @@ dotnet run --project Test\StepCleaner\StepCleaner.Tests.csproj
 ```
 
 Expected: PASS. Compare `original_vs_clean_projection_compare_ms` and `clean_vs_validated_projection_compare_ms`.
+
+Verified:
+
+```text
+model-cache guard: PASS
+full StepCleaner run: PASS
+original_vs_clean_projection_compare_ms=3363 ms
+clean_vs_validated_projection_compare_ms=0 ms
+full_test_wall_ms=111166
+```
 
 ### Task 14: Add A Dedicated C5338332 Import Optimization Baseline
 
