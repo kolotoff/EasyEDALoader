@@ -1,7 +1,7 @@
 param(
     [string]$Configuration = "Release",
-    [string]$AltiumProfile = "C:\ProgramData\Altium\Altium Designer Agile {27B91D77-BC6B-4A2D-86DA-D6EB9D851C8D}",
-    [string]$AltiumExe = "D:\Program files\ADAgile\X2.EXE",
+    [string]$AltiumProfile,
+    [string]$AltiumExe,
     [string]$AltiumProcessName = "X2",
     [switch]$NoLaunch,
     [switch]$NoPauseOnError
@@ -14,6 +14,341 @@ $ErrorActionPreference = "Stop"
 function Write-Step {
     param([string]$Message)
     Write-Host "==> $Message" -ForegroundColor Cyan
+}
+
+function Resolve-AltiumProfile {
+    param([string]$ConfiguredProfile)
+
+    if (-not [string]::IsNullOrWhiteSpace($ConfiguredProfile)) {
+        if (-not (Test-Path -LiteralPath $ConfiguredProfile)) {
+            throw "Configured Altium profile was not found: $ConfiguredProfile"
+        }
+
+        return (Resolve-Path -LiteralPath $ConfiguredProfile).Path
+    }
+
+    $programData = [Environment]::GetFolderPath([Environment+SpecialFolder]::CommonApplicationData)
+    $altiumRoot = Join-Path $programData "Altium"
+    $profileCandidates = @(Get-AltiumProfileCandidates $null)
+    if (-not (Test-Path -LiteralPath $altiumRoot)) {
+        throw "Could not auto-detect an Altium profile because the Altium ProgramData folder was not found: $altiumRoot. Pass -AltiumProfile explicitly."
+    }
+
+    if ($profileCandidates.Count -eq 0) {
+        throw "Could not auto-detect an Altium profile under '$altiumRoot'. Pass -AltiumProfile explicitly."
+    }
+
+    if ($profileCandidates.Count -gt 1) {
+        $candidateList = ($profileCandidates | ForEach-Object { $_.FullName }) -join [Environment]::NewLine
+        throw "Multiple Altium profiles were detected. Pass -AltiumProfile explicitly." + [Environment]::NewLine + $candidateList
+    }
+
+    return $profileCandidates[0].FullName
+}
+
+function Add-AltiumExecutableCandidate {
+    param(
+        [System.Collections.Generic.List[string]]$Candidates,
+        [string]$Path
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+        return
+    }
+
+    $cleanPath = $Path.Trim()
+    if ($cleanPath.StartsWith('"') -and $cleanPath.Contains('"', 1)) {
+        $cleanPath = $cleanPath.Substring(1, $cleanPath.IndexOf('"', 1) - 1)
+    } elseif ($cleanPath.Contains(",")) {
+        $cleanPath = $cleanPath.Substring(0, $cleanPath.IndexOf(",")).Trim()
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($cleanPath) -and -not $Candidates.Contains($cleanPath)) {
+        $Candidates.Add($cleanPath)
+    }
+}
+
+function Get-RegistryPropertyValue {
+    param(
+        [object]$Properties,
+        [string]$Name
+    )
+
+    if ($Properties -eq $null) {
+        return $null
+    }
+
+    $property = $Properties.PSObject.Properties[$Name]
+    if ($property -eq $null) {
+        return $null
+    }
+
+    return $property.Value
+}
+
+function Get-AltiumProfileCandidates {
+    param([string]$UniqueId)
+
+    $programData = [Environment]::GetFolderPath([Environment+SpecialFolder]::CommonApplicationData)
+    $altiumRoot = Join-Path $programData "Altium"
+    if (-not (Test-Path -LiteralPath $altiumRoot)) {
+        return @()
+    }
+
+    $pattern = if ([string]::IsNullOrWhiteSpace($UniqueId)) { "Altium Designer*" } else { "Altium Designer*$UniqueId*" }
+    return @(
+        Get-ChildItem -LiteralPath $altiumRoot -Directory -ErrorAction SilentlyContinue |
+            Where-Object {
+                $_.Name -like $pattern -and
+                $_.Name -notlike "*_Security" -and
+                (Test-Path -LiteralPath (Join-Path $_.FullName "Extensions\ExtensionsRegistry.xml"))
+            } |
+            Sort-Object -Property LastWriteTimeUtc -Descending
+    )
+}
+
+function Get-AltiumRegistryInstallations {
+    $installations = New-Object "System.Collections.Generic.List[object]"
+    $uninstallRoots = @(
+        "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall",
+        "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall",
+        "HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall"
+    )
+
+    foreach ($uninstallRoot in $uninstallRoots) {
+        if (-not (Test-Path -LiteralPath $uninstallRoot)) {
+            continue
+        }
+
+        Get-ChildItem -LiteralPath $uninstallRoot -ErrorAction SilentlyContinue | ForEach-Object {
+            $properties = Get-ItemProperty -LiteralPath $_.PSPath -ErrorAction SilentlyContinue
+            $displayName = Get-RegistryPropertyValue $properties "DisplayName"
+            if ($properties -eq $null -or $displayName -notlike "*Altium*Designer*") {
+                return
+            }
+
+            $uninstallString = Get-RegistryPropertyValue $properties "UninstallString"
+            $uniqueId = $null
+            foreach ($uniqueIdSource in @($_.PSChildName, $uninstallString)) {
+                if ([string]::IsNullOrWhiteSpace($uniqueIdSource)) {
+                    continue
+                }
+
+                $uniqueIdMatch = [regex]::Match($uniqueIdSource, '\{[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}\}')
+                if ($uniqueIdMatch.Success) {
+                    $uniqueId = $uniqueIdMatch.Value
+                    break
+                }
+            }
+
+            if ([string]::IsNullOrWhiteSpace($uniqueId)) {
+                return
+            }
+
+            $executableCandidates = New-Object "System.Collections.Generic.List[string]"
+            $installLocation = Get-RegistryPropertyValue $properties "InstallLocation"
+            if (-not [string]::IsNullOrWhiteSpace($installLocation)) {
+                Add-AltiumExecutableCandidate -Candidates $executableCandidates -Path (Join-Path $installLocation "X2.EXE")
+            }
+
+            $displayIcon = Get-RegistryPropertyValue $properties "DisplayIcon"
+            Add-AltiumExecutableCandidate -Candidates $executableCandidates -Path $displayIcon
+
+            $existingExecutables = @(
+                $executableCandidates |
+                    ForEach-Object { Get-Item -Path $_ -ErrorAction SilentlyContinue } |
+                    Where-Object { $_ -ne $null -and -not $_.PSIsContainer } |
+                    Sort-Object -Property LastWriteTimeUtc -Descending
+            )
+            $profiles = Get-AltiumProfileCandidates $uniqueId
+
+            foreach ($profile in $profiles) {
+                foreach ($executable in $existingExecutables) {
+                    $installations.Add([pscustomobject]@{
+                        DisplayName = $displayName
+                        DisplayVersion = Get-RegistryPropertyValue $properties "DisplayVersion"
+                        UniqueId = $uniqueId
+                        ProfilePath = $profile.FullName
+                        ExecutablePath = $executable.FullName
+                    })
+                }
+            }
+        }
+    }
+
+    return @(
+        $installations |
+            Sort-Object -Property ProfilePath, ExecutablePath -Unique
+    )
+}
+
+function Resolve-AltiumInstallation {
+    param(
+        [string]$ConfiguredProfile,
+        [string]$ConfiguredExe,
+        [string]$ProcessName
+    )
+
+    $resolvedProfile = $null
+    $resolvedExe = $null
+
+    if (-not [string]::IsNullOrWhiteSpace($ConfiguredProfile)) {
+        $resolvedProfile = Resolve-AltiumProfile $ConfiguredProfile
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($ConfiguredExe)) {
+        $resolvedExe = Resolve-AltiumExecutable $ConfiguredExe $ProcessName
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($resolvedProfile) -and -not [string]::IsNullOrWhiteSpace($resolvedExe)) {
+        return [pscustomobject]@{
+            ProfilePath = $resolvedProfile
+            ExecutablePath = $resolvedExe
+        }
+    }
+
+    $installations = @(Get-AltiumRegistryInstallations)
+    if (-not [string]::IsNullOrWhiteSpace($resolvedProfile)) {
+        $installations = @($installations | Where-Object { $_.ProfilePath -eq $resolvedProfile })
+    }
+    if (-not [string]::IsNullOrWhiteSpace($resolvedExe)) {
+        $installations = @($installations | Where-Object { $_.ExecutablePath -eq $resolvedExe })
+    }
+
+    if ($installations.Count -eq 1) {
+        return [pscustomobject]@{
+            ProfilePath = $installations[0].ProfilePath
+            ExecutablePath = $installations[0].ExecutablePath
+        }
+    }
+
+    if ($installations.Count -gt 1) {
+        $candidateList = ($installations | ForEach-Object {
+            "$($_.DisplayName) $($_.DisplayVersion) $($_.UniqueId): Profile='$($_.ProfilePath)' Exe='$($_.ExecutablePath)'"
+        }) -join [Environment]::NewLine
+        throw "Multiple Altium installations were detected. Pass -AltiumProfile and -AltiumExe explicitly." + [Environment]::NewLine + $candidateList
+    }
+
+    if ([string]::IsNullOrWhiteSpace($resolvedProfile)) {
+        $resolvedProfile = Resolve-AltiumProfile $ConfiguredProfile
+    }
+    if ([string]::IsNullOrWhiteSpace($resolvedExe)) {
+        $resolvedExe = Resolve-AltiumExecutable $ConfiguredExe $ProcessName
+    }
+
+    return [pscustomobject]@{
+        ProfilePath = $resolvedProfile
+        ExecutablePath = $resolvedExe
+    }
+}
+
+function Add-AltiumExecutableRegistryCandidates {
+    param([System.Collections.Generic.List[string]]$Candidates)
+
+    $appPathKeys = @(
+        "HKCU:\Software\Microsoft\Windows\CurrentVersion\App Paths\X2.EXE",
+        "HKLM:\Software\Microsoft\Windows\CurrentVersion\App Paths\X2.EXE",
+        "HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\App Paths\X2.EXE"
+    )
+
+    foreach ($appPathKey in $appPathKeys) {
+        $key = Get-Item -LiteralPath $appPathKey -ErrorAction SilentlyContinue
+        if ($key -ne $null) {
+            Add-AltiumExecutableCandidate -Candidates $Candidates -Path $key.GetValue("")
+        }
+    }
+
+    $uninstallRoots = @(
+        "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall",
+        "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall",
+        "HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall"
+    )
+
+    foreach ($uninstallRoot in $uninstallRoots) {
+        if (-not (Test-Path -LiteralPath $uninstallRoot)) {
+            continue
+        }
+
+        Get-ChildItem -LiteralPath $uninstallRoot -ErrorAction SilentlyContinue | ForEach-Object {
+            $properties = Get-ItemProperty -LiteralPath $_.PSPath -ErrorAction SilentlyContinue
+            $displayName = Get-RegistryPropertyValue $properties "DisplayName"
+            if ($properties -eq $null -or $displayName -notlike "*Altium*Designer*") {
+                return
+            }
+
+            $installLocation = Get-RegistryPropertyValue $properties "InstallLocation"
+            if (-not [string]::IsNullOrWhiteSpace($installLocation)) {
+                Add-AltiumExecutableCandidate -Candidates $Candidates -Path (Join-Path $installLocation "X2.EXE")
+            }
+
+            $displayIcon = Get-RegistryPropertyValue $properties "DisplayIcon"
+            Add-AltiumExecutableCandidate -Candidates $Candidates -Path $displayIcon
+        }
+    }
+}
+
+function Resolve-AltiumExecutable {
+    param(
+        [string]$ConfiguredExe,
+        [string]$ProcessName
+    )
+
+    if (-not [string]::IsNullOrWhiteSpace($ConfiguredExe)) {
+        if (-not (Test-Path -LiteralPath $ConfiguredExe)) {
+            throw "Configured Altium executable was not found: $ConfiguredExe"
+        }
+
+        return (Resolve-Path -LiteralPath $ConfiguredExe).Path
+    }
+
+    $candidates = New-Object "System.Collections.Generic.List[string]"
+
+    Get-Process -Name $ProcessName -ErrorAction SilentlyContinue | ForEach-Object {
+        try {
+            Add-AltiumExecutableCandidate -Candidates $candidates -Path $_.Path
+        } catch {
+        }
+    }
+
+    Add-AltiumExecutableRegistryCandidates -Candidates $candidates
+
+    $command = Get-Command ($ProcessName + ".exe") -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($command -ne $null) {
+        Add-AltiumExecutableCandidate -Candidates $candidates -Path $command.Source
+    }
+
+    $programFiles = [Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFiles)
+    $programFilesX86 = [Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFilesX86)
+    foreach ($root in @($programFiles, $programFilesX86)) {
+        if ([string]::IsNullOrWhiteSpace($root)) {
+            continue
+        }
+
+        Add-AltiumExecutableCandidate -Candidates $candidates -Path (Join-Path $root "Altium\AD*\X2.EXE")
+        Add-AltiumExecutableCandidate -Candidates $candidates -Path (Join-Path $root "Altium\Altium Designer*\X2.EXE")
+        Add-AltiumExecutableCandidate -Candidates $candidates -Path (Join-Path $root "AD*\X2.EXE")
+        Add-AltiumExecutableCandidate -Candidates $candidates -Path (Join-Path $root "ADAgile\X2.EXE")
+    }
+
+    $existingCandidates = @(
+        $candidates |
+            ForEach-Object {
+                Get-Item -Path $_ -ErrorAction SilentlyContinue
+            } |
+            Where-Object { $_ -ne $null -and -not $_.PSIsContainer } |
+            Sort-Object -Property FullName -Unique
+    )
+
+    if ($existingCandidates.Count -eq 0) {
+        throw "Could not auto-detect Altium X2.EXE. Pass -AltiumExe explicitly."
+    }
+
+    if ($existingCandidates.Count -gt 1) {
+        $candidateList = ($existingCandidates | ForEach-Object { $_.FullName }) -join [Environment]::NewLine
+        throw "Multiple Altium executables were detected. Pass -AltiumExe explicitly." + [Environment]::NewLine + $candidateList
+    }
+
+    return $existingCandidates[0].FullName
 }
 
 function Resolve-F3DNativeLibrary {
@@ -118,6 +453,9 @@ $f3dHelperProjectPath = Join-Path $repoRoot "StepF3DRender\StepF3DRender.csproj"
 $sourceDir = Split-Path -Parent $projectPath
 $helperSourceDir = Split-Path -Parent $helperProjectPath
 $f3dHelperSourceDir = Split-Path -Parent $f3dHelperProjectPath
+$altiumInstallation = Resolve-AltiumInstallation -ConfiguredProfile $AltiumProfile -ConfiguredExe $AltiumExe -ProcessName $AltiumProcessName
+$AltiumProfile = $altiumInstallation.ProfilePath
+$AltiumExe = $altiumInstallation.ExecutablePath
 $installDir = Join-Path $AltiumProfile "Extensions\EasyEDA-Loader"
 $registryPath = Join-Path $AltiumProfile "Extensions\ExtensionsRegistry.xml"
 
@@ -140,6 +478,9 @@ if (-not (Test-Path -LiteralPath $registryPath)) {
 if (-not (Test-Path -LiteralPath $AltiumExe)) {
     throw "Altium executable was not found: $AltiumExe"
 }
+
+Write-Host "Altium profile: $AltiumProfile"
+Write-Host "Altium executable: $AltiumExe"
 
 Assert-AltiumClosed
 

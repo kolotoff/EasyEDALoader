@@ -1053,6 +1053,51 @@ namespace StepCleaner.Tests
                 "Install-F3DCompatibleMsvcRuntime",
                 "Altium install script should update Altium's app-local MSVCP140.dll when it is too old for in-process F3D",
                 failures);
+            AssertDoesNotContain(
+                buildAndInstallScript,
+                "[string]$AltiumProfile = \"",
+                "Altium install script should deduce the profile automatically instead of hard-coding a default parameter",
+                failures);
+            AssertDoesNotContain(
+                buildAndInstallScript,
+                "[string]$AltiumExe = \"",
+                "Altium install script should deduce the executable automatically instead of hard-coding a default parameter",
+                failures);
+            AssertContains(
+                buildAndInstallScript,
+                "Resolve-AltiumProfile",
+                "Altium install script should resolve the installed Altium profile automatically",
+                failures);
+            AssertContains(
+                buildAndInstallScript,
+                "Resolve-AltiumExecutable",
+                "Altium install script should resolve the installed Altium executable automatically",
+                failures);
+            AssertContains(
+                buildAndInstallScript,
+                "Resolve-AltiumInstallation",
+                "Altium install script should correlate the profile and executable before installing",
+                failures);
+            AssertContains(
+                buildAndInstallScript,
+                "Get-AltiumRegistryInstallations",
+                "Altium install script should discover Altium installs from Windows uninstall registry entries",
+                failures);
+            AssertContains(
+                buildAndInstallScript,
+                "Get-AltiumProfileCandidates $uniqueId",
+                "Altium install script should correlate ProgramData profiles to the installer GUID",
+                failures);
+            AssertContains(
+                buildAndInstallScript,
+                "*_Security",
+                "Altium install script should ignore Altium profile security folders",
+                failures);
+            AssertContains(
+                buildAndInstallScript,
+                "Multiple Altium installations were detected",
+                "Altium install script should fail clearly instead of guessing when multiple installs match",
+                failures);
             AssertContains(
                 buildAndInstallScript,
                 "EasyEDA-Loader-MsvcBackup",

@@ -76,10 +76,11 @@ Altium. The backup is stored beside `X2.EXE` in:
 <Altium exe folder>\EasyEDA-Loader-MsvcBackup\MSVCP140.dll.<yyyyMMdd-HHmmss>.bak
 ```
 
-For the default Agile path used by the install script, that is:
+`BuildAndInstall-Altium.ps1` auto-detects the Altium profile and executable.
+If the detected executable has an older app-local runtime, the backup folder is:
 
 ```text
-D:\Program files\ADAgile\EasyEDA-Loader-MsvcBackup\
+<Altium exe folder>\EasyEDA-Loader-MsvcBackup\
 ```
 
 # Comparisons
