@@ -1044,7 +1044,7 @@ git commit -m "Use in-memory projection data for internal verification"
 **Files:**
 - Modify: `Test/StepCleaner/Program.cs`
 
-- [ ] **Step 1: Add a failing guard**
+- [x] **Step 1: Add a failing guard**
 
 In `RunModelCacheTests()`, add:
 
@@ -1056,7 +1056,7 @@ AssertContains(
     failures);
 ```
 
-- [ ] **Step 2: Run guard test**
+- [x] **Step 2: Run guard test**
 
 Run:
 
@@ -1066,7 +1066,14 @@ dotnet run --project Test\StepCleaner\StepCleaner.Tests.csproj -- --model-cache
 
 Expected: FAIL with the new `FullTestDetectionCache` guard.
 
-- [ ] **Step 3: Introduce the cache**
+Verified red:
+
+```text
+Model cache regression test failed.
+  full StepCleaner regression should reuse original-model detection reports between debug image generation and post-clean verification: missing 'FullTestDetectionCache'.
+```
+
+- [x] **Step 3: Introduce the cache**
 
 Add this private helper class near `ProjectionVerificationTimings`:
 
@@ -1092,7 +1099,7 @@ private sealed class FullTestDetectionCache
 }
 ```
 
-- [ ] **Step 4: Create one cache in `Main`**
+- [x] **Step 4: Create one cache in `Main`**
 
 After `var projectionTimings = new ProjectionVerificationTimings();`, add:
 
@@ -1107,7 +1114,7 @@ VerifyDetectionDebugImages(..., detectionCache, failures);
 VerifyPostCleanProjections(..., detectionCache, projectionTimings, ...);
 ```
 
-- [ ] **Step 5: Use the cache in detection debug**
+- [x] **Step 5: Use the cache in detection debug**
 
 Change the `VerifyDetectionDebugImages` signature to include:
 
@@ -1127,7 +1134,7 @@ with:
 var detectionReport = detectionCache.GetReport(originalFile);
 ```
 
-- [ ] **Step 6: Use the cache in post-clean verification**
+- [x] **Step 6: Use the cache in post-clean verification**
 
 Change the `VerifyPostCleanProjections` signature to include:
 
@@ -1153,7 +1160,7 @@ var detectionReport = projectionTimings.Measure(
 
 Expected: `post_clean_detection_ms` should drop sharply when detection debug already regenerated the same original model in the same run.
 
-- [ ] **Step 7: Verify**
+- [x] **Step 7: Verify**
 
 Run:
 
@@ -1163,6 +1170,15 @@ dotnet run --project Test\StepCleaner\StepCleaner.Tests.csproj
 ```
 
 Expected: both PASS. Record `detection_debug_images`, `post_clean_detection_ms`, and `full_test_wall_ms`.
+
+Verified:
+
+```text
+model-cache guard: PASS
+Detection debug images: marked=20, generated=20, regenerated models=14, cached models=2, elapsed=72687 ms
+post_clean_detection_ms=615 ms
+full_test_wall_ms=179388
+```
 
 ### Task 10: Cache Projected Detection Regions In The Full-Test Harness
 

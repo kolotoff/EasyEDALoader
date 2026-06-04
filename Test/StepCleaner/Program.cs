@@ -63,6 +63,7 @@ namespace StepCleaner.Tests
                 var failures = new List<string>();
                 var visualFailures = new List<ProjectionVisualFailure>();
                 var projectionTimings = new ProjectionVerificationTimings();
+                var detectionCache = new FullTestDetectionCache();
 
                 if (originalFiles.Count == 0)
                     failures.Add("No STEP files were found in Original.");
@@ -78,6 +79,7 @@ namespace StepCleaner.Tests
                     projectionDirectory,
                     markedDirectory,
                     detectionDirectory,
+                    detectionCache,
                     failures);
 
                 foreach (string originalFile in originalFiles)
@@ -122,6 +124,7 @@ namespace StepCleaner.Tests
                     cleanProjectionDirectory,
                     verificationProjectionOptions,
                     detectionViewNamesByFileName,
+                    detectionCache,
                     projectionTimings,
                     postCleanFaultFileNames,
                     failures,
@@ -520,6 +523,11 @@ namespace StepCleaner.Tests
                 stepProjectionRenderer,
                 "SkipGeometryModelForExternalRender",
                 "verification projection rendering should be able to skip STEP geometry parsing when external rendering succeeds",
+                failures);
+            AssertContains(
+                stepCleanerProgram,
+                "FullTest" + "DetectionCache",
+                "full StepCleaner regression should reuse original-model detection reports between debug image generation and post-clean verification",
                 failures);
             AssertContains(
                 stepProjectionRenderer,
@@ -2505,6 +2513,7 @@ namespace StepCleaner.Tests
             string cleanProjectionDirectory,
             StepProjectionOptions projectionOptions,
             Dictionary<string, List<string>> detectionViewNamesByFileName,
+            FullTestDetectionCache detectionCache,
             ProjectionVerificationTimings projectionTimings,
             HashSet<string> postCleanFaultFileNames,
             List<string> failures,
@@ -2532,7 +2541,7 @@ namespace StepCleaner.Tests
 
                 var detectionReport = projectionTimings.Measure(
                     "post_clean_detection_ms",
-                    () => StepWatermarkCleaner.Detect(File.ReadAllBytes(originalFile), new StepWatermarkCleanerOptions()));
+                    () => detectionCache.GetReport(originalFile));
                 var detectionRegions = projectionTimings.Measure(
                     "post_clean_detection_region_projection_ms",
                     () => StepProjectionRenderer.ProjectDetectionRegions(
@@ -2912,6 +2921,7 @@ namespace StepCleaner.Tests
             string projectionDirectory,
             string markedDirectory,
             string detectionDirectory,
+            FullTestDetectionCache detectionCache,
             List<string> failures)
         {
             if (!Directory.Exists(markedDirectory))
@@ -2951,7 +2961,7 @@ namespace StepCleaner.Tests
                     continue;
                 }
 
-                var detectionReport = StepWatermarkCleaner.Detect(File.ReadAllBytes(originalFile), new StepWatermarkCleanerOptions());
+                var detectionReport = detectionCache.GetReport(originalFile);
 
                 StepProjectionRenderer.ProjectDetectionFile(
                     originalFile,
@@ -3448,6 +3458,26 @@ namespace StepCleaner.Tests
             public string LeftImagePath { get; set; }
             public string RightLabel { get; set; }
             public string RightImagePath { get; set; }
+        }
+
+        private sealed class FullTestDetectionCache
+        {
+            private readonly Dictionary<string, StepWatermarkDetectionReport> _reportsByFileName =
+                new Dictionary<string, StepWatermarkDetectionReport>(StringComparer.OrdinalIgnoreCase);
+
+            public StepWatermarkDetectionReport GetReport(string originalFile)
+            {
+                string fileName = Path.GetFileName(originalFile);
+                if (!_reportsByFileName.TryGetValue(fileName, out StepWatermarkDetectionReport report))
+                {
+                    report = StepWatermarkCleaner.Detect(
+                        File.ReadAllBytes(originalFile),
+                        new StepWatermarkCleanerOptions());
+                    _reportsByFileName[fileName] = report;
+                }
+
+                return report;
+            }
         }
 
         private sealed class ProjectionVerificationTimings
