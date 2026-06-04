@@ -22,6 +22,12 @@ namespace EasyEDA_Loader
         public IReadOnlyList<string> Failures { get; }
     }
 
+    public sealed class StepWatermarkCleanVerifierResult
+    {
+        public byte[] CleanStep { get; internal set; }
+        public StepWatermarkCleanerReport CleanReport { get; internal set; }
+    }
+
     public static class StepWatermarkCleanVerifier
     {
         private const int ProjectionDifferenceTolerance = 6;
@@ -34,6 +40,11 @@ namespace EasyEDA_Loader
         private const double MaxRetainedRegionEdgeRatio = 0.45;
 
         public static byte[] CleanOrThrow(byte[] originalStep, string modelName, string verificationDirectory, bool cleanText = false)
+        {
+            return CleanOrThrowWithReport(originalStep, modelName, verificationDirectory, cleanText).CleanStep;
+        }
+
+        public static StepWatermarkCleanVerifierResult CleanOrThrowWithReport(byte[] originalStep, string modelName, string verificationDirectory, bool cleanText = false)
         {
             if (originalStep == null)
                 throw new ArgumentNullException(nameof(originalStep));
@@ -66,7 +77,11 @@ namespace EasyEDA_Loader
                 throw new StepWatermarkCleanFailedException(message, verification.ReportPath, verification.Failures);
             }
 
-            return cleanStep;
+            return new StepWatermarkCleanVerifierResult
+            {
+                CleanStep = cleanStep,
+                CleanReport = cleanReport
+            };
         }
 
         private static PostCleanVerificationResult VerifyPostCleanOutput(

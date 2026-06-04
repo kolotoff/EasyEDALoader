@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Linq;
@@ -77,6 +78,13 @@ namespace EasyEDA_Loader
         public int FlattenedPointCount { get; internal set; }
         public StepWatermarkDetectionReport DetectionReport { get; internal set; }
         public IReadOnlyList<string> Diagnostics { get; internal set; }
+        public IReadOnlyList<StepWatermarkCleanerTiming> Timings { get; internal set; }
+    }
+
+    public sealed class StepWatermarkCleanerTiming
+    {
+        public string Name { get; internal set; }
+        public long ElapsedMilliseconds { get; internal set; }
     }
 
     public sealed class StepWatermarkDetectionReport
@@ -150,7 +158,7 @@ namespace EasyEDA_Loader
                 throw new ArgumentNullException(nameof(stepText));
 
             options = options ?? new StepWatermarkCleanerOptions();
-            var context = BuildCleanupContext(stepText, options);
+            var context = BuildCleanupContext(stepText, options, null);
             var detection = DetectAutomaticWatermarks(context);
             return BuildPublicDetectionReport(context, detection);
         }
@@ -189,63 +197,100 @@ namespace EasyEDA_Loader
                 throw new ArgumentNullException(nameof(stepText));
 
             options = options ?? new StepWatermarkCleanerOptions();
-            var context = BuildCleanupContext(stepText, options);
+            var timings = new List<StepWatermarkCleanerTiming>();
+            var totalStopwatch = Stopwatch.StartNew();
+            var context = BuildCleanupContext(stepText, options, timings);
 
-            var detection = DetectAutomaticWatermarks(context);
-            return CleanWithAutomaticDetection(stepText, context, detection);
+            var detection = DetectAutomaticWatermarks(context, timings);
+            StepWatermarkCleanerReport report = CleanWithAutomaticDetection(stepText, context, detection, timings);
+            totalStopwatch.Stop();
+            timings.Insert(
+                0,
+                new StepWatermarkCleanerTiming
+                {
+                    Name = "cleaner_total",
+                    ElapsedMilliseconds = totalStopwatch.ElapsedMilliseconds
+                });
+            report.Timings = timings.ToList();
+            return report;
         }
 
         private static StepWatermarkCleanerReport CleanWithAutomaticDetection(
             string stepText,
             CleanupContext context,
-            AutomaticWatermarkDetection detection)
+            AutomaticWatermarkDetection detection,
+            List<StepWatermarkCleanerTiming> timings)
         {
             var edits = new Dictionary<int, string>();
             var data = context.Data;
             var options = context.Options;
             var inactiveDefinitionRoots = new HashSet<int>(detection.RemovableSolidIds);
 
-            RemoveSolidsFromShapeRepresentations(data, detection.RemovableSolidIds, edits);
+            MeasureCleanerTiming(
+                timings,
+                "edit_remove_solids_from_shape_representations",
+                () => RemoveSolidsFromShapeRepresentations(data, detection.RemovableSolidIds, edits));
 
-            var flattenResult = FlattenEmbeddedWatermarkFaces(
-                data,
-                detection.EmbeddedFaceIds,
-                context.FaceOwners,
-                context.SolidInfo,
-                context.StyledByTarget,
-                options,
-                edits);
+            var flattenResult = MeasureCleanerTiming(
+                timings,
+                "edit_flatten_embedded_faces",
+                () => FlattenEmbeddedWatermarkFaces(
+                    data,
+                    detection.EmbeddedFaceIds,
+                    context.FaceOwners,
+                    context.SolidInfo,
+                    context.StyledByTarget,
+                    options,
+                    edits));
 
-            AddEmbeddedFaceHostLoopsToFlattenResult(
-                data,
-                detection.EmbeddedFaceIds,
-                context.FaceOwners,
-                context.SolidInfo,
-                context.StyledByTarget,
-                flattenResult,
-                options,
-                edits);
+            MeasureCleanerTiming(
+                timings,
+                "edit_add_embedded_host_loops",
+                () => AddEmbeddedFaceHostLoopsToFlattenResult(
+                    data,
+                    detection.EmbeddedFaceIds,
+                    context.FaceOwners,
+                    context.SolidInfo,
+                    context.StyledByTarget,
+                    flattenResult,
+                    options,
+                    edits));
 
-            MergeHostFaceBounds(flattenResult, detection.HostFaceBoundsToRemove);
-            var flattenRegions = BuildAutomaticFlattenRegions(
-                data,
-                detection,
-                context.FaceOwners,
-                context.SolidInfo,
-                context.StyledByTarget,
-                options);
-            AddAutomaticRegionAdjacentFacesToFlattenResult(data, context.SolidInfo, flattenResult, detection.AutomaticRegions, options);
-            FlattenAllGeometryInsideAutomaticRegions(data, context.SolidInfo, flattenResult, flattenRegions, options, edits);
+            MeasureCleanerTiming(
+                timings,
+                "edit_merge_host_face_bounds",
+                () => MergeHostFaceBounds(flattenResult, detection.HostFaceBoundsToRemove));
+            var flattenRegions = MeasureCleanerTiming(
+                timings,
+                "edit_build_automatic_flatten_regions",
+                () => BuildAutomaticFlattenRegions(
+                    data,
+                    detection,
+                    context.FaceOwners,
+                    context.SolidInfo,
+                    context.StyledByTarget,
+                    options));
+            MeasureCleanerTiming(
+                timings,
+                "edit_add_automatic_region_adjacent_faces",
+                () => AddAutomaticRegionAdjacentFacesToFlattenResult(data, context.SolidInfo, flattenResult, detection.AutomaticRegions, options));
+            MeasureCleanerTiming(
+                timings,
+                "edit_flatten_automatic_regions",
+                () => FlattenAllGeometryInsideAutomaticRegions(data, context.SolidInfo, flattenResult, flattenRegions, options, edits));
 
-            FlattenCoplanarWatermarkFaces(
-                data,
-                detection.CoplanarFaceIds,
-                context.FaceOwners,
-                context.SolidInfo,
-                context.StyledByTarget,
-                flattenResult,
-                options,
-                edits);
+            MeasureCleanerTiming(
+                timings,
+                "edit_flatten_coplanar_faces",
+                () => FlattenCoplanarWatermarkFaces(
+                    data,
+                    detection.CoplanarFaceIds,
+                    context.FaceOwners,
+                    context.SolidInfo,
+                    context.StyledByTarget,
+                    flattenResult,
+                    options,
+                    edits));
 
             int removedEmbeddedFaces = 0;
             int removedHostLoops = 0;
@@ -258,27 +303,42 @@ namespace EasyEDA_Loader
                 foreach (int boundId in flattenResult.HostFaceBoundsToRemove.Values.SelectMany(boundIds => boundIds))
                     inactiveDefinitionRoots.Add(boundId);
 
-                removedEmbeddedFaces = RemoveFacesFromClosedShells(data, flattenResult.FlattenedFaces, edits);
-                removedHostLoops = RemoveFaceBounds(data, flattenResult.HostFaceBoundsToRemove, edits);
-                recoloredCount = RecolorFlattenedFaces(
-                    data,
-                    flattenResult.FlattenedFaces,
-                    flattenResult.ReplacementFaceByRemovedFace,
-                    context.FaceOwners,
-                    context.SolidInfo,
-                    context.StyledItems,
-                    context.StyledByTarget,
-                    edits);
+                removedEmbeddedFaces = MeasureCleanerTiming(
+                    timings,
+                    "edit_remove_faces_from_closed_shells",
+                    () => RemoveFacesFromClosedShells(data, flattenResult.FlattenedFaces, edits));
+                removedHostLoops = MeasureCleanerTiming(
+                    timings,
+                    "edit_remove_face_bounds",
+                    () => RemoveFaceBounds(data, flattenResult.HostFaceBoundsToRemove, edits));
+                recoloredCount = MeasureCleanerTiming(
+                    timings,
+                    "edit_recolor_flattened_faces",
+                    () => RecolorFlattenedFaces(
+                        data,
+                        flattenResult.FlattenedFaces,
+                        flattenResult.ReplacementFaceByRemovedFace,
+                        context.FaceOwners,
+                        context.SolidInfo,
+                        context.StyledItems,
+                        context.StyledByTarget,
+                        edits));
                 var removedFaceStyleTargets = new HashSet<int>(flattenResult.FlattenedFaces);
                 foreach (int solidId in detection.RemovableSolidIds)
                     removedFaceStyleTargets.Add(solidId);
                 foreach (int faceId in GetSolidFaceIds(context.SolidInfo, detection.RemovableSolidIds))
                     removedFaceStyleTargets.Add(faceId);
-                foreach (int styledItemId in RemoveStyledItemsForRemovedFaces(data, context.StyledItems, removedFaceStyleTargets, edits))
+                foreach (int styledItemId in MeasureCleanerTiming(
+                    timings,
+                    "edit_remove_styled_items",
+                    () => RemoveStyledItemsForRemovedFaces(data, context.StyledItems, removedFaceStyleTargets, edits)))
                     inactiveDefinitionRoots.Add(styledItemId);
             }
 
-            string cleaned = ApplyCleanupDefinitionEdits(data, edits, inactiveDefinitionRoots, out removedInactiveDefinitions);
+            string cleaned = MeasureCleanerTiming(
+                timings,
+                "edit_apply_definition_edits",
+                () => ApplyCleanupDefinitionEdits(data, edits, inactiveDefinitionRoots, out removedInactiveDefinitions));
             var diagnostics = new List<string>();
 
             diagnostics.Add("Approach: remove thin neutral watermark solids, then flatten embedded neutral relief faces and merge their host-plane cut loops.");
@@ -327,28 +387,41 @@ namespace EasyEDA_Loader
                 RemovedSolidCount = detection.RemovableSolidIds.Count,
                 FlattenedFaceCount = flattenResult.FlattenedFaceCount,
                 FlattenedPointCount = flattenResult.FlattenedPointCount,
-                DetectionReport = BuildPublicDetectionReport(context, detection),
-                Diagnostics = diagnostics
+                DetectionReport = MeasureCleanerTiming(
+                    timings,
+                    "report_build_public_detection_report",
+                    () => BuildPublicDetectionReport(context, detection)),
+                Diagnostics = diagnostics,
+                Timings = timings.ToList()
             };
         }
 
-        private static CleanupContext BuildCleanupContext(string stepText, StepWatermarkCleanerOptions options)
+        private static CleanupContext BuildCleanupContext(
+            string stepText,
+            StepWatermarkCleanerOptions options,
+            List<StepWatermarkCleanerTiming> timings)
         {
-            var data = StepData.Parse(stepText);
-            data.BuildIndexes();
+            var data = MeasureCleanerTiming(timings, "context_parse_step_entities", () => StepData.Parse(stepText));
+            MeasureCleanerTiming(timings, "context_build_indexes", () => data.BuildIndexes());
 
-            var solidIds = data.Entities.Values
-                .Where(e => IsCleanupOwnerRootType(e.Type))
-                .Select(e => e.Id)
-                .ToList();
+            var solidIds = MeasureCleanerTiming(
+                timings,
+                "context_collect_cleanup_solids",
+                () => data.Entities.Values
+                    .Where(e => IsCleanupOwnerRootType(e.Type))
+                    .Select(e => e.Id)
+                    .ToList());
 
-            var styledItems = BuildStyledItems(data);
-            var styledByTarget = styledItems
-                .GroupBy(s => s.TargetId)
-                .ToDictionary(g => g.Key, g => g.ToList());
-            var faceOwners = BuildFaceOwnerMap(data, solidIds);
-            var solidInfo = BuildSolidInfo(data, solidIds, faceOwners, styledByTarget, options);
-            int styledFaceCount = styledItems.Count(s => data.GetTypeName(s.TargetId) == "ADVANCED_FACE");
+            var styledItems = MeasureCleanerTiming(timings, "context_build_styled_items", () => BuildStyledItems(data));
+            var styledByTarget = MeasureCleanerTiming(
+                timings,
+                "context_group_styles_by_target",
+                () => styledItems
+                    .GroupBy(s => s.TargetId)
+                    .ToDictionary(g => g.Key, g => g.ToList()));
+            var faceOwners = MeasureCleanerTiming(timings, "context_build_face_owner_map", () => BuildFaceOwnerMap(data, solidIds));
+            var solidInfo = MeasureCleanerTiming(timings, "context_build_solid_info", () => BuildSolidInfo(data, solidIds, faceOwners, styledByTarget, options));
+            int styledFaceCount = MeasureCleanerTiming(timings, "context_count_styled_faces", () => styledItems.Count(s => data.GetTypeName(s.TargetId) == "ADVANCED_FACE"));
 
             return new CleanupContext
             {
@@ -363,89 +436,119 @@ namespace EasyEDA_Loader
             };
         }
 
-        private static AutomaticWatermarkDetection DetectAutomaticWatermarks(CleanupContext context)
+        private static AutomaticWatermarkDetection DetectAutomaticWatermarks(
+            CleanupContext context,
+            List<StepWatermarkCleanerTiming> timings = null)
         {
             var detection = new AutomaticWatermarkDetection();
             var data = context.Data;
             var options = context.Options;
 
-            detection.RemovableSolidIds = FindRemovableWatermarkSolids(
-                data,
-                context.SolidInfo,
-                context.StyledByTarget,
-                GetModelBounds(context),
-                options);
+            Bounds? modelBounds = MeasureCleanerTiming(timings, "detect_get_model_bounds", () => GetModelBounds(context));
 
-            var removableSolidHostLoops = FindRemovableSolidHostLoops(
-                data,
-                detection.RemovableSolidIds,
-                context.SolidInfo,
-                context.StyledByTarget,
-                GetModelBounds(context),
-                options);
+            detection.RemovableSolidIds = MeasureCleanerTiming(
+                timings,
+                "detect_removable_watermark_solids",
+                () => FindRemovableWatermarkSolids(
+                    data,
+                    context.SolidInfo,
+                    context.StyledByTarget,
+                    modelBounds,
+                    options));
+
+            var removableSolidHostLoops = MeasureCleanerTiming(
+                timings,
+                "detect_removable_solid_host_loops",
+                () => FindRemovableSolidHostLoops(
+                    data,
+                    detection.RemovableSolidIds,
+                    context.SolidInfo,
+                    context.StyledByTarget,
+                    modelBounds,
+                    options));
             detection.AutomaticRegions.AddRange(removableSolidHostLoops.Regions);
             MergeHostFaceBounds(detection.HostFaceBoundsToRemove, removableSolidHostLoops.HostFaceBoundsToRemove);
             detection.RemovableSolidHostLoopCount = CountHostLoopBounds(removableSolidHostLoops.HostFaceBoundsToRemove);
             detection.RemovableSolidHostLoopCandidateCount = removableSolidHostLoops.CandidateCount;
 
-            detection.EmbeddedFaceIds = FindEmbeddedWatermarkFaces(
-                data,
-                context.StyledItems,
-                context.FaceOwners,
-                context.SolidInfo,
-                detection.RemovableSolidIds,
-                context.StyledByTarget,
-                options);
+            detection.EmbeddedFaceIds = MeasureCleanerTiming(
+                timings,
+                "detect_embedded_watermark_faces",
+                () => FindEmbeddedWatermarkFaces(
+                    data,
+                    context.StyledItems,
+                    context.FaceOwners,
+                    context.SolidInfo,
+                    detection.RemovableSolidIds,
+                    context.StyledByTarget,
+                    options));
 
-            var embeddedHostLoops = FindAutomaticEmbeddedHostLoops(
-                data,
-                detection.EmbeddedFaceIds,
-                context.FaceOwners,
-                context.SolidInfo,
-                context.StyledByTarget,
-                options);
+            var embeddedHostLoops = MeasureCleanerTiming(
+                timings,
+                "detect_embedded_host_loops",
+                () => FindAutomaticEmbeddedHostLoops(
+                    data,
+                    detection.EmbeddedFaceIds,
+                    context.FaceOwners,
+                    context.SolidInfo,
+                    context.StyledByTarget,
+                    options));
             detection.EmbeddedHostLoopCount = CountHostLoopBounds(embeddedHostLoops.HostFaceBoundsToRemove);
             detection.AutomaticRegions.AddRange(embeddedHostLoops.Regions);
             MergeHostFaceBounds(detection.HostFaceBoundsToRemove, embeddedHostLoops.HostFaceBoundsToRemove);
 
-            var automaticHostLoops = FindAutomaticWatermarkHostLoops(
-                data,
-                context.SolidInfo,
-                context.StyledByTarget,
-                options);
+            var automaticHostLoops = MeasureCleanerTiming(
+                timings,
+                "detect_automatic_watermark_host_loops",
+                () => FindAutomaticWatermarkHostLoops(
+                    data,
+                    context.SolidInfo,
+                    context.StyledByTarget,
+                    options));
             detection.HostLoopCandidateCount = automaticHostLoops.CandidateCount;
             detection.AutomaticRegions.AddRange(automaticHostLoops.Regions);
             MergeHostFaceBounds(detection.HostFaceBoundsToRemove, automaticHostLoops.HostFaceBoundsToRemove);
 
-            detection.CoplanarFaceIds = FindAutomaticRegionWatermarkFaces(
-                data,
-                context.StyledItems,
-                context.FaceOwners,
-                automaticHostLoops.Regions,
-                options);
-            detection.CoplanarFaceIds = detection.CoplanarFaceIds
-                .Concat(FindNeutralCoplanarWatermarkFaces(
+            detection.CoplanarFaceIds = MeasureCleanerTiming(
+                timings,
+                "detect_automatic_region_watermark_faces",
+                () => FindAutomaticRegionWatermarkFaces(
+                    data,
+                    context.StyledItems,
+                    context.FaceOwners,
+                    automaticHostLoops.Regions,
+                    options))
+                .ToList();
+            var neutralCoplanarFaceIds = MeasureCleanerTiming(
+                timings,
+                "detect_neutral_coplanar_watermark_faces",
+                () => FindNeutralCoplanarWatermarkFaces(
                     data,
                     context.StyledItems,
                     context.FaceOwners,
                     context.SolidInfo,
                     context.StyledByTarget,
-                    options))
+                    options));
+            detection.CoplanarFaceIds = detection.CoplanarFaceIds
+                .Concat(neutralCoplanarFaceIds)
                 .Distinct()
                 .OrderBy(id => id)
                 .ToList();
             if (options.CleanText)
             {
-                var textDetection = FindAutomaticTextStringFaces(
-                    data,
-                    context.StyledItems,
-                    context.FaceOwners,
-                    context.SolidInfo,
-                    context.StyledByTarget,
-                    detection.RemovableSolidIds,
-                    detection.EmbeddedFaceIds,
-                    detection.CoplanarFaceIds,
-                    options);
+                var textDetection = MeasureCleanerTiming(
+                    timings,
+                    "detect_text_string_faces",
+                    () => FindAutomaticTextStringFaces(
+                        data,
+                        context.StyledItems,
+                        context.FaceOwners,
+                        context.SolidInfo,
+                        context.StyledByTarget,
+                        detection.RemovableSolidIds,
+                        detection.EmbeddedFaceIds,
+                        detection.CoplanarFaceIds,
+                        options));
                 detection.TextFaceIds = textDetection.FaceIds;
                 detection.TextCandidateCount = textDetection.CandidateCount;
                 detection.TextClusterCount = textDetection.ClusterCount;
@@ -459,6 +562,46 @@ namespace EasyEDA_Loader
             detection.HostLoopCount = CountHostLoopBounds(detection.HostFaceBoundsToRemove);
 
             return detection;
+        }
+
+        private static T MeasureCleanerTiming<T>(
+            List<StepWatermarkCleanerTiming> timings,
+            string name,
+            Func<T> action)
+        {
+            if (timings == null)
+                return action();
+
+            var stopwatch = Stopwatch.StartNew();
+            T result = action();
+            stopwatch.Stop();
+            timings.Add(new StepWatermarkCleanerTiming
+            {
+                Name = name,
+                ElapsedMilliseconds = stopwatch.ElapsedMilliseconds
+            });
+            return result;
+        }
+
+        private static void MeasureCleanerTiming(
+            List<StepWatermarkCleanerTiming> timings,
+            string name,
+            Action action)
+        {
+            if (timings == null)
+            {
+                action();
+                return;
+            }
+
+            var stopwatch = Stopwatch.StartNew();
+            action();
+            stopwatch.Stop();
+            timings.Add(new StepWatermarkCleanerTiming
+            {
+                Name = name,
+                ElapsedMilliseconds = stopwatch.ElapsedMilliseconds
+            });
         }
 
         private static StepWatermarkDetectionReport BuildPublicDetectionReport(
@@ -4775,8 +4918,7 @@ namespace EasyEDA_Loader
                 string definition = edits.TryGetValue(entity.Id, out string pendingDefinition)
                     ? pendingDefinition
                     : entity.Definition;
-                foreach (int styledItemId in styledItemIds)
-                    definition = RemoveReferenceFromCommaList(definition, styledItemId);
+                definition = RemoveReferencesFromCommaList(definition, styledItemIds);
 
                 if (definition != entity.Definition)
                     edits[entity.Id] = definition;
@@ -4920,6 +5062,91 @@ namespace EasyEDA_Loader
             result = Regex.Replace(result, @"\s*,\s*#" + id + @"(?=\s*[\),])", string.Empty);
             result = Regex.Replace(result, @"(?<=\()\s*#" + id + @"\s*(?=\))", string.Empty);
             return result;
+        }
+
+        private static string RemoveReferencesFromCommaList(string definition, HashSet<int> referenceIds)
+        {
+            if (string.IsNullOrEmpty(definition) || referenceIds == null || referenceIds.Count == 0)
+                return definition;
+
+            List<RangeToRemove> ranges = null;
+            foreach (Match match in ReferenceRegex.Matches(definition))
+            {
+                if (!int.TryParse(match.Groups[1].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out int id) ||
+                    !referenceIds.Contains(id))
+                {
+                    continue;
+                }
+
+                int start = match.Index;
+                while (start > 0 && char.IsWhiteSpace(definition[start - 1]))
+                    start--;
+
+                int end = match.Index + match.Length;
+                while (end < definition.Length && char.IsWhiteSpace(definition[end]))
+                    end++;
+
+                int next = end;
+                while (next < definition.Length && char.IsWhiteSpace(definition[next]))
+                    next++;
+
+                if (next < definition.Length && definition[next] == ',')
+                {
+                    end = next + 1;
+                    while (end < definition.Length && char.IsWhiteSpace(definition[end]))
+                        end++;
+                }
+                else
+                {
+                    int previous = start - 1;
+                    while (previous >= 0 && char.IsWhiteSpace(definition[previous]))
+                        previous--;
+
+                    if (previous >= 0 && definition[previous] == ',')
+                        start = previous;
+                }
+
+                if (ranges == null)
+                    ranges = new List<RangeToRemove>();
+                AddRemovalRange(ranges, start, end);
+            }
+
+            if (ranges == null || ranges.Count == 0)
+                return definition;
+
+            var builder = new StringBuilder(definition.Length);
+            int copyFrom = 0;
+            foreach (RangeToRemove range in ranges)
+            {
+                if (range.Start > copyFrom)
+                    builder.Append(definition, copyFrom, range.Start - copyFrom);
+
+                copyFrom = Math.Max(copyFrom, range.End);
+            }
+
+            if (copyFrom < definition.Length)
+                builder.Append(definition, copyFrom, definition.Length - copyFrom);
+
+            return builder.ToString();
+        }
+
+        private static void AddRemovalRange(List<RangeToRemove> ranges, int start, int end)
+        {
+            if (start >= end)
+                return;
+
+            if (ranges.Count == 0 || start > ranges[ranges.Count - 1].End)
+            {
+                ranges.Add(new RangeToRemove { Start = start, End = end });
+                return;
+            }
+
+            RangeToRemove last = ranges[ranges.Count - 1];
+            if (end > last.End)
+            {
+                last.End = end;
+                ranges[ranges.Count - 1] = last;
+            }
         }
 
         private static bool LooksLikeSmallMark(Bounds faceBounds, Bounds ownerBounds, StepWatermarkCleanerOptions options)
@@ -5321,6 +5548,12 @@ namespace EasyEDA_Loader
             public int StyleId { get; set; }
             public int TargetId { get; set; }
             public StepColor? Color { get; set; }
+        }
+
+        private struct RangeToRemove
+        {
+            public int Start;
+            public int End;
         }
 
         private sealed class TextStringDetectionResult

@@ -289,6 +289,8 @@ namespace StepCleaner.Tests
             string modelCache = File.ReadAllText(Path.Combine(repoRoot, "EasyEDA-Loader", "ModelCache.cs"));
             string easyEdaLoader = File.ReadAllText(Path.Combine(repoRoot, "EasyEDA-Loader", "EasyEDALoader.cs"));
             string dialogWindow = File.ReadAllText(Path.Combine(repoRoot, "EasyEDA-Loader", "DialogWindow.cs"));
+            string stepWatermarkCleaner = File.ReadAllText(Path.Combine(repoRoot, "EasyEDA-Loader", "StepWatermarkCleaner.cs"));
+            string stepWatermarkCleanVerifier = File.ReadAllText(Path.Combine(repoRoot, "EasyEDA-Loader", "StepWatermarkCleanVerifier.cs"));
             string stepProjectionRenderer = File.ReadAllText(Path.Combine(repoRoot, "EasyEDA-Loader", "StepProjectionRenderer.cs"));
             string stepSilhouetteProjection = File.ReadAllText(Path.Combine(repoRoot, "EasyEDA-Loader", "StepSilhouetteProjection.cs"));
             string stepCleanerProgram = File.ReadAllText(Path.Combine(repoRoot, "Test", "StepCleaner", "Program.cs"));
@@ -451,6 +453,31 @@ namespace StepCleaner.Tests
                 stepCleanerProgram,
                 "StepWatermarkClean" + "Verifier.CleanOrThrow",
                 "measurement command should exercise the same watermark cleaner verifier as import",
+                failures);
+            AssertContains(
+                stepWatermarkCleaner,
+                "public sealed class StepWatermarkCleanerTiming",
+                "watermark cleaner should expose detailed detection/edit timing entries",
+                failures);
+            AssertContains(
+                stepWatermarkCleaner,
+                "RemoveReferencesFromCommaList(definition, styledItemIds)",
+                "watermark cleaner should remove styled-item references in bulk instead of one regex scan per removed style",
+                failures);
+            AssertContains(
+                stepWatermarkCleanVerifier,
+                "CleanOrThrowWithReport",
+                "verifier should expose clean report timings for cache-miss measurement",
+                failures);
+            AssertContains(
+                stepCleanerProgram,
+                "watermark_clean_detail_",
+                "measurement command should print detailed watermark detection/edit timings on clean cache misses",
+                failures);
+            AssertContains(
+                stepCleanerProgram,
+                "CleanOrThrowWithReport",
+                "measurement command should capture cleaner report timings from the verifier miss path",
                 failures);
             AssertContains(
                 stepCleanerProgram,
@@ -689,16 +716,21 @@ namespace StepCleaner.Tests
                             cancellation.Token)).ConfigureAwait(false);
 
                     string cleanCacheKey = CleanStepCacheKeys.GetCleanModeKey(model.Uuid, cleanText);
+                    StepWatermarkCleanVerifierResult cleanMissResult = null;
                     byte[] cleanedStep = await timings.MeasureAsync(
                         "watermark_clean_cache",
                         () => GetOrDownloadBytesAsync(
                             GetCleanStepPath(cleanCacheKey),
                             () => System.Threading.Tasks.Task.Run(
-                                () => StepWatermarkCleanVerifier.CleanOrThrow(
-                                    originalStep,
-                                    model.Uuid,
-                                    CreateMeasurementVerificationDirectory(partNumber, model.Uuid),
-                                    cleanText),
+                                () =>
+                                {
+                                    cleanMissResult = StepWatermarkCleanVerifier.CleanOrThrowWithReport(
+                                        originalStep,
+                                        model.Uuid,
+                                        CreateMeasurementVerificationDirectory(partNumber, model.Uuid),
+                                        cleanText);
+                                    return cleanMissResult.CleanStep;
+                                },
                                 cancellation.Token),
                             cancellation.Token)).ConfigureAwait(false);
 
@@ -719,11 +751,31 @@ namespace StepCleaner.Tests
                     Console.WriteLine("  z_offset_mm=" + zInfo.OffsetFromOrigin.ToString("R", CultureInfo.InvariantCulture));
                     Console.WriteLine("  model_height_mm=" + zInfo.Height.ToString("R", CultureInfo.InvariantCulture));
                     Console.WriteLine("  projection_primitives=" + projectionPrimitives.Count.ToString(CultureInfo.InvariantCulture));
+                    PrintCleanerTimings(cleanMissResult?.CleanReport, "  ");
                     timings.WriteToConsole("  ");
                 }
             }
 
             return 0;
+        }
+
+        private static void PrintCleanerTimings(StepWatermarkCleanerReport report, string prefix)
+        {
+            if (report?.Timings == null || report.Timings.Count == 0)
+                return;
+
+            foreach (StepWatermarkCleanerTiming timing in report.Timings)
+            {
+                if (timing == null || string.IsNullOrWhiteSpace(timing.Name))
+                    continue;
+
+                Console.WriteLine(
+                    prefix +
+                    "watermark_clean_detail_" +
+                    timing.Name +
+                    "_ms=" +
+                    timing.ElapsedMilliseconds.ToString(CultureInfo.InvariantCulture));
+            }
         }
 
         private static async System.Threading.Tasks.Task<MeasuredModelInfo> LoadMeasuredModelInfoAsync(
