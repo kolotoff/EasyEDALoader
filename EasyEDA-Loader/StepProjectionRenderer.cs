@@ -16,6 +16,8 @@ namespace EasyEDA_Loader
         public int ImageSizePixels { get; set; } = 1600;
         public int PaddingPixels { get; set; } = 80;
         public bool WriteMetadata { get; set; } = true;
+        public bool SkipGeometryModelForExternalRender { get; set; }
+        public int MaxParallelFiles { get; set; } = 1;
         public List<string> ViewNames { get; } = new List<string>();
     }
 
@@ -72,11 +74,24 @@ namespace EasyEDA_Loader
             options = NormalizeOptions(options);
             Directory.CreateDirectory(outputDirectory);
 
-            var reports = new List<StepProjectionReport>();
-            foreach (string inputFile in GetStepFiles(inputDirectory))
-                reports.Add(ProjectFile(inputFile, outputDirectory, options));
+            var inputFiles = GetStepFiles(inputDirectory);
+            if (options.MaxParallelFiles <= 1 || inputFiles.Count <= 1 || HasDuplicateModelNames(inputFiles))
+            {
+                var reports = new List<StepProjectionReport>();
+                foreach (string inputFile in inputFiles)
+                    reports.Add(ProjectFile(inputFile, outputDirectory, options));
 
-            return reports;
+                return reports;
+            }
+
+            int degree = Math.Max(1, Math.Min(options.MaxParallelFiles, inputFiles.Count));
+            var results = new StepProjectionReport[inputFiles.Count];
+            Parallel.For(
+                0,
+                inputFiles.Count,
+                new ParallelOptions { MaxDegreeOfParallelism = degree },
+                index => results[index] = ProjectFile(inputFiles[index], outputDirectory, options));
+            return results.ToList();
         }
 
         public static StepProjectionReport ProjectFile(string inputPath, string outputDirectory, StepProjectionOptions options = null)
@@ -90,21 +105,43 @@ namespace EasyEDA_Loader
             options = NormalizeOptions(options);
             Directory.CreateDirectory(outputDirectory);
 
+            var outputFiles = new List<string>();
+            string modelName = Path.GetFileNameWithoutExtension(inputPath);
+            IReadOnlyList<ViewSpec> selectedViews = GetSelectedViews(options);
+            Dictionary<string, string> outputPathsByView = selectedViews.ToDictionary(
+                view => view.Name,
+                view => Path.Combine(outputDirectory, modelName + "__" + view.Name + ".png"),
+                StringComparer.OrdinalIgnoreCase);
+
+            bool skipF3DLibraryBatchAfterEarlyFailure = false;
+            if (options.SkipGeometryModelForExternalRender &&
+                !options.WriteMetadata)
+            {
+                if (TryRenderWithF3DLibraryBatch(inputPath, selectedViews, outputPathsByView, options))
+                {
+                    foreach (ViewSpec view in selectedViews)
+                        outputFiles.Add(outputPathsByView[view.Name]);
+
+                    return new StepProjectionReport
+                    {
+                        InputPath = inputPath,
+                        FaceCount = 0,
+                        EdgeCount = 0,
+                        OutputFiles = outputFiles
+                    };
+                }
+
+                skipF3DLibraryBatchAfterEarlyFailure = true;
+            }
+
             string stepText = Encoding.Latin1.GetString(File.ReadAllBytes(inputPath));
             StepModel model = StepModel.Parse(stepText);
             model.BuildIndexes();
             var drawingModel = ProjectionModel.Build(model);
 
-            var outputFiles = new List<string>();
-            string modelName = Path.GetFileNameWithoutExtension(inputPath);
-            IReadOnlyList<ViewSpec> selectedViews = GetSelectedViews(options);
             Dictionary<string, ProjectionTransform> transformsByView = selectedViews.ToDictionary(
                 view => view.Name,
                 view => ProjectionTransform.Create(drawingModel.Bounds, view, options),
-                StringComparer.OrdinalIgnoreCase);
-            Dictionary<string, string> outputPathsByView = selectedViews.ToDictionary(
-                view => view.Name,
-                view => Path.Combine(outputDirectory, modelName + "__" + view.Name + ".png"),
                 StringComparer.OrdinalIgnoreCase);
             bool renderedWithOpenCascadeBatch =
                 IsOpenCascadeVerificationRendererEnabled() &&
@@ -117,6 +154,7 @@ namespace EasyEDA_Loader
                     null);
             bool renderedWithF3DLibraryBatch =
                 !renderedWithOpenCascadeBatch &&
+                !skipF3DLibraryBatchAfterEarlyFailure &&
                 TryRenderWithF3DLibraryBatch(
                     inputPath,
                     selectedViews,
@@ -229,13 +267,26 @@ namespace EasyEDA_Loader
                     outputPathsByView,
                     options,
                     highlightsByView);
+            bool renderedWithF3DLibraryBatch =
+                !renderedWithOpenCascadeBatch &&
+                TryRenderWithF3DLibraryBatch(inputPath, selectedDetectionViews, outputPathsByView, options);
 
             foreach (ViewSpec view in selectedDetectionViews)
             {
                 ProjectionTransform transform = transformsByView[view.Name];
                 string outputPath = outputPathsByView[view.Name];
-                if (!renderedWithOpenCascadeBatch)
+                if (!renderedWithOpenCascadeBatch && !renderedWithF3DLibraryBatch)
+                {
                     RenderProjection(inputPath, drawingModel, view, transform, outputPath, options, highlightsByView[view.Name]);
+                }
+                else if (renderedWithF3DLibraryBatch &&
+                    highlightsByView.TryGetValue(view.Name, out IReadOnlyList<ProjectionHighlight> viewHighlights) &&
+                    viewHighlights.Count > 0)
+                {
+                    var renderedImage = RgbaImage.LoadPng(outputPath);
+                    DrawDetectionHighlights(renderedImage, view, transform, viewHighlights);
+                    renderedImage.SavePng(outputPath);
+                }
                 outputFiles.Add(outputPath);
 
                 if (options.WriteMetadata)
@@ -568,7 +619,9 @@ namespace EasyEDA_Loader
                 {
                     ImageSizePixels = options.ImageSizePixels * scale,
                     PaddingPixels = options.PaddingPixels * scale,
-                    WriteMetadata = options.WriteMetadata
+                    WriteMetadata = options.WriteMetadata,
+                    SkipGeometryModelForExternalRender = options.SkipGeometryModelForExternalRender,
+                    MaxParallelFiles = options.MaxParallelFiles
                 };
             ProjectionTransform renderTransform = scale == 1
                 ? transform
@@ -690,11 +743,11 @@ namespace EasyEDA_Loader
                     !string.Equals(extension, ".stp", StringComparison.OrdinalIgnoreCase))
                     return false;
 
-                if (views == null || views.Count != Views.Length)
+                if (views == null || views.Count == 0)
                     return false;
-                foreach (ViewSpec view in Views)
+                foreach (ViewSpec view in views)
                 {
-                    if (!views.Any(candidate => string.Equals(candidate.Name, view.Name, StringComparison.OrdinalIgnoreCase)) ||
+                    if (!Views.Any(candidate => string.Equals(candidate.Name, view.Name, StringComparison.OrdinalIgnoreCase)) ||
                         !outputPathsByView.ContainsKey(view.Name))
                     {
                         return false;
@@ -719,6 +772,8 @@ namespace EasyEDA_Loader
                 startInfo.ArgumentList.Add(outputDirectory);
                 startInfo.ArgumentList.Add("--size");
                 startInfo.ArgumentList.Add(options.ImageSizePixels.ToString(CultureInfo.InvariantCulture));
+                startInfo.ArgumentList.Add("--views");
+                startInfo.ArgumentList.Add(string.Join(",", views.Select(view => view.Name)));
 
                 using (var process = Process.Start(startInfo))
                 {
@@ -1659,6 +1714,18 @@ namespace EasyEDA_Loader
             return result;
         }
 
+        private static bool HasDuplicateModelNames(IReadOnlyList<string> inputFiles)
+        {
+            var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (string inputFile in inputFiles)
+            {
+                if (!names.Add(Path.GetFileNameWithoutExtension(inputFile)))
+                    return true;
+            }
+
+            return false;
+        }
+
         private static StepProjectionOptions NormalizeOptions(StepProjectionOptions options)
         {
             options = options ?? new StepProjectionOptions();
@@ -1678,7 +1745,9 @@ namespace EasyEDA_Loader
             {
                 ImageSizePixels = options?.ImageSizePixels ?? 1600,
                 PaddingPixels = options?.PaddingPixels ?? 80,
-                WriteMetadata = false
+                WriteMetadata = false,
+                SkipGeometryModelForExternalRender = options?.SkipGeometryModelForExternalRender ?? false,
+                MaxParallelFiles = options?.MaxParallelFiles ?? 1
             };
             clone.ViewNames.Add(viewName);
             return NormalizeOptions(clone);

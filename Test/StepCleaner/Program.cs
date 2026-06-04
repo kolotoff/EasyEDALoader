@@ -35,6 +35,7 @@ namespace StepCleaner.Tests
 
             try
             {
+                Stopwatch fullTestStopwatch = Stopwatch.StartNew();
                 string dataRoot = FindDataRoot();
                 string originalDirectory = Path.Combine(dataRoot, "Original");
                 string cleanDirectory = Path.Combine(dataRoot, "Clean");
@@ -155,6 +156,8 @@ namespace StepCleaner.Tests
                     foreach (string failure in failures)
                         Console.Error.WriteLine("  " + failure);
 
+                    fullTestStopwatch.Stop();
+                    Console.WriteLine("full_test_wall_ms=" + fullTestStopwatch.ElapsedMilliseconds.ToString(CultureInfo.InvariantCulture));
                     return 1;
                 }
 
@@ -164,6 +167,8 @@ namespace StepCleaner.Tests
                     " original file(s), compared " +
                     validatedFiles.Count.ToString(CultureInfo.InvariantCulture) +
                     " validated file(s).");
+                fullTestStopwatch.Stop();
+                Console.WriteLine("full_test_wall_ms=" + fullTestStopwatch.ElapsedMilliseconds.ToString(CultureInfo.InvariantCulture));
                 return 0;
             }
             catch (Exception ex)
@@ -444,6 +449,31 @@ namespace StepCleaner.Tests
                 stepF3DRenderProgram,
                 "model.scivis.array_name",
                 "F3D library helper should preserve the STEP Colors scalar array",
+                failures);
+            AssertContains(
+                stepF3DRenderProgram,
+                "--views",
+                "F3D library helper should render selected side subsets from one STEP load",
+                failures);
+            AssertContains(
+                stepProjectionRenderer,
+                "TryRenderWithF3DLibraryBatch(inputPath, selectedDetectionViews",
+                "highlighted detection projections should try the single-load F3D library batch helper",
+                failures);
+            AssertDoesNotContain(
+                stepProjectionRenderer,
+                "views.Count != Views.Length",
+                "F3D library batch renderer should not be limited to exactly six views",
+                failures);
+            AssertContains(
+                stepProjectionRenderer,
+                "SkipGeometryModelForExternalRender",
+                "verification projection rendering should be able to skip STEP geometry parsing when external rendering succeeds",
+                failures);
+            AssertContains(
+                stepCleanerProgram,
+                "full_test_wall_ms",
+                "full StepCleaner regression timing should print total wall time for before/after comparisons",
                 failures);
             AssertContains(
                 buildAndInstallScript,
@@ -2446,7 +2476,9 @@ namespace StepCleaner.Tests
             {
                 ImageSizePixels = VerificationProjectionImageSizePixels,
                 PaddingPixels = VerificationProjectionPaddingPixels,
-                WriteMetadata = false
+                WriteMetadata = false,
+                SkipGeometryModelForExternalRender = true,
+                MaxParallelFiles = 2
             };
         }
 
@@ -2458,7 +2490,9 @@ namespace StepCleaner.Tests
             {
                 ImageSizePixels = template.ImageSizePixels,
                 PaddingPixels = template.PaddingPixels,
-                WriteMetadata = template.WriteMetadata
+                WriteMetadata = template.WriteMetadata,
+                SkipGeometryModelForExternalRender = template.SkipGeometryModelForExternalRender,
+                MaxParallelFiles = template.MaxParallelFiles
             };
 
             foreach (string viewName in viewNames)

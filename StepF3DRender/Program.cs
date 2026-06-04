@@ -65,6 +65,7 @@ namespace StepF3DRender
             string inputPath = args[1];
             string outputDirectory = args[2];
             int sizePixels = 1600;
+            ViewSpec[] requestedViews = Views;
 
             for (int i = 3; i < args.Length; i++)
             {
@@ -72,6 +73,14 @@ namespace StepF3DRender
                 {
                     if (!int.TryParse(args[++i], NumberStyles.Integer, CultureInfo.InvariantCulture, out sizePixels))
                         throw new ArgumentException("Invalid --size value.");
+                    continue;
+                }
+
+                if (IsOption(args[i], "--views"))
+                {
+                    if (i + 1 >= args.Length)
+                        throw new ArgumentException("--views must include at least one view name.");
+                    requestedViews = ParseViews(args[++i]);
                     continue;
                 }
 
@@ -89,13 +98,53 @@ namespace StepF3DRender
             {
                 InputPath = Path.GetFullPath(inputPath),
                 OutputDirectory = Path.GetFullPath(outputDirectory),
-                SizePixels = sizePixels
+                SizePixels = sizePixels,
+                Views = requestedViews
             };
+        }
+
+        private static ViewSpec[] ParseViews(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+                throw new ArgumentException("--views must include at least one view name.");
+
+            var selectedViews = new List<ViewSpec>();
+            var selectedNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (string rawName in value.Split(','))
+            {
+                string name = rawName.Trim();
+                if (string.IsNullOrWhiteSpace(name))
+                    continue;
+
+                ViewSpec view = FindView(name);
+                if (string.IsNullOrWhiteSpace(view.Name))
+                    throw new ArgumentException("Unknown view name: " + name);
+
+                if (selectedNames.Add(view.Name))
+                    selectedViews.Add(view);
+            }
+
+            if (selectedViews.Count == 0)
+                throw new ArgumentException("--views must include at least one view name.");
+
+            return selectedViews.ToArray();
+        }
+
+        private static ViewSpec FindView(string name)
+        {
+            foreach (ViewSpec view in Views)
+            {
+                if (string.Equals(view.Name, name, StringComparison.OrdinalIgnoreCase))
+                    return view;
+            }
+
+            return default;
         }
 
         private static void WriteUsage()
         {
-            Console.Error.WriteLine("Usage: StepF3DRender --six-sides <input.step> <output-directory> [--size pixels]");
+            Console.Error.WriteLine("Usage: StepF3DRender --six-sides <input.step> <output-directory> [--size pixels] [--views x_plus,y_plus,z_plus]");
         }
 
         private static bool IsOption(string actual, string expected)
@@ -133,7 +182,7 @@ namespace StepF3DRender
                     throw new InvalidOperationException("F3D failed to load STEP file: " + request.InputPath);
 
                 string modelName = Path.GetFileNameWithoutExtension(request.InputPath);
-                foreach (ViewSpec view in Views)
+                foreach (ViewSpec view in request.Views)
                 {
                     string outputPath = Path.Combine(request.OutputDirectory, modelName + "__" + view.Name + ".png");
                     RenderView(window, view, outputPath);
@@ -335,6 +384,7 @@ namespace StepF3DRender
             public string InputPath { get; set; }
             public string OutputDirectory { get; set; }
             public int SizePixels { get; set; }
+            public ViewSpec[] Views { get; set; }
         }
 
         private readonly struct ViewSpec
