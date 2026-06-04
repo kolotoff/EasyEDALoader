@@ -6,7 +6,7 @@
         xmlns:h="clr-namespace:HelixToolkit.Wpf;assembly=HelixToolkit.Wpf"
         xmlns:local="clr-namespace:Standalone"
         mc:Ignorable="d"
-        Title="MainWindow" Height="455" Width="483" Background="#FF313131">
+        Title="EasyEDA Standalone Loader" Height="455" Width="483" Background="#FFF3F3F3">
     <Grid HorizontalAlignment="Stretch" VerticalAlignment="Stretch">
         <Grid.ColumnDefinitions>
             <ColumnDefinition Width="1*"/>
@@ -28,16 +28,16 @@
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto"/>
             </Grid.RowDefinitions>
-            <TextBox x:Name="PartId" Grid.Column="0" TextWrapping="Wrap" Text="C7419871" Background="#FF7F7F7F" Uid="{Binding Text, ElementName=PartId}" HorizontalContentAlignment="Stretch" Margin="0,1,5,1" HorizontalAlignment="Stretch"/>
+            <TextBox x:Name="PartId" Grid.Column="0" TextWrapping="Wrap" Text="C7419871" Background="#FFFFFFFF" AutomationProperties.AutomationId="PartId" HorizontalContentAlignment="Stretch" Margin="0,1,5,1" HorizontalAlignment="Stretch"/>
             <Button x:Name="SearchButton" Content="Search" Grid.Column="1" Padding="5,1,5,1" VerticalContentAlignment="Center" HorizontalAlignment="Stretch" Click="SearchButton_Click"/>
         </Grid>
         <Viewbox x:Name="PreviewBox" Grid.Column="1" Grid.Row="1" MinHeight="50" HorizontalAlignment="Center" Stretch="Uniform" Margin="10,0,10,0">
             <Image x:Name="Thumbnail" Height="50" Width="50"/>
         </Viewbox>
-        <ScrollViewer x:Name="SymbolCanvasView" VerticalAlignment="Stretch" HorizontalAlignment="Stretch" Grid.Column="1" Grid.Row="2" Margin="10,10,10,10" HorizontalScrollBarVisibility="Hidden" VerticalScrollBarVisibility="Hidden" Background="Black">
+        <ScrollViewer x:Name="SymbolCanvasView" VerticalAlignment="Stretch" HorizontalAlignment="Stretch" Grid.Column="1" Grid.Row="2" Margin="10,10,10,10" HorizontalScrollBarVisibility="Hidden" VerticalScrollBarVisibility="Hidden" Background="#FAFAFA">
             <Canvas x:Name="SymbolCanvas" Height="100" Width="100" HorizontalAlignment="Left" VerticalAlignment="Top"/>
         </ScrollViewer>
-        <ScrollViewer x:Name="FootprintCanvasView" VerticalAlignment="Stretch" HorizontalAlignment="Stretch" Grid.Column="1" Grid.Row="3" Margin="10,10,10,10" HorizontalScrollBarVisibility="Hidden" VerticalScrollBarVisibility="Hidden" Background="Black">
+        <ScrollViewer x:Name="FootprintCanvasView" VerticalAlignment="Stretch" HorizontalAlignment="Stretch" Grid.Column="1" Grid.Row="3" Margin="10,10,10,10" HorizontalScrollBarVisibility="Hidden" VerticalScrollBarVisibility="Hidden" Background="#FAFAFA">
             <Canvas x:Name="FootprintCanvas" Height="100" Width="100" HorizontalAlignment="Left" VerticalAlignment="Top"/>
         </ScrollViewer>
         <h:HelixViewport3D x:Name="ModelView" Grid.Column="1" Grid.Row="4" HorizontalAlignment="Stretch" Margin="10,0,10,0">

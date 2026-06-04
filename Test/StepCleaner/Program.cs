@@ -308,6 +308,9 @@ namespace StepCleaner.Tests
             string easyEdaLoader = File.ReadAllText(Path.Combine(repoRoot, "EasyEDA-Loader", "EasyEDALoader.cs"));
             string dialogWindow = File.ReadAllText(Path.Combine(repoRoot, "EasyEDA-Loader", "DialogWindow.cs"));
             string dialogWindowXaml = File.ReadAllText(Path.Combine(repoRoot, "EasyEDA-Loader", "DialogWindow.xaml"));
+            string canvasZoomPanHelper = File.ReadAllText(Path.Combine(repoRoot, "EasyEDA-Loader", "CanvasZoomPanHelper.cs"));
+            string standaloneProject = File.ReadAllText(Path.Combine(repoRoot, "Standalone", "Standalone.csproj"));
+            string standaloneMainWindow = File.ReadAllText(Path.Combine(repoRoot, "Standalone", "MainWindow.xaml.cs"));
             string stepWatermarkCleaner = File.ReadAllText(Path.Combine(repoRoot, "EasyEDA-Loader", "StepWatermarkCleaner.cs"));
             string stepWatermarkCleanVerifier = File.ReadAllText(Path.Combine(repoRoot, "EasyEDA-Loader", "StepWatermarkCleanVerifier.cs"));
             string stepProjectionRenderer = File.ReadAllText(Path.Combine(repoRoot, "EasyEDA-Loader", "StepProjectionRenderer.cs"));
@@ -355,6 +358,26 @@ namespace StepCleaner.Tests
                 modelCache,
                 "GetComponentJsonAsync",
                 "EasyEDA component JSON should be cached under the local loader cache",
+                failures);
+            AssertContains(
+                modelCache,
+                "GetJsonObjectFromStringAsync",
+                "EasyEDA component JSON should cache the raw server response instead of reserializing converter-backed objects",
+                failures);
+            AssertContains(
+                modelCache,
+                "IsUsableComponentRoot",
+                "EasyEDA component JSON cache should reject stale files that no longer deserialize into preview-ready component data",
+                failures);
+            AssertContains(
+                modelCache,
+                "api.GetComponentJsonStringAsync(lcscId, cancellationToken)",
+                "EasyEDA component JSON cache should download raw JSON so converter WriteJson methods cannot break preview loading",
+                failures);
+            AssertContains(
+                File.ReadAllText(Path.Combine(repoRoot, "EasyEDA-Loader", "API", "EasyedaApi.cs")),
+                "GetComponentJsonStringAsync",
+                "EasyEDA API should expose raw component JSON for cache writes",
                 failures);
             AssertContains(
                 modelCache,
@@ -857,6 +880,76 @@ namespace StepCleaner.Tests
                 dialogWindow,
                 "operationLogTextBox.Visibility",
                 "operation log hide/show button should collapse the log text box",
+                failures);
+            AssertContains(
+                standaloneProject,
+                "<TargetFramework>net8.0-windows</TargetFramework>",
+                "standalone app should target the same Windows runtime family as the shared loader project",
+                failures);
+            AssertContains(
+                standaloneMainWindow,
+                "GetZInfoFromOrigin(ctx)",
+                "standalone app should use the current raw OBJ Z-info API instead of the removed Z-offset helper",
+                failures);
+            AssertContains(
+                standaloneMainWindow,
+                "ModelCache.GetSearchProductInfoAsync",
+                "standalone search should use the same cached EasyEDA product lookup as the dialog",
+                failures);
+            AssertContains(
+                standaloneMainWindow,
+                "ModelCache.GetComponentJsonAsync",
+                "standalone preview loading should use cached component JSON instead of direct live API calls",
+                failures);
+            AssertContains(
+                standaloneMainWindow,
+                "LoadSelectedPartAsync",
+                "standalone should load preview for the selected search result instead of requiring row double-click",
+                failures);
+            AssertContains(
+                standaloneMainWindow,
+                "_previewLoadVersion",
+                "standalone preview loads should ignore stale async work from previous row selections",
+                failures);
+            AssertContains(
+                standaloneMainWindow,
+                "Interlocked.Increment(ref _previewLoadVersion)",
+                "standalone preview loads should version each row load before awaiting remote/cache data",
+                failures);
+            AssertContains(
+                standaloneMainWindow,
+                "SearchBox.SelectedItem is EasyedaApi.PartInfo",
+                "standalone Load button should prefer the selected row part over raw search text like gd32f103",
+                failures);
+            AssertContains(
+                standaloneMainWindow,
+                "DrawSymbolPreviewSafely",
+                "standalone should isolate symbol drawing failures from footprint and 3D preview loading",
+                failures);
+            AssertContains(
+                standaloneMainWindow,
+                "DrawFootprintPreviewSafely",
+                "standalone should isolate footprint drawing failures from 3D preview loading",
+                failures);
+            AssertContains(
+                standaloneMainWindow,
+                "No component preview data was returned",
+                "standalone should show an in-pane message instead of crashing on missing component JSON",
+                failures);
+            AssertContains(
+                canvasZoomPanHelper,
+                "GetElementBounds",
+                "canvas zoom helper should calculate primitive geometry bounds instead of relying only on ActualWidth",
+                failures);
+            AssertContains(
+                canvasZoomPanHelper,
+                "if (child is Line line)",
+                "canvas zoom helper should include WPF Line coordinates when fitting symbol and footprint previews",
+                failures);
+            AssertContains(
+                canvasZoomPanHelper,
+                "shape.RenderedGeometry.Bounds",
+                "canvas zoom helper should include Path and Shape rendered geometry bounds when fitting previews",
                 failures);
             AssertContains(
                 dialogWindow,

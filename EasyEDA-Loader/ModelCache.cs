@@ -41,10 +41,11 @@ namespace EasyEDA_Loader
             if (api == null)
                 throw new ArgumentNullException(nameof(api));
 
-            return GetJsonObjectAsync(
+            return GetJsonObjectFromStringAsync<Root>(
                 Path.Combine(GetComponentCacheDirectory(lcscId), "component.json"),
-                () => api.GetComponentJsonAsync(lcscId, cancellationToken),
-                cancellationToken);
+                () => api.GetComponentJsonStringAsync(lcscId, cancellationToken),
+                cancellationToken,
+                IsUsableComponentRoot);
         }
 
         public static Task<EasyedaApi.ProductInfo> GetProductInfoAsync(
@@ -284,6 +285,51 @@ namespace EasyEDA_Loader
             }
 
             return data;
+        }
+
+        private static async Task<T> GetJsonObjectFromStringAsync<T>(
+            string cachePath,
+            Func<Task<string>> downloadJson,
+            CancellationToken cancellationToken,
+            Func<T, bool> isValid)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (File.Exists(cachePath))
+            {
+                try
+                {
+                    string cachedJson = File.ReadAllText(cachePath, Encoding.UTF8);
+                    if (!string.IsNullOrWhiteSpace(cachedJson))
+                    {
+                        T cached = JsonConvert.DeserializeObject<T>(cachedJson);
+                        if (cached != null && (isValid == null || isValid(cached)))
+                            return cached;
+                    }
+                }
+                catch
+                {
+                }
+            }
+
+            if (downloadJson == null)
+                throw new ArgumentNullException(nameof(downloadJson));
+
+            string json = await downloadJson().ConfigureAwait(false);
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (string.IsNullOrWhiteSpace(json))
+                return default;
+
+            Directory.CreateDirectory(Path.GetDirectoryName(cachePath));
+            File.WriteAllText(cachePath, json, Encoding.UTF8);
+
+            return JsonConvert.DeserializeObject<T>(json);
+        }
+
+        private static bool IsUsableComponentRoot(Root root)
+        {
+            return root?.Component != null;
         }
 
         private static async Task<byte[]> GetOrDownloadAsync(

@@ -3,6 +3,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Shapes;
 
 namespace EasyEDA_Loader
 {
@@ -92,20 +93,97 @@ namespace EasyEDA_Loader
 
             foreach (UIElement child in _canvas.Children)
             {
-                if (child is FrameworkElement fe)
-                {
-                    double left = Canvas.GetLeft(fe);
-                    double top = Canvas.GetTop(fe);
-
-                    if (double.IsNaN(left)) left = 0;
-                    if (double.IsNaN(top)) top = 0;
-
-                    Rect childRect = new Rect(left, top, fe.ActualWidth, fe.ActualHeight);
+                Rect childRect = GetElementBounds(child);
+                if (!childRect.IsEmpty)
                     bounds.Union(childRect);
-                }
             }
 
             return bounds;
+        }
+
+        private static Rect GetElementBounds(UIElement child)
+        {
+            if (child == null)
+                return Rect.Empty;
+
+            if (child is Line line)
+            {
+                Rect lineBounds = new Rect(
+                    new Point(Math.Min(line.X1, line.X2), Math.Min(line.Y1, line.Y2)),
+                    new Point(Math.Max(line.X1, line.X2), Math.Max(line.Y1, line.Y2)));
+                InflateForStroke(lineBounds, line.StrokeThickness, out lineBounds);
+                return OffsetForCanvas(line, lineBounds);
+            }
+
+            if (child is Shape shape)
+            {
+                Rect shapeBounds = shape.RenderedGeometry.Bounds;
+                if (shapeBounds.IsEmpty || shapeBounds.Width == 0 && shapeBounds.Height == 0)
+                    shapeBounds = GetFrameworkElementBounds(shape);
+
+                InflateForStroke(shapeBounds, shape.StrokeThickness, out shapeBounds);
+                return OffsetForCanvas(shape, shapeBounds);
+            }
+
+            if (child is FrameworkElement frameworkElement)
+                return OffsetForCanvas(frameworkElement, GetFrameworkElementBounds(frameworkElement));
+
+            Rect visualBounds = VisualTreeHelper.GetDescendantBounds(child);
+            return OffsetForCanvas(child, visualBounds);
+        }
+
+        private static Rect GetFrameworkElementBounds(FrameworkElement element)
+        {
+            if (element == null)
+                return Rect.Empty;
+
+            double width = element.ActualWidth;
+            double height = element.ActualHeight;
+
+            if (width <= 0 || height <= 0)
+            {
+                element.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+                if (width <= 0)
+                    width = element.DesiredSize.Width;
+                if (height <= 0)
+                    height = element.DesiredSize.Height;
+            }
+
+            if (width <= 0 && !double.IsNaN(element.Width))
+                width = element.Width;
+            if (height <= 0 && !double.IsNaN(element.Height))
+                height = element.Height;
+
+            if (width <= 0 && height <= 0)
+                return Rect.Empty;
+
+            return new Rect(0, 0, Math.Max(width, 0), Math.Max(height, 0));
+        }
+
+        private static Rect OffsetForCanvas(UIElement element, Rect bounds)
+        {
+            if (bounds.IsEmpty)
+                return bounds;
+
+            double left = Canvas.GetLeft(element);
+            double top = Canvas.GetTop(element);
+
+            if (!double.IsNaN(left))
+                bounds.Offset(left, 0);
+            if (!double.IsNaN(top))
+                bounds.Offset(0, top);
+
+            return bounds;
+        }
+
+        private static void InflateForStroke(Rect bounds, double strokeThickness, out Rect inflatedBounds)
+        {
+            inflatedBounds = bounds;
+            if (inflatedBounds.IsEmpty)
+                return;
+
+            double padding = Math.Max(strokeThickness, 1.0) / 2.0;
+            inflatedBounds.Inflate(padding, padding);
         }
 
         private void Canvas_MouseWheel(object sender, MouseWheelEventArgs e)

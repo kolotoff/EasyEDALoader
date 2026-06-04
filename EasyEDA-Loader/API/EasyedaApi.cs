@@ -53,6 +53,19 @@ namespace EasyEDA_Loader
 
         public async Task<Root> GetComponentJsonAsync(string lcscId, CancellationToken cancellationToken)
         {
+            string content = await GetComponentJsonStringAsync(lcscId, cancellationToken).ConfigureAwait(false);
+            if (string.IsNullOrWhiteSpace(content))
+                return null;
+
+            var result = JsonConvert.DeserializeObject<Root>(content);
+            Debug.WriteLine($"[API] Deserialized successfully");
+            Console.WriteLine($"[API] Deserialized successfully");
+
+            return result;
+        }
+
+        public async Task<string> GetComponentJsonStringAsync(string lcscId, CancellationToken cancellationToken)
+        {
             string url = $"https://easyeda.com/api/products/{lcscId}/components?version={Version}";
             Debug.WriteLine($"[API] GET Request: {url}");
             Console.WriteLine($"[API] GET Request: {url}");
@@ -69,12 +82,8 @@ namespace EasyEDA_Loader
                 Debug.WriteLine($"[API] Response Length: {content.Length} characters");
                 Console.WriteLine($"[API] Response Length: {content.Length} characters");
                 LogResponse(content);
-                
-                var result = JsonConvert.DeserializeObject<Root>(content);
-                Debug.WriteLine($"[API] Deserialized successfully");
-                Console.WriteLine($"[API] Deserialized successfully");
-                
-                return result;
+
+                return content;
             }
             catch (OperationCanceledException cancel)
             {
