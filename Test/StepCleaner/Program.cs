@@ -316,6 +316,16 @@ namespace StepCleaner.Tests
                 failures);
             AssertContains(
                 footprint3dModel,
+                "CleanStepModelFastWithReport",
+                "footprint import clean-cache misses should skip projection verification and use the fast cleaner report path",
+                failures);
+            AssertContains(
+                dialogWindow,
+                "CleanStepModelFastWithReport",
+                "preview clean STEP cache misses should skip projection verification and use the fast cleaner report path",
+                failures);
+            AssertContains(
+                footprint3dModel,
                 "CleanStepCacheKeys.GetCleanModeKey(GetSafeCacheFileName(), ctx.CleanText)",
                 "footprint import should cache separate watermark-only and clean-text STEP outputs",
                 failures);
@@ -451,8 +461,8 @@ namespace StepCleaner.Tests
                 failures);
             AssertContains(
                 stepCleanerProgram,
-                "StepWatermarkClean" + "Verifier.CleanOrThrow",
-                "measurement command should exercise the same watermark cleaner verifier as import",
+                "CleanStepModelFastWithReport",
+                "measurement command should exercise the same fast watermark clean-cache miss path as import",
                 failures);
             AssertContains(
                 stepWatermarkCleaner,
@@ -739,10 +749,8 @@ namespace StepCleaner.Tests
                             () => System.Threading.Tasks.Task.Run(
                                 () =>
                                 {
-                                    cleanMissResult = StepWatermarkCleanVerifier.CleanOrThrowWithReport(
+                                    cleanMissResult = StepWatermarkCleanVerifier.CleanStepModelFastWithReport(
                                         originalStep,
-                                        model.Uuid,
-                                        CreateMeasurementVerificationDirectory(partNumber, model.Uuid),
                                         cleanText);
                                     return cleanMissResult.CleanStep;
                                 },

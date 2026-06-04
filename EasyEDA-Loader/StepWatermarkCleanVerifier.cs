@@ -44,6 +44,25 @@ namespace EasyEDA_Loader
             return CleanOrThrowWithReport(originalStep, modelName, verificationDirectory, cleanText).CleanStep;
         }
 
+        public static StepWatermarkCleanVerifierResult CleanStepModelFastWithReport(byte[] originalStep, bool cleanText = false)
+        {
+            if (originalStep == null)
+                throw new ArgumentNullException(nameof(originalStep));
+
+            var cleanReport = StepWatermarkCleaner.CleanWithReport(
+                Encoding.Latin1.GetString(originalStep),
+                new StepWatermarkCleanerOptions
+                {
+                    CleanText = cleanText
+                });
+
+            return new StepWatermarkCleanVerifierResult
+            {
+                CleanStep = Encoding.Latin1.GetBytes(cleanReport.CleanedStep),
+                CleanReport = cleanReport
+            };
+        }
+
         public static StepWatermarkCleanVerifierResult CleanOrThrowWithReport(byte[] originalStep, string modelName, string verificationDirectory, bool cleanText = false)
         {
             if (originalStep == null)
@@ -55,13 +74,9 @@ namespace EasyEDA_Loader
 
             Directory.CreateDirectory(verificationDirectory);
 
-            var cleanReport = StepWatermarkCleaner.CleanWithReport(
-                Encoding.Latin1.GetString(originalStep),
-                new StepWatermarkCleanerOptions
-                {
-                    CleanText = cleanText
-                });
-            byte[] cleanStep = Encoding.Latin1.GetBytes(cleanReport.CleanedStep);
+            StepWatermarkCleanVerifierResult cleanResult = CleanStepModelFastWithReport(originalStep, cleanText);
+            StepWatermarkCleanerReport cleanReport = cleanResult.CleanReport;
+            byte[] cleanStep = cleanResult.CleanStep;
 
             string safeModelName = SanitizeFileName(Path.GetFileNameWithoutExtension(modelName));
             string originalPath = Path.Combine(verificationDirectory, safeModelName + ".original.step");

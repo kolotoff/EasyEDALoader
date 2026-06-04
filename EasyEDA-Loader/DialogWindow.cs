@@ -687,16 +687,9 @@ namespace EasyEDA_Loader
             ModelCacheResult cleanResult = await ModelCache.GetCleanStepModelWithStatusAsync(
                 cleanModeKey,
                 () => Task.Run(() =>
-                    StepWatermarkCleanVerifier.CleanOrThrow(
+                    StepWatermarkCleanVerifier.CleanStepModelFastWithReport(
                         originalStepData,
-                        safeName,
-                        Path.Combine(
-                            ModelCache.GetLocalDataRoot(),
-                            "StepCleanerReports",
-                            safeName +
-                            (cleanText ? "_text_" : "_") +
-                            DateTime.Now.ToString("yyyyMMdd_HHmmss", CultureInfo.InvariantCulture)),
-                        cleanText),
+                        cleanText).CleanStep,
                     cancellationToken),
                 cancellationToken);
             EasyEDALoaderModule.Trace(

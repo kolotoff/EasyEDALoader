@@ -93,11 +93,9 @@ namespace EasyEDA_Loader
                     string cleanCacheKey = CleanStepCacheKeys.GetCleanModeKey(GetSafeCacheFileName(), ctx.CleanText);
                     ModelCacheResult cleanResult = ModelImportTrace.Measure("watermark_clean_cache", modelTraceIdentifier, () => ModelCache.GetCleanStepModelWithStatusAsync(
                             cleanCacheKey,
-                            () => Task.Run(() => StepWatermarkCleanVerifier.CleanOrThrow(
+                            () => Task.Run(() => StepWatermarkCleanVerifier.CleanStepModelFastWithReport(
                                 originalModel,
-                                GetSafeCacheFileName(),
-                                CreateVerificationDirectory(),
-                                ctx.CleanText),
+                                ctx.CleanText).CleanStep,
                                 ctx.CancelToken),
                             ctx.CancelToken)
                         .ConfigureAwait(false)
