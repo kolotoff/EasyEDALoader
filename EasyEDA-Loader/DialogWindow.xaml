@@ -372,9 +372,16 @@
                         Content="Remove cache"
                         Width="105"
                         Height="24"
-                        Margin="0,0,100,0"
+                        Margin="0,0,8,0"
                         IsEnabled="False"
                         Click="RemoveCacheButton_Click"/>
+                <Button x:Name="openStepCacheButton"
+                        Content="Open STEP Cache"
+                        Width="120"
+                        Height="24"
+                        Margin="0,0,100,0"
+                        IsEnabled="False"
+                        Click="OpenStepCacheButton_Click"/>
                 <Button x:Name="addToLibraryButton"
                         Content="Import to temp"
                         Width="110"

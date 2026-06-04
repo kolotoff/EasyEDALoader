@@ -223,6 +223,11 @@ namespace EasyEDA_Loader
             return Path.Combine(GetModelCacheDirectory("Raw"), GetSafeFileName(modelUuid) + ".obj");
         }
 
+        public static string GetModelCacheRoot()
+        {
+            return Path.Combine(GetLocalDataRoot(), "ModelCache");
+        }
+
         public static string GetLocalDataRoot()
         {
             string localApplicationData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
@@ -309,7 +314,7 @@ namespace EasyEDA_Loader
 
         private static string GetModelCacheDirectory(string kind)
         {
-            return Path.Combine(GetLocalDataRoot(), "ModelCache", kind);
+            return Path.Combine(GetModelCacheRoot(), kind);
         }
 
         private static string GetComponentCacheDirectory(string partNumber)

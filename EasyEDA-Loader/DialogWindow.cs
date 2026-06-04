@@ -99,6 +99,7 @@ namespace EasyEDA_Loader
             SetOperationProgress(false);
             RestoreLastSession();
             UpdateCleanTextControlState();
+            UpdateModelActionButtonState();
             searchTextBox.Focus();
             searchTextBox.CaretIndex = searchTextBox.Text?.Length ?? 0;
         }
@@ -1078,6 +1079,8 @@ namespace EasyEDA_Loader
                 regenerateCleanStepButton.IsEnabled = hasModel && RemoveWatermark;
             if (removeCacheButton != null)
                 removeCacheButton.IsEnabled = hasSelectedComponentCache;
+            if (openStepCacheButton != null)
+                openStepCacheButton.IsEnabled = !_isCriticalOperationActive;
         }
 
         private bool IsCurrentPreviewForSelectedComponent(out PartInfoViewModel partViewModel)
@@ -1414,6 +1417,8 @@ namespace EasyEDA_Loader
                     regenerateCleanStepButton.IsEnabled = false;
                 if (removeCacheButton != null)
                     removeCacheButton.IsEnabled = false;
+                if (openStepCacheButton != null)
+                    openStepCacheButton.IsEnabled = false;
             }
             cancelButton.IsEnabled = isEnabled;
             removeWatermarkCheckBox.IsEnabled = isEnabled;
@@ -1698,6 +1703,25 @@ namespace EasyEDA_Loader
                 Mouse.OverrideCursor = null;
                 SetImportControlsEnabled(true);
                 UpdateModelActionButtonState();
+            }
+        }
+
+        private void OpenStepCacheButton_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                string cacheRoot = ModelCache.GetModelCacheRoot();
+                Directory.CreateDirectory(cacheRoot);
+                Process.Start(new ProcessStartInfo
+                {
+                    FileName = cacheRoot,
+                    UseShellExecute = true
+                });
+            }
+            catch (Exception ex)
+            {
+                EasyEDALoaderModule.Trace("Failed to open STEP cache folder: " + ex);
+                MessageBox.Show($"Failed to open STEP cache folder: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
             }
         }
 

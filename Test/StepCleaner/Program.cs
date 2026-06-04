@@ -368,6 +368,11 @@ namespace StepCleaner.Tests
                 failures);
             AssertContains(
                 modelCache,
+                "GetModelCacheRoot",
+                "model cache should expose the cached 3D model root folder for Explorer",
+                failures);
+            AssertContains(
+                modelCache,
                 "DeleteSelectedComponentCache",
                 "the dialog should be able to remove all cache files for the selected component",
                 failures);
@@ -679,9 +684,24 @@ namespace StepCleaner.Tests
                 "dialog should expose a Remove cache button near model cache actions",
                 failures);
             AssertContains(
+                dialogWindowXaml,
+                "openStepCacheButton",
+                "dialog should expose an Open STEP Cache button near model cache actions",
+                failures);
+            AssertContains(
                 dialogWindow,
                 "RemoveCacheButton_Click",
                 "Remove cache button should be wired to selected-component cache cleanup",
+                failures);
+            AssertContains(
+                dialogWindow,
+                "OpenStepCacheButton_Click",
+                "Open STEP Cache button should be wired to an Explorer folder opener",
+                failures);
+            AssertContains(
+                dialogWindow,
+                "ModelCache.GetModelCacheRoot()",
+                "Open STEP Cache should open the cached 3D model folder",
                 failures);
             AssertContains(
                 dialogWindow,
