@@ -294,6 +294,11 @@ namespace StepCleaner.Tests
             string stepProjectionRenderer = File.ReadAllText(Path.Combine(repoRoot, "EasyEDA-Loader", "StepProjectionRenderer.cs"));
             string stepSilhouetteProjection = File.ReadAllText(Path.Combine(repoRoot, "EasyEDA-Loader", "StepSilhouetteProjection.cs"));
             string occtHiddenLineExtractor = File.ReadAllText(Path.Combine(repoRoot, "StepOcctHlr", "OcctHiddenLineExtractor.cs"));
+            string buildAndInstallScript = File.ReadAllText(Path.Combine(repoRoot, "BuildAndInstall-Altium.ps1"));
+            string stepF3DRenderProgramPath = Path.Combine(repoRoot, "StepF3DRender", "Program.cs");
+            string stepF3DRenderProgram = File.Exists(stepF3DRenderProgramPath)
+                ? File.ReadAllText(stepF3DRenderProgramPath)
+                : string.Empty;
             string stepCleanerProgram = File.ReadAllText(Path.Combine(repoRoot, "Test", "StepCleaner", "Program.cs"));
             AssertContains(
                 footprint3dModel,
@@ -419,6 +424,36 @@ namespace StepCleaner.Tests
                 stepProjectionRenderer,
                 "TryRenderWithF3D",
                 "colored projection PNG rendering should keep F3D as the color-correct renderer until native XCAFPrs_AISObject support exists",
+                failures);
+            AssertContains(
+                stepProjectionRenderer,
+                "TryRenderWithF3DLibraryBatch",
+                "colored projection PNG rendering should try the single-load F3D library batch helper before f3d-console fallback",
+                failures);
+            AssertContains(
+                stepF3DRenderProgram,
+                "f3d_scene_add",
+                "F3D library helper should load the STEP scene through f3d_c_api instead of f3d-console",
+                failures);
+            AssertContains(
+                stepF3DRenderProgram,
+                "--six-sides",
+                "F3D library helper should expose a six-side render command",
+                failures);
+            AssertContains(
+                stepF3DRenderProgram,
+                "model.scivis.array_name",
+                "F3D library helper should preserve the STEP Colors scalar array",
+                failures);
+            AssertContains(
+                buildAndInstallScript,
+                "StepF3DRender\\StepF3DRender.csproj",
+                "Altium install script should build the F3D library render helper",
+                failures);
+            AssertContains(
+                buildAndInstallScript,
+                "StepF3DRender.exe",
+                "Altium install script should copy the F3D library render helper",
                 failures);
             AssertContains(
                 stepProjectionRenderer,

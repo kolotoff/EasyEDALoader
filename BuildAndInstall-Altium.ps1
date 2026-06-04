@@ -31,8 +31,10 @@ function Assert-AltiumClosed {
 $repoRoot = $PSScriptRoot
 $projectPath = Join-Path $repoRoot "EasyEDA-Loader\EasyEDA-Loader.csproj"
 $helperProjectPath = Join-Path $repoRoot "StepOcctHlr\StepOcctHlr.csproj"
+$f3dHelperProjectPath = Join-Path $repoRoot "StepF3DRender\StepF3DRender.csproj"
 $sourceDir = Split-Path -Parent $projectPath
 $helperSourceDir = Split-Path -Parent $helperProjectPath
+$f3dHelperSourceDir = Split-Path -Parent $f3dHelperProjectPath
 $installDir = Join-Path $AltiumProfile "Extensions\EasyEDA-Loader"
 $registryPath = Join-Path $AltiumProfile "Extensions\ExtensionsRegistry.xml"
 
@@ -42,6 +44,10 @@ if (-not (Test-Path -LiteralPath $projectPath)) {
 
 if (-not (Test-Path -LiteralPath $helperProjectPath)) {
     throw "OCCT HLR helper project file was not found: $helperProjectPath"
+}
+
+if (-not (Test-Path -LiteralPath $f3dHelperProjectPath)) {
+    throw "F3D render helper project file was not found: $f3dHelperProjectPath"
 }
 
 if (-not (Test-Path -LiteralPath $registryPath)) {
@@ -64,6 +70,12 @@ Write-Step "Building OCCT HLR helper ($Configuration)"
 dotnet build $helperProjectPath -c $Configuration --nologo
 if ($LASTEXITCODE -ne 0) {
     throw "dotnet build failed for OCCT HLR helper with exit code $LASTEXITCODE."
+}
+
+Write-Step "Building F3D render helper ($Configuration)"
+dotnet build $f3dHelperProjectPath -c $Configuration --nologo
+if ($LASTEXITCODE -ne 0) {
+    throw "dotnet build failed for F3D render helper with exit code $LASTEXITCODE."
 }
 
 Assert-AltiumClosed
@@ -97,6 +109,23 @@ if (-not (Test-Path -LiteralPath $builtHelperExe)) {
     throw "Built OCCT HLR helper executable was not found: $builtHelperExe"
 }
 
+[xml]$f3dHelperProjectXml = Get-Content -LiteralPath $f3dHelperProjectPath
+$f3dHelperTargetFramework = @($f3dHelperProjectXml.Project.PropertyGroup.TargetFramework | Where-Object { $_ } | Select-Object -First 1)[0]
+if ([string]::IsNullOrWhiteSpace($f3dHelperTargetFramework)) {
+    $f3dHelperTargetFramework = "net8.0-windows7.0"
+}
+
+$f3dHelperRuntimeIdentifier = @($f3dHelperProjectXml.Project.PropertyGroup.RuntimeIdentifier | Where-Object { $_ } | Select-Object -First 1)[0]
+$f3dHelperBuildDir = Join-Path $f3dHelperSourceDir "bin\$Configuration\$f3dHelperTargetFramework"
+if (-not [string]::IsNullOrWhiteSpace($f3dHelperRuntimeIdentifier)) {
+    $f3dHelperBuildDir = Join-Path $f3dHelperBuildDir $f3dHelperRuntimeIdentifier
+}
+
+$builtF3DHelperExe = Join-Path $f3dHelperBuildDir "StepF3DRender.exe"
+if (-not (Test-Path -LiteralPath $builtF3DHelperExe)) {
+    throw "Built F3D render helper executable was not found: $builtF3DHelperExe"
+}
+
 Write-Step "Installing to Altium extension folder"
 New-Item -ItemType Directory -Path $installDir -Force | Out-Null
 Copy-Item -Path (Join-Path $buildDir "*") -Destination $installDir -Force
@@ -107,10 +136,19 @@ $helperInstallDir = Join-Path $installDir "StepOcctHlr"
 New-Item -ItemType Directory -Path $helperInstallDir -Force | Out-Null
 Copy-Item -Path (Join-Path $helperBuildDir "*") -Destination $helperInstallDir -Recurse -Force
 
+$f3dHelperInstallDir = Join-Path $installDir "StepF3DRender"
+New-Item -ItemType Directory -Path $f3dHelperInstallDir -Force | Out-Null
+Copy-Item -Path (Join-Path $f3dHelperBuildDir "*") -Destination $f3dHelperInstallDir -Recurse -Force
+
 $installedDll = Join-Path $installDir "EasyEDA-Loader.dll"
 $installedHelperExe = Join-Path $helperInstallDir "StepOcctHlr.exe"
 if (-not (Test-Path -LiteralPath $installedHelperExe)) {
     throw "Installed OCCT HLR helper executable was not found: $installedHelperExe"
+}
+
+$installedF3DHelperExe = Join-Path $f3dHelperInstallDir "StepF3DRender.exe"
+if (-not (Test-Path -LiteralPath $installedF3DHelperExe)) {
+    throw "Installed F3D render helper executable was not found: $installedF3DHelperExe"
 }
 
 $assembly = [System.Reflection.AssemblyName]::GetAssemblyName($installedDll)
@@ -135,11 +173,14 @@ $easyEdaItem = @($registryXml.Extensions.Item | Where-Object { $_.HRID -eq "Easy
 
 $hash = (Get-FileHash -LiteralPath $installedDll -Algorithm SHA256).Hash
 $helperHash = (Get-FileHash -LiteralPath $installedHelperExe -Algorithm SHA256).Hash
+$f3dHelperHash = (Get-FileHash -LiteralPath $installedF3DHelperExe -Algorithm SHA256).Hash
 Write-Host "Installed DLL: $installedDll"
 Write-Host "Assembly version: $version"
 Write-Host "SHA256: $hash"
 Write-Host "Installed OCCT HLR helper: $installedHelperExe"
 Write-Host "OCCT HLR helper SHA256: $helperHash"
+Write-Host "Installed F3D render helper: $installedF3DHelperExe"
+Write-Host "F3D render helper SHA256: $f3dHelperHash"
 Write-Host "Registry Items=$registryItems NonItem=$nonItemNodes EasyEDA=$($easyEdaItem.Version) VersionGuid=$($easyEdaItem.VersionGuid)"
 
 if (-not $NoLaunch) {

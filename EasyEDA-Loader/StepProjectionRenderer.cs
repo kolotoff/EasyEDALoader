@@ -6,6 +6,7 @@ using System.IO;
 using System.Linq;
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Threading.Tasks;
 using SkiaSharp;
 
 namespace EasyEDA_Loader
@@ -114,12 +115,19 @@ namespace EasyEDA_Loader
                     outputPathsByView,
                     options,
                     null);
+            bool renderedWithF3DLibraryBatch =
+                !renderedWithOpenCascadeBatch &&
+                TryRenderWithF3DLibraryBatch(
+                    inputPath,
+                    selectedViews,
+                    outputPathsByView,
+                    options);
 
             foreach (ViewSpec view in selectedViews)
             {
                 ProjectionTransform transform = transformsByView[view.Name];
                 string outputPath = outputPathsByView[view.Name];
-                if (!renderedWithOpenCascadeBatch)
+                if (!renderedWithOpenCascadeBatch && !renderedWithF3DLibraryBatch)
                     RenderProjection(inputPath, drawingModel, view, transform, outputPath, options);
                 outputFiles.Add(outputPath);
 
@@ -662,6 +670,96 @@ namespace EasyEDA_Loader
             return File.Exists(outputPath) && new FileInfo(outputPath).Length > 0;
         }
 
+        private static bool TryRenderWithF3DLibraryBatch(
+            string inputPath,
+            IReadOnlyList<ViewSpec> views,
+            IReadOnlyDictionary<string, string> outputPathsByView,
+            StepProjectionOptions options)
+        {
+            try
+            {
+                string executable = FindF3DRenderExecutable();
+                if (string.IsNullOrEmpty(executable))
+                    return false;
+
+                if (string.IsNullOrWhiteSpace(inputPath) || !File.Exists(inputPath))
+                    return false;
+
+                string extension = Path.GetExtension(inputPath);
+                if (!string.Equals(extension, ".step", StringComparison.OrdinalIgnoreCase) &&
+                    !string.Equals(extension, ".stp", StringComparison.OrdinalIgnoreCase))
+                    return false;
+
+                if (views == null || views.Count != Views.Length)
+                    return false;
+                foreach (ViewSpec view in Views)
+                {
+                    if (!views.Any(candidate => string.Equals(candidate.Name, view.Name, StringComparison.OrdinalIgnoreCase)) ||
+                        !outputPathsByView.ContainsKey(view.Name))
+                    {
+                        return false;
+                    }
+                }
+
+                string outputDirectory = Path.GetDirectoryName(outputPathsByView[views[0].Name]);
+                if (string.IsNullOrWhiteSpace(outputDirectory))
+                    return false;
+
+                var startInfo = new ProcessStartInfo
+                {
+                    FileName = executable,
+                    WorkingDirectory = Path.GetDirectoryName(executable),
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                    RedirectStandardError = true,
+                    RedirectStandardOutput = true
+                };
+                startInfo.ArgumentList.Add("--six-sides");
+                startInfo.ArgumentList.Add(inputPath);
+                startInfo.ArgumentList.Add(outputDirectory);
+                startInfo.ArgumentList.Add("--size");
+                startInfo.ArgumentList.Add(options.ImageSizePixels.ToString(CultureInfo.InvariantCulture));
+
+                using (var process = Process.Start(startInfo))
+                {
+                    if (process == null)
+                        return false;
+
+                    Task<string> standardOutputTask = process.StandardOutput.ReadToEndAsync();
+                    Task<string> standardErrorTask = process.StandardError.ReadToEndAsync();
+                    if (!process.WaitForExit(30000))
+                    {
+                        try { process.Kill(); }
+                        catch { }
+                        return false;
+                    }
+
+                    process.WaitForExit();
+                    string standardOutput = standardOutputTask.GetAwaiter().GetResult();
+                    string standardError = standardErrorTask.GetAwaiter().GetResult();
+                    if (process.ExitCode != 0)
+                    {
+                        Debug.WriteLine("F3D library batch render failed: " + FirstNonEmpty(standardError.Trim(), standardOutput.Trim(), "No error output."));
+                        return false;
+                    }
+                }
+
+                foreach (ViewSpec view in views)
+                {
+                    string outputPath = outputPathsByView[view.Name];
+                    if (!File.Exists(outputPath) || new FileInfo(outputPath).Length == 0)
+                        return false;
+                }
+
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine("F3D library batch render failed: " + ex.Message);
+                return false;
+            }
+        }
+
         private static void AddF3DViewArguments(System.Collections.ObjectModel.Collection<string> arguments, ViewSpec view)
         {
             switch (view.Name)
@@ -713,6 +811,87 @@ namespace EasyEDA_Loader
             }
 
             return null;
+        }
+
+        private static string FindF3DRenderExecutable()
+        {
+            string configuredPath = Environment.GetEnvironmentVariable("STEPCLEANER_F3D_RENDER");
+            if (!string.IsNullOrWhiteSpace(configuredPath) && File.Exists(configuredPath))
+                return configuredPath;
+
+            foreach (string baseDirectory in GetF3DRenderBaseDirectories())
+            {
+                string local = Path.Combine(baseDirectory, "StepF3DRender.exe");
+                if (File.Exists(local))
+                    return local;
+
+                string sibling = Path.Combine(baseDirectory, "StepF3DRender", "StepF3DRender.exe");
+                if (File.Exists(sibling))
+                    return sibling;
+
+                string solutionDebug = Path.GetFullPath(Path.Combine(baseDirectory, "..", "..", "..", "..", "StepF3DRender", "bin", "Debug", "net8.0-windows7.0", "win-x64", "StepF3DRender.exe"));
+                if (File.Exists(solutionDebug))
+                    return solutionDebug;
+
+                string solutionRelease = Path.GetFullPath(Path.Combine(baseDirectory, "..", "..", "..", "..", "StepF3DRender", "bin", "Release", "net8.0-windows7.0", "win-x64", "StepF3DRender.exe"));
+                if (File.Exists(solutionRelease))
+                    return solutionRelease;
+
+                string testHarnessDebug = Path.GetFullPath(Path.Combine(baseDirectory, "..", "..", "..", "..", "..", "StepF3DRender", "bin", "Debug", "net8.0-windows7.0", "win-x64", "StepF3DRender.exe"));
+                if (File.Exists(testHarnessDebug))
+                    return testHarnessDebug;
+
+                string testHarnessRelease = Path.GetFullPath(Path.Combine(baseDirectory, "..", "..", "..", "..", "..", "StepF3DRender", "bin", "Release", "net8.0-windows7.0", "win-x64", "StepF3DRender.exe"));
+                if (File.Exists(testHarnessRelease))
+                    return testHarnessRelease;
+            }
+
+            return null;
+        }
+
+        private static string FirstNonEmpty(params string[] values)
+        {
+            if (values == null)
+                return "";
+
+            foreach (string value in values)
+            {
+                if (!string.IsNullOrWhiteSpace(value))
+                    return value;
+            }
+
+            return "";
+        }
+
+        private static IEnumerable<string> GetF3DRenderBaseDirectories()
+        {
+            var directories = new List<string>();
+            AddDirectory(directories, AppContext.BaseDirectory);
+
+            string assemblyLocation = typeof(StepProjectionRenderer).Assembly.Location;
+            if (!string.IsNullOrWhiteSpace(assemblyLocation))
+                AddDirectory(directories, Path.GetDirectoryName(assemblyLocation));
+
+            return directories;
+        }
+
+        private static void AddDirectory(List<string> directories, string directory)
+        {
+            if (string.IsNullOrWhiteSpace(directory))
+                return;
+
+            string fullPath;
+            try
+            {
+                fullPath = Path.GetFullPath(directory);
+            }
+            catch
+            {
+                return;
+            }
+
+            if (!directories.Any(existing => string.Equals(existing, fullPath, StringComparison.OrdinalIgnoreCase)))
+                directories.Add(fullPath);
         }
 
         private static List<ProjectionHighlight> BuildDetectionHighlights(
