@@ -1286,7 +1286,7 @@ Note: this cache is now available through `FullTestDetectionCache.GetDetectionRe
 **Files:**
 - Modify: `Test/StepCleaner/Program.cs`
 
-- [ ] **Step 1: Add stage timing fields**
+- [x] **Step 1: Add stage timing fields**
 
 Inside `VerifyDetectionDebugImages()`, add local counters:
 
@@ -1297,7 +1297,7 @@ long detectMs = 0;
 long projectDetectionFileMs = 0;
 ```
 
-- [ ] **Step 2: Time each expensive per-model operation**
+- [x] **Step 2: Time each expensive per-model operation**
 
 Use `Stopwatch.StartNew()` around:
 
@@ -1310,7 +1310,7 @@ StepProjectionRenderer.ProjectDetectionFile(...)
 
 Add elapsed milliseconds to the counters after each call.
 
-- [ ] **Step 3: Print detail lines**
+- [x] **Step 3: Print detail lines**
 
 After the existing `Detection debug images:` line, print:
 
@@ -1321,7 +1321,7 @@ Console.WriteLine("  detection_debug_detect_ms=" + detectMs.ToString(CultureInfo
 Console.WriteLine("  detection_debug_project_file_ms=" + projectDetectionFileMs.ToString(CultureInfo.InvariantCulture) + " ms");
 ```
 
-- [ ] **Step 4: Add guard**
+- [x] **Step 4: Add guard**
 
 In `RunModelCacheTests()`, add:
 
@@ -1333,7 +1333,7 @@ AssertContains(
     failures);
 ```
 
-- [ ] **Step 5: Verify**
+- [x] **Step 5: Verify**
 
 Run:
 
@@ -1343,6 +1343,21 @@ dotnet run --project Test\StepCleaner\StepCleaner.Tests.csproj
 ```
 
 Expected: PASS and the full run prints all four detail lines. Use this output to choose the next implementation task.
+
+Verified:
+
+```text
+model-cache guard: PASS
+full StepCleaner run: PASS
+Detection debug images: marked=20, generated=20, regenerated models=14, cached models=2, elapsed=28559 ms
+  detection_debug_load_marked_regions_ms=0 ms
+  detection_debug_cache_check_ms=2 ms
+  detection_debug_detect_ms=2379 ms
+  detection_debug_project_file_ms=26149 ms
+full_test_wall_ms=111969
+```
+
+Next target from this timing: `ProjectDetectionFile` dominates detection debug image generation.
 
 ### Task 12: Add A Fast Path For Identical Clean/Validated Projection PNGs
 

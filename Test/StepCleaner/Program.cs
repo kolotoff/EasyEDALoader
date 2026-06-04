@@ -535,6 +535,11 @@ namespace StepCleaner.Tests
                 "full StepCleaner regression should reuse projected detection regions for original-vs-clean and clean-vs-validated comparisons",
                 failures);
             AssertContains(
+                stepCleanerProgram,
+                "detection_debug_project" + "_file_ms",
+                "detection debug image generation should expose detailed timing for the remaining bottleneck",
+                failures);
+            AssertContains(
                 stepProjectionRenderer,
                 "ProjectFileImages(",
                 "internal projection rendering should expose an in-memory raw image API",
@@ -2950,20 +2955,37 @@ namespace StepCleaner.Tests
 
             int regeneratedModels = 0;
             int cachedModels = 0;
+            long loadMarkedRegionsMs = 0;
+            long cacheCheckMs = 0;
+            long detectMs = 0;
+            long projectDetectionFileMs = 0;
             foreach (string originalFile in originalFiles)
             {
+                Stopwatch stageStopwatch = Stopwatch.StartNew();
                 var markedRegions = StepWatermarkCleaner.LoadMarkedRegionsForStepFile(
                     originalFile,
                     projectionDirectory,
                     markedDirectory);
+                stageStopwatch.Stop();
+                loadMarkedRegionsMs += stageStopwatch.ElapsedMilliseconds;
+
+                stageStopwatch = Stopwatch.StartNew();
                 if (IsDetectionDebugImageCacheFresh(originalFile, markedRegions, detectionDirectory))
                 {
+                    stageStopwatch.Stop();
+                    cacheCheckMs += stageStopwatch.ElapsedMilliseconds;
                     cachedModels++;
                     continue;
                 }
+                stageStopwatch.Stop();
+                cacheCheckMs += stageStopwatch.ElapsedMilliseconds;
 
+                stageStopwatch = Stopwatch.StartNew();
                 var detectionReport = detectionCache.GetReport(originalFile);
+                stageStopwatch.Stop();
+                detectMs += stageStopwatch.ElapsedMilliseconds;
 
+                stageStopwatch = Stopwatch.StartNew();
                 StepProjectionRenderer.ProjectDetectionFile(
                     originalFile,
                     detectionDirectory,
@@ -2973,6 +2995,8 @@ namespace StepCleaner.Tests
                         WriteMetadata = false
                     },
                     markedRegions);
+                stageStopwatch.Stop();
+                projectDetectionFileMs += stageStopwatch.ElapsedMilliseconds;
                 regeneratedModels++;
             }
 
@@ -2994,6 +3018,10 @@ namespace StepCleaner.Tests
                 ", elapsed=" +
                 stopwatch.ElapsedMilliseconds.ToString(CultureInfo.InvariantCulture) +
                 " ms");
+            Console.WriteLine("  detection_debug_load_marked_regions_ms=" + loadMarkedRegionsMs.ToString(CultureInfo.InvariantCulture) + " ms");
+            Console.WriteLine("  detection_debug_cache_check_ms=" + cacheCheckMs.ToString(CultureInfo.InvariantCulture) + " ms");
+            Console.WriteLine("  detection_debug_detect_ms=" + detectMs.ToString(CultureInfo.InvariantCulture) + " ms");
+            Console.WriteLine("  detection_debug_project_file_ms=" + projectDetectionFileMs.ToString(CultureInfo.InvariantCulture) + " ms");
 
             if (actualNames.Count != expectedNames.Count)
             {
