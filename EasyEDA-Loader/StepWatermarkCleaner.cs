@@ -4393,16 +4393,22 @@ namespace EasyEDA_Loader
             StepWatermarkCleanerOptions options)
         {
             HostPlaneMatch best = null;
+            List<PlanarHostCandidate> hostCandidates = ownerInfo.PlanarHostCandidatesByAxis != null &&
+                axis >= 0 &&
+                axis < ownerInfo.PlanarHostCandidatesByAxis.Length
+                    ? ownerInfo.PlanarHostCandidatesByAxis[axis]
+                    : null;
+            if (hostCandidates == null)
+                hostCandidates = BuildPlanarHostCandidatesForAxis(data, ownerInfo.FaceIds, axis, options);
 
-            foreach (int faceId in ownerInfo.FaceIds)
+            foreach (PlanarHostCandidate candidate in hostCandidates)
             {
+                int faceId = candidate.FaceId;
                 if (componentFaces.Contains(faceId))
                     continue;
 
-                if (!TryGetPlanarHostCandidateBounds(data, faceId, axis, options, out Bounds faceBounds))
-                    continue;
-
-                double coordinate = (faceBounds.Min.Get(axis) + faceBounds.Max.Get(axis)) / 2.0;
+                Bounds faceBounds = candidate.Bounds;
+                double coordinate = candidate.Coordinate;
                 double distance = Math.Min(
                     Math.Abs(coordinate - componentBounds.Min.Get(axis)),
                     Math.Abs(coordinate - componentBounds.Max.Get(axis)));
@@ -4432,8 +4438,7 @@ namespace EasyEDA_Loader
                     }
                 }
 
-                double area = ProjectedArea(faceBounds.Size, axis);
-                double score = colorWeight * area / Math.Max(distance, 0.0001);
+                double score = colorWeight * candidate.ProjectedArea / Math.Max(distance, 0.0001);
                 if (best == null || score > best.Score)
                 {
                     best = new HostPlaneMatch
@@ -4447,6 +4452,45 @@ namespace EasyEDA_Loader
             }
 
             return best;
+        }
+
+        private static List<PlanarHostCandidate>[] BuildPlanarHostCandidatesByAxis(
+            StepData data,
+            List<int> faceIds,
+            StepWatermarkCleanerOptions options)
+        {
+            var result = new List<PlanarHostCandidate>[3];
+            for (int axis = 0; axis < result.Length; axis++)
+                result[axis] = BuildPlanarHostCandidatesForAxis(data, faceIds, axis, options);
+
+            return result;
+        }
+
+        private static List<PlanarHostCandidate> BuildPlanarHostCandidatesForAxis(
+            StepData data,
+            List<int> faceIds,
+            int axis,
+            StepWatermarkCleanerOptions options)
+        {
+            var result = new List<PlanarHostCandidate>();
+            if (faceIds == null)
+                return result;
+
+            foreach (int faceId in faceIds)
+            {
+                if (!TryGetPlanarHostCandidateBounds(data, faceId, axis, options, out Bounds bounds))
+                    continue;
+
+                result.Add(new PlanarHostCandidate
+                {
+                    FaceId = faceId,
+                    Bounds = bounds,
+                    Coordinate = (bounds.Min.Get(axis) + bounds.Max.Get(axis)) / 2.0,
+                    ProjectedArea = ProjectedArea(bounds.Size, axis)
+                });
+            }
+
+            return result;
         }
 
         private static bool TryGetPlanarHostCandidateBounds(
@@ -5423,6 +5467,7 @@ namespace EasyEDA_Loader
                     SolidId = solidId,
                     FaceIds = faceIds,
                     Bounds = data.GetBounds(solidId),
+                    PlanarHostCandidatesByAxis = BuildPlanarHostCandidatesByAxis(data, faceIds, options),
                     ReplacementStyleId = replacementStyleId,
                     ReplacementColor = replacementColor
                 });
@@ -5575,8 +5620,17 @@ namespace EasyEDA_Loader
             public int SolidId { get; set; }
             public List<int> FaceIds { get; set; }
             public Bounds? Bounds { get; set; }
+            public List<PlanarHostCandidate>[] PlanarHostCandidatesByAxis { get; set; }
             public int? ReplacementStyleId { get; set; }
             public StepColor? ReplacementColor { get; set; }
+        }
+
+        private sealed class PlanarHostCandidate
+        {
+            public int FaceId { get; set; }
+            public Bounds Bounds { get; set; }
+            public double Coordinate { get; set; }
+            public double ProjectedArea { get; set; }
         }
 
         private sealed class HostPlaneMatch

@@ -465,6 +465,16 @@ namespace StepCleaner.Tests
                 "watermark cleaner should remove styled-item references in bulk instead of one regex scan per removed style",
                 failures);
             AssertContains(
+                stepWatermarkCleaner,
+                "BuildPlanarHostCandidatesByAxis",
+                "watermark cleaner should cache planar host candidates per solid instead of rebuilding them for each watermark candidate",
+                failures);
+            AssertContains(
+                stepWatermarkCleaner,
+                "ownerInfo.PlanarHostCandidatesByAxis",
+                "host-plane selection should use prebuilt planar host candidates from SolidInfo",
+                failures);
+            AssertContains(
                 stepWatermarkCleanVerifier,
                 "CleanOrThrowWithReport",
                 "verifier should expose clean report timings for cache-miss measurement",
