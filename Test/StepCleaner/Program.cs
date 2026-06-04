@@ -347,6 +347,51 @@ namespace StepCleaner.Tests
                 "preview clean STEP generation should share the same cache-status path",
                 failures);
             AssertContains(
+                modelCache,
+                "GetSearchProductInfoAsync",
+                "EasyEDA product search results should be cached under the local loader cache",
+                failures);
+            AssertContains(
+                modelCache,
+                "GetComponentJsonAsync",
+                "EasyEDA component JSON should be cached under the local loader cache",
+                failures);
+            AssertContains(
+                modelCache,
+                "GetPngImageAsync",
+                "EasyEDA thumbnail image data should be cached under the local loader cache",
+                failures);
+            AssertContains(
+                modelCache,
+                "GetProjectionPreviewPngAsync",
+                "bottom model projection preview PNGs should be cached by original model and render size",
+                failures);
+            AssertContains(
+                modelCache,
+                "DeleteSelectedComponentCache",
+                "the dialog should be able to remove all cache files for the selected component",
+                failures);
+            AssertContains(
+                dialogWindow,
+                "ModelCache.GetSearchProductInfoAsync",
+                "search should use cached EasyEDA product data instead of always posting to the remote server",
+                failures);
+            AssertContains(
+                dialogWindow,
+                "ModelCache.GetComponentJsonAsync",
+                "preview and import should use cached EasyEDA component JSON instead of always fetching remotely",
+                failures);
+            AssertContains(
+                dialogWindow,
+                "ModelCache.GetPngImageAsync",
+                "thumbnail preview should use cached EasyEDA image bytes",
+                failures);
+            AssertContains(
+                dialogWindow,
+                "GetSelectedComponentCacheKey",
+                "dialog clean/projection cache actions should be scoped to the selected component row",
+                failures);
+            AssertContains(
                 footprint3dModel,
                 "CleanStepModelFastWithReport",
                 "footprint import clean-cache misses should skip projection verification and use the fast cleaner report path",
@@ -358,8 +403,13 @@ namespace StepCleaner.Tests
                 failures);
             AssertContains(
                 footprint3dModel,
-                "CleanStepCacheKeys.GetCleanModeKey(GetSafeCacheFileName(), ctx.CleanText)",
-                "footprint import should cache separate watermark-only and clean-text STEP outputs",
+                "ModelCache.GetComponentModelCacheKey(ctx.CachePartNumber, GetSafeCacheFileName())",
+                "footprint import should scope clean STEP cache outputs to the selected component plus model",
+                failures);
+            AssertContains(
+                easyEdaLoader,
+                "CachePartNumber = selection.PartInfo?.Part",
+                "footprint import should pass the stable selected LCSC row part number into cache keys",
                 failures);
             AssertDoesNotContain(
                 footprint3dModel,
@@ -593,8 +643,23 @@ namespace StepCleaner.Tests
                 failures);
             AssertContains(
                 dialogWindow,
-                "ShowModelProjectionPreviewAsync(_currentModel, stepDataTask",
-                "2D model projection should reuse the shared STEP task instead of loading the STEP model again",
+                "ShowModelProjectionPreviewAsync(_currentModel,",
+                "2D model projection should render from an explicit original-model projection path",
+                failures);
+            AssertContains(
+                dialogWindow,
+                "ModelCache.GetProjectionPreviewPngAsync",
+                "2D model projection should cache rendered preview PNGs",
+                failures);
+            AssertContains(
+                dialogWindow,
+                "await originalStepDataTask.ConfigureAwait(false)",
+                "2D model projection cache misses should reuse the already-started original STEP task",
+                failures);
+            AssertContains(
+                dialogWindow,
+                "ModelCache.GetStepModelAsync(Api, modelInfo.Uuid",
+                "2D model projection should always read the original STEP model, independent of clean STEP preview state",
                 failures);
             AssertAppearsBefore(
                 dialogWindow,
@@ -605,8 +670,23 @@ namespace StepCleaner.Tests
             AssertAppearsBefore(
                 dialogWindow,
                 "Task interactivePreviewTask = ShowInteractiveModelPreviewAsync(_currentModel, stepDataTask",
-                "ShowModelProjectionPreviewAsync(_currentModel, stepDataTask",
+                "ShowModelProjectionPreviewAsync(_currentModel,",
                 "interactive 3D preview should begin before 2D projection rendering",
+                failures);
+            AssertContains(
+                dialogWindowXaml,
+                "removeCacheButton",
+                "dialog should expose a Remove cache button near model cache actions",
+                failures);
+            AssertContains(
+                dialogWindow,
+                "RemoveCacheButton_Click",
+                "Remove cache button should be wired to selected-component cache cleanup",
+                failures);
+            AssertContains(
+                dialogWindow,
+                "IsCurrentPreviewForSelectedComponent",
+                "model cache buttons should only act when the loaded preview belongs to the selected grid row",
                 failures);
             AssertContains(
                 dialogWindow,

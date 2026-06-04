@@ -92,7 +92,7 @@ namespace EasyEDA_Loader
             }
         }
 
-        public async Task<BitmapImage> LoadPngAsync(string imageUrl, CancellationToken cancellationToken)
+        public async Task<byte[]> LoadPngBytesAsync(string imageUrl, CancellationToken cancellationToken)
         {
             // Add the host path if it doesnt exist
             if (!imageUrl.Contains("//"))
@@ -115,6 +115,29 @@ namespace EasyEDA_Loader
                 
                 Debug.WriteLine($"[API] Image Data Length: {imageData.Length} bytes");
                 Console.WriteLine($"[API] Image Data Length: {imageData.Length} bytes");
+                return imageData;
+            }
+            catch (OperationCanceledException cancel)
+            {
+                Debug.WriteLine($"[API] Download was cancelled: {cancel.Message}");
+                Console.WriteLine($"Download was cancelled: {cancel.Message}");
+                return null;
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"[API] Error loading image: {ex.Message}");
+                Console.WriteLine($"[API] Error loading image: {ex.Message}");
+                throw ex;
+            }
+        }
+
+        public async Task<BitmapImage> LoadPngAsync(string imageUrl, CancellationToken cancellationToken)
+        {
+            try
+            {
+                var imageData = await LoadPngBytesAsync(imageUrl, cancellationToken).ConfigureAwait(false);
+                if (imageData == null || imageData.Length == 0)
+                    return null;
 
                 var bitmap = new BitmapImage();
                 var stream = new MemoryStream(imageData);

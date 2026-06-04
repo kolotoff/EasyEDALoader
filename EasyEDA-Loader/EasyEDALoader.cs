@@ -564,6 +564,7 @@ namespace EasyEDA_Loader
                                     CleanText = selection.CleanText,
                                     ImportLcscMechanicalLayers = selection.ImportLcscMechanicalLayers,
                                     PartNumber = partNumber,
+                                    CachePartNumber = selection.PartInfo?.Part,
                                     Description = footprintDescription,
                                     HeightMm = footprintHeight,
                                     ModelOffset = productInfo?.Offset,

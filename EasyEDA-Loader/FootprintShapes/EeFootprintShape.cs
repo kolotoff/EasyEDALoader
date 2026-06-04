@@ -21,6 +21,7 @@ namespace EasyEDA_Loader
         public bool CleanText { get; set; }
         public bool ImportLcscMechanicalLayers { get; set; }
         public string PartNumber { get; set; }
+        public string CachePartNumber { get; set; }
         public string Description { get; set; }
         public double HeightMm { get; set; }
         public Vec3 ModelOffset { get; set; }

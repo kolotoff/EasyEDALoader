@@ -365,9 +365,16 @@
                         Content="Regenerate Clean STEP"
                         Width="145"
                         Height="24"
-                        Margin="0,0,100,0"
+                        Margin="0,0,8,0"
                         IsEnabled="False"
                         Click="RegenerateCleanStepButton_Click"/>
+                <Button x:Name="removeCacheButton"
+                        Content="Remove cache"
+                        Width="105"
+                        Height="24"
+                        Margin="0,0,100,0"
+                        IsEnabled="False"
+                        Click="RemoveCacheButton_Click"/>
                 <Button x:Name="addToLibraryButton"
                         Content="Import to temp"
                         Width="110"

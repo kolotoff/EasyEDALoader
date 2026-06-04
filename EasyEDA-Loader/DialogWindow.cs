@@ -34,6 +34,7 @@ namespace EasyEDA_Loader
         private ComponentInfo _currentComponent;
         private EeFootprint3dModel _currentModel;
         private Root _currentRoot;
+        private string _currentPreviewPartNumber;
         private bool _isRestoringSession;
         private F3DProjectionRenderer.F3DPreviewSession _f3dPreviewSession;
         private F3DPreviewCameraSnapshot _f3dPreviewCameraSnapshot;
@@ -309,10 +310,11 @@ namespace EasyEDA_Loader
                 _currentComponent = null;
                 _currentModel = null;
                 _currentRoot = null;
+                _currentPreviewPartNumber = null;
                 UpdateModelActionButtonState();
                 SetPreviewProgress(true, "Loading component data...", 5);
 
-                var root = await Task.Run(() => Api.GetComponentJsonAsync(partViewModel.PartInfo.Part, cancellationToken));
+                var root = await ModelCache.GetComponentJsonAsync(Api, partViewModel.PartInfo.Part, cancellationToken);
 
                 if (cancellationToken.IsCancellationRequested)
                     return;
@@ -337,6 +339,7 @@ namespace EasyEDA_Loader
                         UpdatePreviewProgress("Drawing footprint...", 60);
                         var eeFootprint = _currentComponent.PackageDetail.Footprint;
                         _currentModel = eeFootprint.GetModel();
+                        _currentPreviewPartNumber = partViewModel.PartInfo.Part;
 
                         UpdateModelActionButtonState();
 
@@ -372,7 +375,7 @@ namespace EasyEDA_Loader
                             try
                             {
                                 UpdatePreviewProgress("Rendering 3D projection...", 72);
-                                await ShowModelProjectionPreviewAsync(_currentModel, stepDataTask, cancellationToken);
+                                await ShowModelProjectionPreviewAsync(_currentModel, partViewModel, stepDataTask, cancellationToken);
                             }
                             catch (OperationCanceledException)
                             {
@@ -390,13 +393,18 @@ namespace EasyEDA_Loader
                         try
                         {
                             UpdatePreviewProgress("Loading thumbnail...", 85);
-                            var thumbnail = await Task.Run(() => Api.LoadPngAsync(_currentComponent.Thumb, cancellationToken));
+                            byte[] thumbnailData = await ModelCache.GetPngImageAsync(
+                                Api,
+                                _currentComponent.Thumb,
+                                partViewModel.PartInfo.Part,
+                                cancellationToken);
                             
                             if (cancellationToken.IsCancellationRequested)
                                 return;
 
-                            if (thumbnail != null)
+                            if (thumbnailData != null && thumbnailData.Length > 0)
                             {
+                                var thumbnail = LoadBitmapImage(thumbnailData);
                                 thumbnailImage.Source = thumbnail;
                                 thumbnailImage.MaxWidth = thumbnail.Width;
                                 thumbnailImage.MaxHeight = thumbnail.Height;
@@ -450,6 +458,7 @@ namespace EasyEDA_Loader
             _currentComponent = null;
             _currentModel = null;
             _currentRoot = null;
+            _currentPreviewPartNumber = null;
             UpdateModelActionButtonState();
             SetPreviewProgress(false);
         }
@@ -461,29 +470,15 @@ namespace EasyEDA_Loader
             StopF3DPreview();
         }
 
-        private async Task ShowModelProjectionPreviewAsync(EeFootprint3dModel modelInfo, CancellationToken cancellationToken)
-        {
-            if (modelInfo == null)
-                return;
-
-            Task<byte[]> stepDataTask = ModelCache.GetStepModelAsync(Api, modelInfo.Uuid, cancellationToken);
-            await ShowModelProjectionPreviewAsync(modelInfo, stepDataTask, cancellationToken);
-        }
-
         private async Task ShowModelProjectionPreviewAsync(
             EeFootprint3dModel modelInfo,
-            Task<byte[]> stepDataTask,
+            PartInfoViewModel partViewModel,
+            Task<byte[]> originalStepDataTask,
             CancellationToken cancellationToken)
         {
             modelProjectionImage.Source = null;
 
             if (modelInfo == null)
-                return;
-
-            byte[] stepData = await stepDataTask.ConfigureAwait(true);
-            cancellationToken.ThrowIfCancellationRequested();
-
-            if (stepData == null || stepData.Length == 0)
                 return;
 
             GetModelProjectionPreviewImageSizePixels(out int imageWidthPixels, out int imageHeightPixels);
@@ -496,7 +491,27 @@ namespace EasyEDA_Loader
                 WriteMetadata = false
             };
 
-            byte[] projectionPng = await Task.Run(() => StepProjectionRenderer.ProjectSingleViewPng(stepData, "z_plus", options), cancellationToken);
+            string selectedComponentCacheKey = GetSelectedComponentCacheKey(partViewModel, modelInfo);
+            byte[] projectionPng = await ModelCache.GetProjectionPreviewPngAsync(
+                selectedComponentCacheKey,
+                modelInfo.Uuid,
+                imageWidthPixels,
+                imageHeightPixels,
+                async () =>
+                {
+                    byte[] originalStepData = originalStepDataTask == null
+                        ? await ModelCache.GetStepModelAsync(Api, modelInfo.Uuid, cancellationToken).ConfigureAwait(false)
+                        : await originalStepDataTask.ConfigureAwait(false);
+                    cancellationToken.ThrowIfCancellationRequested();
+
+                    if (originalStepData == null || originalStepData.Length == 0)
+                        return null;
+
+                    return await Task.Run(
+                        () => StepProjectionRenderer.ProjectSingleViewPng(originalStepData, "z_plus", options),
+                        cancellationToken).ConfigureAwait(false);
+                },
+                cancellationToken);
             cancellationToken.ThrowIfCancellationRequested();
 
             if (projectionPng == null || projectionPng.Length == 0)
@@ -558,9 +573,11 @@ namespace EasyEDA_Loader
             {
                 bool removeWatermark = RemoveWatermark;
                 bool cleanText = CleanText;
+                string selectedComponentCacheKey = GetSelectedComponentCacheKey(resultsGrid?.SelectedItem as PartInfoViewModel, modelInfo);
                 byte[] previewStepData = removeWatermark
                     ? await GetOrCreateCleanStepPreviewDataAsync(
                         modelInfo,
+                        selectedComponentCacheKey,
                         stepData,
                         removeWatermark,
                         cleanText,
@@ -601,6 +618,7 @@ namespace EasyEDA_Loader
 
         private static async Task<byte[]> GetOrCreateCleanStepPreviewDataAsync(
             EeFootprint3dModel modelInfo,
+            string selectedComponentCacheKey,
             byte[] originalStepData,
             bool removeWatermark,
             bool cleanText,
@@ -614,7 +632,8 @@ namespace EasyEDA_Loader
             if (!removeWatermark)
                 return originalStepData;
 
-            string cleanModeKey = CleanStepCacheKeys.GetCleanModeKey(modelKey, cleanText);
+            string cleanCacheBaseKey = FirstNonEmpty(selectedComponentCacheKey, modelKey);
+            string cleanModeKey = CleanStepCacheKeys.GetCleanModeKey(cleanCacheBaseKey, cleanText);
             string safeName = ModelCache.GetSafeFileName(modelKey);
             ModelCacheResult cleanResult = await ModelCache.GetCleanStepModelWithStatusAsync(
                 cleanModeKey,
@@ -1050,11 +1069,23 @@ namespace EasyEDA_Loader
 
         private void UpdateModelActionButtonState()
         {
-            bool hasModel = _currentModel != null && !_isCriticalOperationActive;
+            bool selectedPreviewIsCurrent = IsCurrentPreviewForSelectedComponent(out _);
+            bool hasModel = _currentModel != null && selectedPreviewIsCurrent && !_isCriticalOperationActive;
+            bool hasSelectedComponentCache = selectedPreviewIsCurrent && !_isCriticalOperationActive;
             if (saveModelButton != null)
                 saveModelButton.IsEnabled = hasModel;
             if (regenerateCleanStepButton != null)
                 regenerateCleanStepButton.IsEnabled = hasModel && RemoveWatermark;
+            if (removeCacheButton != null)
+                removeCacheButton.IsEnabled = hasSelectedComponentCache;
+        }
+
+        private bool IsCurrentPreviewForSelectedComponent(out PartInfoViewModel partViewModel)
+        {
+            partViewModel = resultsGrid?.SelectedItem as PartInfoViewModel;
+            string selectedPartNumber = partViewModel?.PartInfo?.Part;
+            return !string.IsNullOrWhiteSpace(selectedPartNumber) &&
+                string.Equals(selectedPartNumber, _currentPreviewPartNumber, StringComparison.OrdinalIgnoreCase);
         }
 
         private static bool IsActivePcbLibrary()
@@ -1213,7 +1244,7 @@ namespace EasyEDA_Loader
                 var startProgress = partNumbers.Count > 0 ? (i * 100.0) / partNumbers.Count : 0;
                 SetSearchProgress(true, $"Searching {i + 1}/{partNumbers.Count}: {partNumber}", startProgress);
 
-                var results = await Task.Run(() => Api.SearchProductInfoAsync(partNumber));
+                var results = await ModelCache.GetSearchProductInfoAsync(Api, partNumber, cts.Token);
                 if (results == null || results.Count == 0)
                     continue;
 
@@ -1321,7 +1352,7 @@ namespace EasyEDA_Loader
                     IsIndeterminate = false
                 });
 
-                var root = await Task.Run(() => Api.GetComponentJsonAsync(partInfo.Part, cts.Token));
+                var root = await ModelCache.GetComponentJsonAsync(Api, partInfo.Part, cts.Token);
 
                 if (root?.Component != null)
                 {
@@ -1381,6 +1412,8 @@ namespace EasyEDA_Loader
                     saveModelButton.IsEnabled = false;
                 if (regenerateCleanStepButton != null)
                     regenerateCleanStepButton.IsEnabled = false;
+                if (removeCacheButton != null)
+                    removeCacheButton.IsEnabled = false;
             }
             cancelButton.IsEnabled = isEnabled;
             removeWatermarkCheckBox.IsEnabled = isEnabled;
@@ -1578,17 +1611,17 @@ namespace EasyEDA_Loader
 
         private async void RegenerateCleanStepButton_Click(object sender, RoutedEventArgs e)
         {
-            if (_currentModel == null || !RemoveWatermark)
+            if (_currentModel == null || !RemoveWatermark || !IsCurrentPreviewForSelectedComponent(out PartInfoViewModel partViewModel))
                 return;
 
             try
             {
                 Mouse.OverrideCursor = Cursors.Wait;
                 SetImportControlsEnabled(false);
-                BeginCriticalOperation("Regenerating cleaned STEP cache...");
+                BeginCriticalOperation("Regenerating selected component cleaned STEP cache...");
 
-                string modelKey = _currentModel.Uuid ?? _currentModel.Name;
-                int deletedCount = ModelCache.DeleteCleanStepModels(modelKey);
+                string selectedComponentCacheKey = GetSelectedComponentCacheKey(partViewModel, _currentModel);
+                int deletedCount = ModelCache.DeleteCleanStepModels(selectedComponentCacheKey);
                 ReportImportProgress(new ImportProgressEvent
                 {
                     Message = "Deleted " + deletedCount.ToString(CultureInfo.InvariantCulture) + " cleaned STEP cache file(s).",
@@ -1600,10 +1633,9 @@ namespace EasyEDA_Loader
                 previewCts?.Dispose();
                 previewCts = new CancellationTokenSource();
 
-                if (resultsGrid?.SelectedItem is PartInfoViewModel partViewModel)
-                    await LoadPreviewAsync(partViewModel, previewCts.Token);
+                await LoadPreviewAsync(partViewModel, previewCts.Token);
 
-                CompleteCriticalOperation("Cleaned STEP cache regenerated.", true);
+                CompleteCriticalOperation("Selected component cleaned STEP cache regenerated.", true);
             }
             catch (StepWatermarkCleanFailedException ex)
             {
@@ -1624,6 +1656,69 @@ namespace EasyEDA_Loader
             }
         }
 
+        private void RemoveCacheButton_Click(object sender, RoutedEventArgs e)
+        {
+            if (!IsCurrentPreviewForSelectedComponent(out PartInfoViewModel partViewModel))
+                return;
+
+            try
+            {
+                Mouse.OverrideCursor = Cursors.Wait;
+                SetImportControlsEnabled(false);
+                BeginCriticalOperation("Removing selected component cache...");
+
+                string selectedComponentCacheKey = GetSelectedComponentCacheKey(partViewModel, _currentModel);
+                string modelUuid = _currentModel?.Uuid;
+                int deletedCount = ModelCache.DeleteSelectedComponentCache(
+                    partViewModel.PartInfo.Part,
+                    selectedComponentCacheKey,
+                    modelUuid);
+                ReportImportProgress(new ImportProgressEvent
+                {
+                    Message = "Deleted " + deletedCount.ToString(CultureInfo.InvariantCulture) + " cache file(s).",
+                    Percent = 35,
+                    IsIndeterminate = false
+                });
+
+                previewCts?.Cancel();
+                ClearPreview();
+
+                CompleteCriticalOperation("Selected component cache removed.", true);
+            }
+            catch (Exception ex)
+            {
+                CompleteCriticalOperation($"Failed to remove selected component cache: {ex.Message}", false);
+                MessageBox.Show($"Failed to remove selected component cache: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+            finally
+            {
+                Mouse.OverrideCursor = null;
+                SetImportControlsEnabled(true);
+                UpdateModelActionButtonState();
+            }
+        }
+
+        private static string GetSelectedComponentCacheKey(PartInfoViewModel partViewModel, EeFootprint3dModel modelInfo)
+        {
+            string partNumber = FirstNonEmpty(partViewModel?.PartInfo?.Part, partViewModel?.PartInfo?.Name);
+            string modelKey = FirstNonEmpty(modelInfo?.Uuid, modelInfo?.Name);
+            return ModelCache.GetComponentModelCacheKey(partNumber, modelKey);
+        }
+
+        private static string FirstNonEmpty(params string[] values)
+        {
+            if (values == null)
+                return string.Empty;
+
+            foreach (string value in values)
+            {
+                if (!string.IsNullOrWhiteSpace(value))
+                    return value;
+            }
+
+            return string.Empty;
+        }
+
         private async Task<byte[]> GetSelectedStepModelForSaveAsync(
             EeFootprint3dModel modelInfo,
             CancellationToken cancellationToken,
@@ -1640,18 +1735,23 @@ namespace EasyEDA_Loader
             }
 
             progress?.Invoke("Cleaning STEP watermark geometry...", null);
-            return await Task.Run(() =>
-                StepWatermarkCleanVerifier.CleanOrThrow(
-                    originalModel,
-                    ModelCache.GetSafeFileName(modelInfo.Uuid ?? modelInfo.Name),
-                    Path.Combine(
-                        ModelCache.GetLocalDataRoot(),
-                        "StepCleanerReports",
-                        ModelCache.GetSafeFileName(modelInfo.Uuid ?? modelInfo.Name) +
-                        (CleanText ? "_text" : string.Empty) +
-                        "_" +
-                        DateTime.Now.ToString("yyyyMMdd_HHmmss", System.Globalization.CultureInfo.InvariantCulture)),
-                    CleanText),
+            string selectedComponentCacheKey = GetSelectedComponentCacheKey(resultsGrid?.SelectedItem as PartInfoViewModel, modelInfo);
+            string cleanModeKey = CleanStepCacheKeys.GetCleanModeKey(selectedComponentCacheKey, CleanText);
+            return await ModelCache.GetCleanStepModelAsync(
+                cleanModeKey,
+                () => Task.Run(() =>
+                    StepWatermarkCleanVerifier.CleanOrThrow(
+                        originalModel,
+                        ModelCache.GetSafeFileName(selectedComponentCacheKey),
+                        Path.Combine(
+                            ModelCache.GetLocalDataRoot(),
+                            "StepCleanerReports",
+                            ModelCache.GetSafeFileName(selectedComponentCacheKey) +
+                            (CleanText ? "_text" : string.Empty) +
+                            "_" +
+                            DateTime.Now.ToString("yyyyMMdd_HHmmss", System.Globalization.CultureInfo.InvariantCulture)),
+                        CleanText),
+                    cancellationToken),
                 cancellationToken);
         }
 
