@@ -1520,7 +1520,7 @@ full_test_wall_ms=111166
 - Modify: `docs/superpowers/plans/2026-06-04-stepcleaner-cold-full-test-optimization.md`
 - Optional Modify: `Test/StepCleaner/Program.cs`
 
-- [ ] **Step 1: Run the warm-cache import measurement**
+- [x] **Step 1: Run the warm-cache import measurement**
 
 Run:
 
@@ -1540,7 +1540,7 @@ occt_hlr_projection_total_ms
 projection_primitives
 ```
 
-- [ ] **Step 2: Run a clean-cache-miss measurement**
+- [x] **Step 2: Run a clean-cache-miss measurement**
 
 Remove only the C5338332 clean STEP cache file for the chosen clean mode, then run:
 
@@ -1550,7 +1550,7 @@ dotnet run --project Test\StepCleaner\StepCleaner.Tests.csproj -- --measure-mode
 
 Expected: PASS. Capture all `watermark_clean_detail_*_ms` lines.
 
-- [ ] **Step 3: Add missing detail timing if output is not enough**
+- [x] **Step 3: Add missing detail timing if output is not enough**
 
 If `watermark_clean_cache_ms` is still too coarse, add timing around these existing stages in `StepWatermarkCleaner.cs`:
 
@@ -1564,7 +1564,9 @@ RemoveInactiveDefinitions
 
 Expected: the measurement command prints enough detail to select one concrete edit optimization before touching OCCT HLR.
 
-- [ ] **Step 4: Record the baseline in this plan**
+Result: existing detail timings were sufficient; no code change needed.
+
+- [x] **Step 4: Record the baseline in this plan**
 
 Add a small table under this task:
 
@@ -1576,6 +1578,68 @@ C5338332 import baseline:
   occt_hlr_projection_total_ms=<measured>
   raw_obj_z_info_ms=<measured>
   projection_primitives=<measured>
+```
+
+Recorded baseline:
+
+```text
+C5338332 import baseline:
+  run_date=2026-06-04
+  cache_state=warm
+  repeat=3
+  watermark_clean_cache_ms=2,1,3
+  occt_hlr_projection_total_ms=1781,1719,1579
+  raw_obj_z_info_ms=1,0,0
+  projection_primitives=344
+  total_measured_ms=1809,1722,1587
+
+C5338332 import baseline:
+  run_date=2026-06-04
+  cache_state=clean-cache-miss
+  repeat=1
+  watermark_clean_cache_ms=1757
+  occt_hlr_projection_total_ms=1416
+  raw_obj_z_info_ms=1
+  projection_primitives=344
+  total_measured_ms=3189
+
+Clean-cache-miss watermark detail:
+  watermark_clean_detail_cleaner_total_ms=1748
+  watermark_clean_detail_context_parse_step_entities_ms=107
+  watermark_clean_detail_context_build_indexes_ms=96
+  watermark_clean_detail_context_collect_cleanup_solids_ms=5
+  watermark_clean_detail_context_build_styled_items_ms=16
+  watermark_clean_detail_context_group_styles_by_target_ms=2
+  watermark_clean_detail_context_build_face_owner_map_ms=14
+  watermark_clean_detail_context_build_solid_info_ms=120
+  watermark_clean_detail_context_count_styled_faces_ms=0
+  watermark_clean_detail_detect_get_model_bounds_ms=0
+  watermark_clean_detail_detect_removable_watermark_solids_ms=1
+  watermark_clean_detail_detect_removable_solid_host_loops_ms=0
+  watermark_clean_detail_detect_embedded_watermark_faces_ms=32
+  watermark_clean_detail_detect_embedded_host_loops_ms=10
+  watermark_clean_detail_detect_automatic_watermark_host_loops_ms=5
+  watermark_clean_detail_detect_automatic_region_watermark_faces_ms=1
+  watermark_clean_detail_detect_neutral_coplanar_watermark_faces_ms=139
+  watermark_clean_detail_edit_remove_solids_from_shape_representations_ms=0
+  watermark_clean_detail_edit_flatten_embedded_faces_ms=518
+  watermark_clean_detail_edit_add_embedded_host_loops_ms=120
+  watermark_clean_detail_edit_merge_host_face_bounds_ms=0
+  watermark_clean_detail_edit_build_automatic_flatten_regions_ms=13
+  watermark_clean_detail_edit_add_automatic_region_adjacent_faces_ms=42
+  watermark_clean_detail_edit_flatten_automatic_regions_ms=44
+  watermark_clean_detail_edit_flatten_coplanar_faces_ms=20
+  watermark_clean_detail_edit_remove_faces_from_closed_shells_ms=121
+  watermark_clean_detail_edit_remove_face_bounds_ms=0
+  watermark_clean_detail_edit_recolor_flattened_faces_ms=2
+  watermark_clean_detail_edit_remove_styled_items_ms=7
+  watermark_clean_detail_edit_apply_definition_edits_ms=270
+  watermark_clean_detail_report_build_public_detection_report_ms=18
+
+Decision note:
+  warm import winner=occt_hlr_projection_total_ms
+  clean-cache-miss winner=watermark_clean_cache_ms
+  largest watermark detail=edit_flatten_embedded_faces_ms
 ```
 
 ### Task 15: Optimize Only The Measured C5338332 Winner
