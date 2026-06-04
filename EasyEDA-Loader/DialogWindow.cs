@@ -1160,7 +1160,7 @@ namespace EasyEDA_Loader
         {
             bool selectedPreviewIsCurrent = IsCurrentPreviewForSelectedComponent(out _);
             bool hasModel = _currentModel != null && selectedPreviewIsCurrent && !_isCriticalOperationActive;
-            bool hasSelectedComponentCache = selectedPreviewIsCurrent && !_isCriticalOperationActive;
+            bool hasSelectedComponentCache = HasSelectedComponentForCache(out _) && !_isCriticalOperationActive;
             if (saveModelButton != null)
                 saveModelButton.IsEnabled = hasModel;
             if (regenerateCleanStepButton != null)
@@ -1177,6 +1177,12 @@ namespace EasyEDA_Loader
             string selectedPartNumber = partViewModel?.PartInfo?.Part;
             return !string.IsNullOrWhiteSpace(selectedPartNumber) &&
                 string.Equals(selectedPartNumber, _currentPreviewPartNumber, StringComparison.OrdinalIgnoreCase);
+        }
+
+        private bool HasSelectedComponentForCache(out PartInfoViewModel partViewModel)
+        {
+            partViewModel = resultsGrid?.SelectedItem as PartInfoViewModel;
+            return !string.IsNullOrWhiteSpace(partViewModel?.PartInfo?.Part);
         }
 
         private static bool IsActivePcbLibrary()
@@ -1751,7 +1757,7 @@ namespace EasyEDA_Loader
 
         private async void RemoveCacheButton_Click(object sender, RoutedEventArgs e)
         {
-            if (!IsCurrentPreviewForSelectedComponent(out PartInfoViewModel partViewModel))
+            if (!HasSelectedComponentForCache(out PartInfoViewModel partViewModel))
                 return;
 
             try

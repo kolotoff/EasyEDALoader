@@ -581,6 +581,11 @@ namespace StepCleaner.Tests
                 "Background=\"#FAFAFA\"",
                 "middle-column projection preview should use a light viewport background so unfilled sides do not appear as black gutters",
                 failures);
+            AssertDoesNotContain(
+                dialogWindowXaml,
+                "Background=\"Black\"",
+                "symbol and footprint preview surfaces should not be black because EasyEDA primitives can render dark-on-dark and appear blank",
+                failures);
             AssertContains(
                 dialogWindowXaml,
                 "modelProjectionImage",
@@ -742,6 +747,16 @@ namespace StepCleaner.Tests
                 dialogWindow,
                 "IsCurrentPreviewForSelectedComponent",
                 "model cache buttons should only act when the loaded preview belongs to the selected grid row",
+                failures);
+            AssertContains(
+                dialogWindow,
+                "HasSelectedComponentForCache(out _)",
+                "Remove cache should be enabled for the selected part even when preview/model loading failed",
+                failures);
+            AssertContains(
+                dialogWindow,
+                "HasSelectedComponentForCache(out PartInfoViewModel partViewModel)",
+                "Remove cache should act on the selected part instead of requiring a completed preview",
                 failures);
             AssertContains(
                 dialogWindow,
