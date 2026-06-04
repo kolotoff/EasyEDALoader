@@ -471,6 +471,36 @@ namespace StepCleaner.Tests
                 "verification projection rendering should be able to skip STEP geometry parsing when external rendering succeeds",
                 failures);
             AssertContains(
+                stepProjectionRenderer,
+                "ProjectFileImages(",
+                "internal projection rendering should expose an in-memory raw image API",
+                failures);
+            AssertContains(
+                stepProjectionRenderer,
+                "ProjectDetectionFileImages(",
+                "internal detection projection rendering should expose an in-memory highlighted raw image API",
+                failures);
+            AssertContains(
+                stepProjectionRenderer,
+                "TryRenderWithF3DLibraryBatchToRawImages",
+                "F3D library batch rendering should avoid saving/loading image files or PNG encoding for internal callers",
+                failures);
+            AssertContains(
+                stepCleanerProgram,
+                "Generate(cleanedStep,",
+                "measurement OCCT HLR projection should use cleaned STEP bytes instead of requiring a saved STEP file",
+                failures);
+            AssertContains(
+                footprint3dModel,
+                "StepSilhouetteProjection.Generate(",
+                "footprint import OCCT HLR projection should use in-memory STEP bytes after the Altium body file is written",
+                failures);
+            AssertContains(
+                stepWatermarkCleanVerifier,
+                "ProjectFileImages(",
+                "watermark verification should compare raw in-memory projection images before writing report artifacts",
+                failures);
+            AssertContains(
                 stepCleanerProgram,
                 "full_test_wall_ms",
                 "full StepCleaner regression timing should print total wall time for before/after comparisons",
@@ -587,8 +617,8 @@ namespace StepCleaner.Tests
                 failures);
             AssertContains(
                 stepCleanerProgram,
-                "StepSilhouette" + "Projection.GenerateFromFile(cleanedStepPath",
-                "measurement command should project from the cleaned STEP file path to avoid duplicate stdin temp-file copy",
+                "StepSilhouette" + "Projection.Generate(cleanedStep",
+                "measurement command should project from cleaned STEP bytes instead of reloading a saved file",
                 failures);
 
             string zInfoCacheDirectory = Path.Combine(Path.GetTempPath(), "EasyEDALoaderZInfo_" + Guid.NewGuid().ToString("N"));
@@ -843,7 +873,7 @@ namespace StepCleaner.Tests
 
                     IReadOnlyList<StepSilhouettePrimitive> projectionPrimitives = timings.Measure(
                         "occt_hlr_projection_total",
-                        () => StepSilhouetteProjection.GenerateFromFile(cleanedStepPath, CreateMeasurementProjectionPlacement(model)));
+                        () => StepSilhouetteProjection.Generate(cleanedStep, CreateMeasurementProjectionPlacement(model)));
 
                     Console.WriteLine("  original_step_bytes=" + originalStep.Length.ToString(CultureInfo.InvariantCulture));
                     Console.WriteLine("  raw_obj_bytes=" + rawObj.Length.ToString(CultureInfo.InvariantCulture));
@@ -1542,8 +1572,8 @@ namespace StepCleaner.Tests
             AssertContains(eePcb, "ReprojectComponentBodySilhouette", "Reproject 3D must regenerate silhouette primitives from a 3D body", failures);
             AssertContains(eePcb, "Rotation2D = FootprintModelPlacement.ProjectionPlacementRotationDeg()", "Reproject 3D must apply the common Altium 180-degree projection placement correction", failures);
             AssertContains(footprint3dModel, "Rotation2D = FootprintModelPlacement.ProjectionPlacementRotationDeg()", "3D model import must apply the common Altium 180-degree projection placement correction", failures);
-            AssertContains(footprint3dModel, "StepSilhouetteProjection.GenerateFromFile(", "3D model import should project from the already-written STEP temp file instead of sending duplicate bytes through helper stdin", failures);
-            AssertContains(footprint3dModel, "temp,", "3D model import should pass the already-written STEP temp file to silhouette projection", failures);
+            AssertContains(footprint3dModel, "StepSilhouetteProjection.Generate(", "3D model import should project from in-memory STEP bytes instead of reloading the already-written body file", failures);
+            AssertContains(footprint3dModel, "footprintModel,", "3D model import should pass the already-loaded STEP bytes to silhouette projection", failures);
             AssertContains(module, "ReprojectComponentBodySilhouette(component, out removedCount)", "Reproject 3D must only clear Mechanical 2 after projection generation succeeds", failures);
             AssertContains(eePcb, "BeginPcbPrimitiveModify(component)", "Reproject 3D must open a footprint primitive modify transaction for undo", failures);
             AssertContains(eePcb, "EndPcbPrimitiveModify(component, modifying, changed)", "Reproject 3D must close or cancel the footprint primitive modify transaction for undo", failures);

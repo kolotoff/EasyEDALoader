@@ -4,7 +4,9 @@ using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.Text;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using SkiaSharp;
@@ -40,6 +42,47 @@ namespace EasyEDA_Loader
         public int RectangleHeight { get; internal set; }
         public int EntityId { get; internal set; }
         public string Kind { get; internal set; }
+    }
+
+    public sealed class StepProjectionImage
+    {
+        public string ViewName { get; internal set; }
+        public int Width { get; internal set; }
+        public int Height { get; internal set; }
+        public byte[] RgbaBytes { get; internal set; }
+
+        internal SKBitmap ToBitmap()
+        {
+            if (Width <= 0 || Height <= 0)
+                throw new InvalidDataException("Projection image dimensions are invalid.");
+            if (RgbaBytes == null || RgbaBytes.Length != Width * Height * 4)
+                throw new InvalidDataException("Projection image raw data size is invalid.");
+
+            var bitmap = new SKBitmap(Width, Height, SKColorType.Rgba8888, SKAlphaType.Premul);
+            IntPtr target = bitmap.GetPixels();
+            if (target == IntPtr.Zero)
+                throw new InvalidDataException("Projection bitmap data is not available.");
+
+            Marshal.Copy(RgbaBytes, 0, target, RgbaBytes.Length);
+            return bitmap;
+        }
+
+        internal void SavePng(string path)
+        {
+            using (SKBitmap bitmap = ToBitmap())
+            using (SKImage image = SKImage.FromBitmap(bitmap))
+            using (SKData data = image.Encode(SKEncodedImageFormat.Png, 100))
+            using (Stream stream = File.Create(path))
+                data.SaveTo(stream);
+        }
+
+        internal byte[] ToPngBytes()
+        {
+            using (SKBitmap bitmap = ToBitmap())
+            using (SKImage image = SKImage.FromBitmap(bitmap))
+            using (SKData data = image.Encode(SKEncodedImageFormat.Png, 100))
+                return data.ToArray();
+        }
     }
 
     public static class StepProjectionRenderer
@@ -104,6 +147,28 @@ namespace EasyEDA_Loader
 
             options = NormalizeOptions(options);
             Directory.CreateDirectory(outputDirectory);
+
+            if (!options.WriteMetadata)
+            {
+                byte[] stepData = File.ReadAllBytes(inputPath);
+                string modelNameForImages = Path.GetFileNameWithoutExtension(inputPath);
+                IReadOnlyList<StepProjectionImage> images = ProjectFileImages(stepData, modelNameForImages, options);
+                var imageOutputFiles = new List<string>();
+                foreach (StepProjectionImage image in images)
+                {
+                    string outputPath = Path.Combine(outputDirectory, modelNameForImages + "__" + image.ViewName + ".png");
+                    image.SavePng(outputPath);
+                    imageOutputFiles.Add(outputPath);
+                }
+
+                return new StepProjectionReport
+                {
+                    InputPath = inputPath,
+                    FaceCount = 0,
+                    EdgeCount = 0,
+                    OutputFiles = imageOutputFiles
+                };
+            }
 
             var outputFiles = new List<string>();
             string modelName = Path.GetFileNameWithoutExtension(inputPath);
@@ -186,6 +251,37 @@ namespace EasyEDA_Loader
             };
         }
 
+        public static IReadOnlyList<StepProjectionImage> ProjectFileImages(
+            byte[] stepData,
+            string modelName,
+            StepProjectionOptions options = null)
+        {
+            if (stepData == null)
+                throw new ArgumentNullException(nameof(stepData));
+            if (string.IsNullOrWhiteSpace(modelName))
+                modelName = "model";
+
+            options = NormalizeOptions(options);
+            IReadOnlyList<ViewSpec> selectedViews = GetSelectedViews(options);
+            if (TryRenderWithF3DLibraryBatchToRawImages(stepData, modelName, selectedViews, options, out IReadOnlyList<StepProjectionImage> f3dImages))
+                return f3dImages;
+
+            string stepText = Encoding.Latin1.GetString(stepData);
+            StepModel model = StepModel.Parse(stepText);
+            model.BuildIndexes();
+            var drawingModel = ProjectionModel.Build(model);
+
+            var result = new List<StepProjectionImage>();
+            foreach (ViewSpec view in selectedViews)
+            {
+                ProjectionTransform transform = ProjectionTransform.Create(drawingModel.Bounds, view, options);
+                RgbaImage image = RenderProjectionImage(drawingModel, view, transform, options);
+                result.Add(image.ToProjectionImage(view.Name));
+            }
+
+            return result;
+        }
+
         public static byte[] ProjectSingleViewPng(byte[] stepData, string viewName, StepProjectionOptions options = null)
         {
             if (stepData == null)
@@ -195,15 +291,7 @@ namespace EasyEDA_Loader
                 throw new ArgumentException("Projection view name is required.", nameof(viewName));
 
             options = CloneSingleViewOptions(options, viewName);
-
-            string stepText = Encoding.Latin1.GetString(stepData);
-            StepModel model = StepModel.Parse(stepText);
-            model.BuildIndexes();
-            var drawingModel = ProjectionModel.Build(model);
-            ViewSpec view = GetSelectedViews(options)[0];
-            ProjectionTransform transform = ProjectionTransform.Create(drawingModel.Bounds, view, options);
-
-            return RenderProjectionImage(drawingModel, view, transform, options).ToPngBytes();
+            return ProjectFileImages(stepData, "model", options)[0].ToPngBytes();
         }
 
         public static StepProjectionReport ProjectDetectionFile(
@@ -224,6 +312,34 @@ namespace EasyEDA_Loader
 
             options = NormalizeOptions(options);
             Directory.CreateDirectory(outputDirectory);
+
+            if (!options.WriteMetadata)
+            {
+                byte[] stepData = File.ReadAllBytes(inputPath);
+                string modelNameForImages = Path.GetFileNameWithoutExtension(inputPath);
+                DeleteExistingDetectionProjectionFiles(outputDirectory, modelNameForImages);
+                IReadOnlyList<StepProjectionImage> images = ProjectDetectionFileImages(
+                    stepData,
+                    modelNameForImages,
+                    detectionReport,
+                    options,
+                    markedRegions);
+                var imageOutputFiles = new List<string>();
+                foreach (StepProjectionImage image in images)
+                {
+                    string outputPath = Path.Combine(outputDirectory, modelNameForImages + "__" + image.ViewName + ".png");
+                    image.SavePng(outputPath);
+                    imageOutputFiles.Add(outputPath);
+                }
+
+                return new StepProjectionReport
+                {
+                    InputPath = inputPath,
+                    FaceCount = 0,
+                    EdgeCount = 0,
+                    OutputFiles = imageOutputFiles
+                };
+            }
 
             string stepText = Encoding.Latin1.GetString(File.ReadAllBytes(inputPath));
             StepModel model = StepModel.Parse(stepText);
@@ -306,6 +422,90 @@ namespace EasyEDA_Loader
             };
         }
 
+        public static IReadOnlyList<StepProjectionImage> ProjectDetectionFileImages(
+            byte[] stepData,
+            string modelName,
+            StepWatermarkDetectionReport detectionReport,
+            StepProjectionOptions options = null,
+            IReadOnlyList<StepWatermarkMarkedRegion> markedRegions = null)
+        {
+            if (stepData == null)
+                throw new ArgumentNullException(nameof(stepData));
+            if (detectionReport == null)
+                throw new ArgumentNullException(nameof(detectionReport));
+            if (string.IsNullOrWhiteSpace(modelName))
+                modelName = "model";
+
+            options = NormalizeOptions(options);
+            string stepText = Encoding.Latin1.GetString(stepData);
+            StepModel model = StepModel.Parse(stepText);
+            model.BuildIndexes();
+            var drawingModel = ProjectionModel.Build(model);
+            var highlights = BuildDetectionHighlights(model, detectionReport, drawingModel.Bounds);
+            var compatibleMarkedRegions = GetCompatibleMarkedRegions(markedRegions);
+            if (compatibleMarkedRegions.Count > 0)
+                highlights = FilterHighlightsByMarkedRegions(highlights, compatibleMarkedRegions);
+
+            var selectedDetectionViews = new List<ViewSpec>();
+            var transformsByView = new Dictionary<string, ProjectionTransform>(StringComparer.OrdinalIgnoreCase);
+            var highlightsByView = new Dictionary<string, IReadOnlyList<ProjectionHighlight>>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (ViewSpec view in GetSelectedViews(options))
+            {
+                var viewHighlights = highlights
+                    .Where(highlight => string.Equals(highlight.ViewName, view.Name, StringComparison.OrdinalIgnoreCase))
+                    .ToList();
+                if (viewHighlights.Count == 0)
+                    continue;
+
+                selectedDetectionViews.Add(view);
+                transformsByView[view.Name] = ProjectionTransform.Create(drawingModel.Bounds, view, options);
+                highlightsByView[view.Name] = viewHighlights;
+            }
+
+            if (selectedDetectionViews.Count == 0)
+                return Array.Empty<StepProjectionImage>();
+
+            if (TryRenderWithF3DLibraryBatchToRawImages(
+                stepData,
+                modelName,
+                selectedDetectionViews,
+                options,
+                out IReadOnlyList<StepProjectionImage> renderedImages))
+            {
+                var result = new List<StepProjectionImage>();
+                foreach (StepProjectionImage renderedImage in renderedImages)
+                {
+                    if (!highlightsByView.TryGetValue(renderedImage.ViewName, out IReadOnlyList<ProjectionHighlight> viewHighlights) ||
+                        viewHighlights.Count == 0)
+                    {
+                        result.Add(renderedImage);
+                        continue;
+                    }
+
+                    RgbaImage image = RgbaImage.FromProjectionImage(renderedImage);
+                    DrawDetectionHighlights(image, FindView(renderedImage.ViewName), transformsByView[renderedImage.ViewName], viewHighlights);
+                    result.Add(image.ToProjectionImage(renderedImage.ViewName));
+                }
+
+                return result;
+            }
+
+            var fallback = new List<StepProjectionImage>();
+            foreach (ViewSpec view in selectedDetectionViews)
+            {
+                RgbaImage image = RenderProjectionImage(
+                    drawingModel,
+                    view,
+                    transformsByView[view.Name],
+                    options,
+                    highlightsByView[view.Name]);
+                fallback.Add(image.ToProjectionImage(view.Name));
+            }
+
+            return fallback;
+        }
+
         private static void DeleteExistingDetectionProjectionFiles(string outputDirectory, string modelName)
         {
             foreach (string file in Directory.GetFiles(outputDirectory, modelName + "__*.png"))
@@ -329,9 +529,33 @@ namespace EasyEDA_Loader
             if (detectionReport == null)
                 throw new ArgumentNullException(nameof(detectionReport));
 
+            return ProjectDetectionRegions(
+                File.ReadAllBytes(inputPath),
+                Path.GetFileNameWithoutExtension(inputPath),
+                detectionReport,
+                options,
+                markedRegions);
+        }
+
+        public static IReadOnlyList<StepProjectionDetectionRegion> ProjectDetectionRegions(
+            byte[] stepData,
+            string modelName,
+            StepWatermarkDetectionReport detectionReport,
+            StepProjectionOptions options = null,
+            IReadOnlyList<StepWatermarkMarkedRegion> markedRegions = null)
+        {
+            if (stepData == null)
+                throw new ArgumentNullException(nameof(stepData));
+
+            if (detectionReport == null)
+                throw new ArgumentNullException(nameof(detectionReport));
+
+            if (string.IsNullOrWhiteSpace(modelName))
+                modelName = "model";
+
             options = NormalizeOptions(options);
 
-            string stepText = Encoding.Latin1.GetString(File.ReadAllBytes(inputPath));
+            string stepText = Encoding.Latin1.GetString(stepData);
             StepModel model = StepModel.Parse(stepText);
             model.BuildIndexes();
             var drawingModel = ProjectionModel.Build(model);
@@ -341,7 +565,6 @@ namespace EasyEDA_Loader
                 highlights = FilterHighlightsByMarkedRegions(highlights, compatibleMarkedRegions);
 
             var result = new List<StepProjectionDetectionRegion>();
-            string modelName = Path.GetFileNameWithoutExtension(inputPath);
 
             foreach (ViewSpec view in GetSelectedViews(options))
             {
@@ -361,7 +584,7 @@ namespace EasyEDA_Loader
                     Rect2i rectangle = detectionRectangle.Rectangle;
                     result.Add(new StepProjectionDetectionRegion
                     {
-                        InputPath = inputPath,
+                        InputPath = modelName,
                         ModelName = modelName,
                         ViewName = view.Name,
                         RectangleX = rectangle.Left,
@@ -813,6 +1036,174 @@ namespace EasyEDA_Loader
                 Debug.WriteLine("F3D library batch render failed: " + ex.Message);
                 return false;
             }
+        }
+
+        private static bool TryRenderWithF3DLibraryBatchToRawImages(
+            byte[] stepData,
+            string modelName,
+            IReadOnlyList<ViewSpec> views,
+            StepProjectionOptions options,
+            out IReadOnlyList<StepProjectionImage> images)
+        {
+            images = Array.Empty<StepProjectionImage>();
+            try
+            {
+                string executable = FindF3DRenderExecutable();
+                if (string.IsNullOrEmpty(executable))
+                    return false;
+
+                if (stepData == null || stepData.Length == 0 || views == null || views.Count == 0)
+                    return false;
+
+                if (string.IsNullOrWhiteSpace(modelName))
+                    modelName = "model";
+
+                foreach (ViewSpec view in views)
+                {
+                    if (!Views.Any(candidate => string.Equals(candidate.Name, view.Name, StringComparison.OrdinalIgnoreCase)))
+                        return false;
+                }
+
+                var startInfo = new ProcessStartInfo
+                {
+                    FileName = executable,
+                    WorkingDirectory = Path.GetDirectoryName(executable),
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                    RedirectStandardInput = true,
+                    RedirectStandardError = true,
+                    RedirectStandardOutput = true
+                };
+                startInfo.ArgumentList.Add("--six-sides-stdout");
+                startInfo.ArgumentList.Add("-");
+                startInfo.ArgumentList.Add(modelName);
+                startInfo.ArgumentList.Add("--size");
+                startInfo.ArgumentList.Add(options.ImageSizePixels.ToString(CultureInfo.InvariantCulture));
+                startInfo.ArgumentList.Add("--views");
+                startInfo.ArgumentList.Add(string.Join(",", views.Select(view => view.Name)));
+
+                string standardOutput;
+                string standardError;
+                using (var process = Process.Start(startInfo))
+                {
+                    if (process == null)
+                        return false;
+
+                    Task<string> standardOutputTask = process.StandardOutput.ReadToEndAsync();
+                    Task<string> standardErrorTask = process.StandardError.ReadToEndAsync();
+                    process.StandardInput.BaseStream.Write(stepData, 0, stepData.Length);
+                    process.StandardInput.Close();
+
+                    if (!process.WaitForExit(30000))
+                    {
+                        try { process.Kill(); }
+                        catch { }
+                        return false;
+                    }
+
+                    process.WaitForExit();
+                    standardOutput = standardOutputTask.GetAwaiter().GetResult();
+                    standardError = standardErrorTask.GetAwaiter().GetResult();
+                    if (process.ExitCode != 0)
+                    {
+                        Debug.WriteLine("F3D raw image batch render failed: " + FirstNonEmpty(standardError.Trim(), standardOutput.Trim(), "No error output."));
+                        return false;
+                    }
+                }
+
+                using (JsonDocument document = JsonDocument.Parse(standardOutput))
+                {
+                    if (!document.RootElement.TryGetProperty("views", out JsonElement viewsElement) ||
+                        viewsElement.ValueKind != JsonValueKind.Array)
+                        return false;
+
+                    var byName = new Dictionary<string, StepProjectionImage>(StringComparer.OrdinalIgnoreCase);
+                    foreach (JsonElement viewElement in viewsElement.EnumerateArray())
+                    {
+                        string viewName = viewElement.GetProperty("name").GetString();
+                        int width = viewElement.GetProperty("width").GetInt32();
+                        int height = viewElement.GetProperty("height").GetInt32();
+                        int channelCount = viewElement.GetProperty("channelCount").GetInt32();
+                        int channelType = viewElement.GetProperty("channelType").GetInt32();
+                        int channelTypeSize = viewElement.GetProperty("channelTypeSize").GetInt32();
+                        string rawBase64 = viewElement.GetProperty("rawBase64").GetString();
+                        if (string.IsNullOrWhiteSpace(viewName) ||
+                            width <= 0 ||
+                            height <= 0 ||
+                            channelType != 0 ||
+                            channelTypeSize != 1 ||
+                            string.IsNullOrWhiteSpace(rawBase64))
+                            return false;
+
+                        byte[] rawBytes = Convert.FromBase64String(rawBase64);
+                        byte[] rgbaBytes = ConvertRawF3DImageToRgba(rawBytes, width, height, channelCount);
+                        byName[viewName] = new StepProjectionImage
+                        {
+                            ViewName = viewName,
+                            Width = width,
+                            Height = height,
+                            RgbaBytes = rgbaBytes
+                        };
+                    }
+
+                    var ordered = new List<StepProjectionImage>();
+                    foreach (ViewSpec view in views)
+                    {
+                        if (!byName.TryGetValue(view.Name, out StepProjectionImage image))
+                            return false;
+                        ordered.Add(image);
+                    }
+
+                    images = ordered;
+                    return true;
+                }
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine("F3D raw image batch render failed: " + ex.Message);
+                images = Array.Empty<StepProjectionImage>();
+                return false;
+            }
+        }
+
+        private static byte[] ConvertRawF3DImageToRgba(byte[] rawBytes, int width, int height, int channelCount)
+        {
+            if (rawBytes == null)
+                throw new ArgumentNullException(nameof(rawBytes));
+            if (width <= 0 || height <= 0 || channelCount <= 0)
+                throw new InvalidDataException("F3D raw image shape is invalid.");
+
+            int pixelCount = checked(width * height);
+            if (rawBytes.Length < pixelCount * channelCount)
+                throw new InvalidDataException("F3D raw image data is incomplete.");
+
+            var rgba = new byte[pixelCount * 4];
+            for (int y = 0; y < height; y++)
+            {
+                int sourceRow = (height - 1 - y) * width * channelCount;
+                int targetRow = y * width * 4;
+                for (int x = 0; x < width; x++)
+                {
+                    int source = sourceRow + x * channelCount;
+                    int target = targetRow + x * 4;
+                    if (channelCount == 1)
+                    {
+                        byte value = rawBytes[source];
+                        rgba[target] = value;
+                        rgba[target + 1] = value;
+                        rgba[target + 2] = value;
+                        rgba[target + 3] = 255;
+                        continue;
+                    }
+
+                    rgba[target] = rawBytes[source];
+                    rgba[target + 1] = rawBytes[source + 1];
+                    rgba[target + 2] = rawBytes[source + 2];
+                    rgba[target + 3] = channelCount >= 4 ? rawBytes[source + 3] : (byte)255;
+                }
+            }
+
+            return rgba;
         }
 
         private static void AddF3DViewArguments(System.Collections.ObjectModel.Collection<string> arguments, ViewSpec view)
@@ -1774,6 +2165,17 @@ namespace EasyEDA_Loader
             }
 
             return selected.Count == 0 ? Views : selected;
+        }
+
+        private static ViewSpec FindView(string name)
+        {
+            foreach (ViewSpec view in Views)
+            {
+                if (string.Equals(view.Name, name, StringComparison.OrdinalIgnoreCase))
+                    return view;
+            }
+
+            throw new ArgumentException("Unknown projection view name: " + name, nameof(name));
         }
 
         private sealed class ProjectionModel
@@ -3129,6 +3531,14 @@ namespace EasyEDA_Loader
                 }
             }
 
+            public static RgbaImage FromProjectionImage(StepProjectionImage image)
+            {
+                if (image == null)
+                    throw new ArgumentNullException(nameof(image));
+
+                return new RgbaImage(image.ToBitmap());
+            }
+
             public void Clear(Rgba color)
             {
                 _canvas.Clear(ToSkColor(color));
@@ -3233,6 +3643,28 @@ namespace EasyEDA_Loader
                 using (SKImage image = SKImage.FromBitmap(_bitmap))
                 using (SKData data = image.Encode(SKEncodedImageFormat.Png, 100))
                     return data.ToArray();
+            }
+
+            public StepProjectionImage ToProjectionImage(string viewName)
+            {
+                _canvas.Flush();
+                int rowBytes = _bitmap.RowBytes;
+                int widthBytes = Width * 4;
+                var bytes = new byte[widthBytes * Height];
+                IntPtr source = _bitmap.GetPixels();
+                if (source == IntPtr.Zero)
+                    throw new InvalidDataException("Projection bitmap data is not available.");
+
+                for (int y = 0; y < Height; y++)
+                    Marshal.Copy(IntPtr.Add(source, y * rowBytes), bytes, y * widthBytes, widthBytes);
+
+                return new StepProjectionImage
+                {
+                    ViewName = viewName,
+                    Width = Width,
+                    Height = Height,
+                    RgbaBytes = bytes
+                };
             }
 
             public void BlendPixel(int x, int y, Rgba color)

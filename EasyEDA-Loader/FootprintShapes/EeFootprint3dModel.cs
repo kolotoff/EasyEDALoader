@@ -160,8 +160,8 @@ namespace EasyEDA_Loader
                 {
                     FootprintModelRotation projectionRotation = FootprintModelPlacement.ResolveProjectionModelRotationDeg(modelRotation);
                     StepSilhouetteBounds projectionBounds = EEPCB.GetComponentBodyBoundsMm(c, body, modelX, modelY, Width, Height);
-                    IReadOnlyList<StepSilhouettePrimitive> projectionPrimitives = StepSilhouetteProjection.GenerateFromFile(
-                        temp,
+                    IReadOnlyList<StepSilhouettePrimitive> projectionPrimitives = StepSilhouetteProjection.Generate(
+                        footprintModel,
                         new StepSilhouettePlacement
                         {
                             TargetBounds = projectionBounds,

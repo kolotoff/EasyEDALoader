@@ -79,12 +79,7 @@ namespace EasyEDA_Loader
             byte[] cleanStep = cleanResult.CleanStep;
 
             string safeModelName = SanitizeFileName(Path.GetFileNameWithoutExtension(modelName));
-            string originalPath = Path.Combine(verificationDirectory, safeModelName + ".original.step");
-            string cleanPath = Path.Combine(verificationDirectory, safeModelName + ".clean.step");
-            File.WriteAllBytes(originalPath, originalStep);
-            File.WriteAllBytes(cleanPath, cleanStep);
-
-            var verification = VerifyPostCleanOutput(originalPath, cleanPath, cleanReport.DetectionReport, verificationDirectory);
+            var verification = VerifyPostCleanOutput(originalStep, cleanStep, safeModelName, cleanReport.DetectionReport, verificationDirectory);
             if (!verification.Passed)
             {
                 string message = "STEP watermark cleanup failed post-clean projection verification. Report: " +
@@ -100,8 +95,9 @@ namespace EasyEDA_Loader
         }
 
         private static PostCleanVerificationResult VerifyPostCleanOutput(
-            string originalPath,
-            string cleanPath,
+            byte[] originalStep,
+            byte[] cleanStep,
+            string modelName,
             StepWatermarkDetectionReport detectionReport,
             string verificationDirectory)
         {
@@ -112,14 +108,11 @@ namespace EasyEDA_Loader
             };
 
             Directory.CreateDirectory(verificationDirectory);
-            string originalProjectionDirectory = Path.Combine(verificationDirectory, "OriginalProjection");
-            string cleanProjectionDirectory = Path.Combine(verificationDirectory, "CleanProjection");
-            Directory.CreateDirectory(originalProjectionDirectory);
-            Directory.CreateDirectory(cleanProjectionDirectory);
 
             var projectionOptions = CreateVerificationProjectionOptions();
             var detectionRegions = StepProjectionRenderer.ProjectDetectionRegions(
-                    originalPath,
+                    originalStep,
+                    modelName,
                     detectionReport,
                     projectionOptions)
                 .ToList();
@@ -133,25 +126,35 @@ namespace EasyEDA_Loader
             if (detectedViewNames.Length > 0)
             {
                 var renderOptions = CreateProjectionOptionsForViews(detectedViewNames, projectionOptions);
-                var originalProjectionTask = Task.Run(() => StepProjectionRenderer.ProjectFile(originalPath, originalProjectionDirectory, renderOptions));
-                var cleanProjectionTask = Task.Run(() => StepProjectionRenderer.ProjectFile(cleanPath, cleanProjectionDirectory, renderOptions));
+                var originalProjectionTask = Task.Run(() => StepProjectionRenderer.ProjectFileImages(originalStep, modelName + ".original", renderOptions));
+                var cleanProjectionTask = Task.Run(() => StepProjectionRenderer.ProjectFileImages(cleanStep, modelName + ".clean", renderOptions));
                 Task.WaitAll(originalProjectionTask, cleanProjectionTask);
 
-                string originalModelName = Path.GetFileNameWithoutExtension(originalPath);
-                string cleanModelName = Path.GetFileNameWithoutExtension(cleanPath);
+                var originalImagesByView = originalProjectionTask.Result.ToDictionary(image => image.ViewName, StringComparer.OrdinalIgnoreCase);
+                var cleanImagesByView = cleanProjectionTask.Result.ToDictionary(image => image.ViewName, StringComparer.OrdinalIgnoreCase);
                 foreach (string viewName in detectedViewNames)
                 {
-                    string originalProjectionPath = Path.Combine(originalProjectionDirectory, originalModelName + "__" + viewName + ".png");
-                    string cleanProjectionPath = Path.Combine(cleanProjectionDirectory, cleanModelName + "__" + viewName + ".png");
+                    if (!originalImagesByView.TryGetValue(viewName, out StepProjectionImage originalProjection))
+                    {
+                        result.Failures.Add(modelName + " original projection is missing on " + viewName + ".");
+                        continue;
+                    }
+
+                    if (!cleanImagesByView.TryGetValue(viewName, out StepProjectionImage cleanProjection))
+                    {
+                        result.Failures.Add(modelName + " clean projection is missing on " + viewName + ".");
+                        continue;
+                    }
+
                     var viewRegions = detectionRegions
                         .Where(region => string.Equals(region.ViewName, viewName, StringComparison.OrdinalIgnoreCase))
                         .ToList();
 
                     VerifyPostCleanProjectionImage(
-                        Path.GetFileName(originalPath),
+                        modelName,
                         viewName,
-                        originalProjectionPath,
-                        cleanProjectionPath,
+                        originalProjection,
+                        cleanProjection,
                         viewRegions,
                         result);
                 }
@@ -164,13 +167,13 @@ namespace EasyEDA_Loader
         private static void VerifyPostCleanProjectionImage(
             string fileName,
             string viewName,
-            string originalProjectionPath,
-            string cleanProjectionPath,
+            StepProjectionImage originalProjection,
+            StepProjectionImage cleanProjection,
             IReadOnlyList<StepProjectionDetectionRegion> detectionRegions,
             PostCleanVerificationResult result)
         {
-            using (var originalImage = SKBitmap.Decode(originalProjectionPath))
-            using (var cleanImage = SKBitmap.Decode(cleanProjectionPath))
+            using (var originalImage = originalProjection.ToBitmap())
+            using (var cleanImage = cleanProjection.ToBitmap())
             {
                 if (originalImage == null || cleanImage == null)
                 {
@@ -238,9 +241,9 @@ namespace EasyEDA_Loader
                         ViewName = viewName,
                         Message = message,
                         LeftLabel = "Original",
-                        LeftImagePath = originalProjectionPath,
+                        LeftImage = originalProjection,
                         RightLabel = "Clean",
-                        RightImagePath = cleanProjectionPath
+                        RightImage = cleanProjection
                     });
                 }
 
@@ -250,8 +253,8 @@ namespace EasyEDA_Loader
                         viewName,
                         originalImage,
                         cleanImage,
-                        originalProjectionPath,
-                        cleanProjectionPath,
+                        originalProjection,
+                        cleanProjection,
                         region,
                         result);
             }
@@ -262,8 +265,8 @@ namespace EasyEDA_Loader
             string viewName,
             SKBitmap originalImage,
             SKBitmap cleanImage,
-            string originalProjectionPath,
-            string cleanProjectionPath,
+            StepProjectionImage originalProjection,
+            StepProjectionImage cleanProjection,
             StepProjectionDetectionRegion region,
             PostCleanVerificationResult result)
         {
@@ -307,9 +310,9 @@ namespace EasyEDA_Loader
                 ViewName = viewName,
                 Message = message,
                 LeftLabel = "Original",
-                LeftImagePath = originalProjectionPath,
+                LeftImage = originalProjection,
                 RightLabel = "Clean",
-                RightImagePath = cleanProjectionPath
+                RightImage = cleanProjection
             });
         }
 
@@ -493,8 +496,8 @@ namespace EasyEDA_Loader
 
         private static bool TryWriteSideBySideProjectionImage(ProjectionVisualFailure failure, string outputPath)
         {
-            using (var leftImage = SKBitmap.Decode(failure.LeftImagePath))
-            using (var rightImage = SKBitmap.Decode(failure.RightImagePath))
+            using (var leftImage = failure.LeftImage != null ? failure.LeftImage.ToBitmap() : SKBitmap.Decode(failure.LeftImagePath))
+            using (var rightImage = failure.RightImage != null ? failure.RightImage.ToBitmap() : SKBitmap.Decode(failure.RightImagePath))
             {
                 if (leftImage == null || rightImage == null)
                     return false;
@@ -619,8 +622,10 @@ namespace EasyEDA_Loader
             public string Message { get; set; }
             public string LeftLabel { get; set; }
             public string LeftImagePath { get; set; }
+            public StepProjectionImage LeftImage { get; set; }
             public string RightLabel { get; set; }
             public string RightImagePath { get; set; }
+            public StepProjectionImage RightImage { get; set; }
         }
     }
 }

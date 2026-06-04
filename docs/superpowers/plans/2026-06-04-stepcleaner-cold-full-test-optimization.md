@@ -1,6 +1,6 @@
 # StepCleaner Cold Full Test Optimization Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Reduce the cold no-cache full `Test\StepCleaner\StepCleaner.Tests.csproj` runtime by attacking the measured projection bottlenecks first.
 
@@ -108,7 +108,7 @@ Interpretation: the pure projection render buckets improved, especially clean/or
 **Files:**
 - Modify: `Test/StepCleaner/Program.cs`
 
-- [ ] **Step 1: Write failing source guards**
+- [x] **Step 1: Write failing source guards**
 
 In `RunModelCacheTests()`, after the existing F3D library helper assertions, add these guards:
 
@@ -140,7 +140,7 @@ AssertContains(
     failures);
 ```
 
-- [ ] **Step 2: Run guard test and verify it fails**
+- [x] **Step 2: Run guard test and verify it fails**
 
 Run:
 
@@ -150,7 +150,7 @@ dotnet run --project Test\StepCleaner\StepCleaner.Tests.csproj -- --model-cache
 
 Expected: FAIL with messages for missing `--views`, highlighted batch use, subset support, render-only option, and `full_test_wall_ms`.
 
-- [ ] **Step 3: Commit the failing guards**
+- [x] **Step 3: Commit the failing guards**
 
 ```powershell
 git add Test\StepCleaner\Program.cs
@@ -164,7 +164,7 @@ git commit -m "Add guards for cold full-test projection optimizations"
 **Files:**
 - Modify: `StepF3DRender/Program.cs`
 
-- [ ] **Step 1: Extend request shape**
+- [x] **Step 1: Extend request shape**
 
 In `RenderRequest`, add:
 
@@ -172,7 +172,7 @@ In `RenderRequest`, add:
 public IReadOnlyList<string> ViewNames { get; set; }
 ```
 
-- [ ] **Step 2: Parse optional `--views`**
+- [x] **Step 2: Parse optional `--views`**
 
 In `ParseArguments`, initialize and parse:
 
@@ -239,7 +239,7 @@ return new RenderRequest
 };
 ```
 
-- [ ] **Step 3: Render only requested views**
+- [x] **Step 3: Render only requested views**
 
 In `RenderSixSides`, replace:
 
@@ -254,7 +254,7 @@ foreach (ViewSpec view in Views.Where(view =>
     request.ViewNames.Any(name => string.Equals(name, view.Name, StringComparison.OrdinalIgnoreCase))))
 ```
 
-- [ ] **Step 4: Update usage**
+- [x] **Step 4: Update usage**
 
 Replace the usage text with:
 
@@ -262,7 +262,7 @@ Replace the usage text with:
 Console.Error.WriteLine("Usage: StepF3DRender --six-sides <input.step> <output-directory> [--size pixels] [--views x_plus,y_plus,z_plus]");
 ```
 
-- [ ] **Step 5: Build helper**
+- [x] **Step 5: Build helper**
 
 Run:
 
@@ -272,7 +272,7 @@ dotnet build StepF3DRender\StepF3DRender.csproj
 
 Expected: PASS.
 
-- [ ] **Step 6: Verify subset command**
+- [x] **Step 6: Verify subset command**
 
 Run:
 
@@ -286,7 +286,7 @@ Get-ChildItem -LiteralPath $out -Filter *.png | Select-Object Name,Length
 
 Expected: exactly `2` PNGs, both nonempty, and output contains `six_side_f3d_library_ms=`.
 
-- [ ] **Step 7: Run source guard**
+- [x] **Step 7: Run source guard**
 
 Run:
 
@@ -296,7 +296,7 @@ dotnet run --project Test\StepCleaner\StepCleaner.Tests.csproj -- --model-cache
 
 Expected: still FAIL, but no longer failing the `--views` guard.
 
-- [ ] **Step 8: Commit helper subset support**
+- [x] **Step 8: Commit helper subset support**
 
 ```powershell
 git add StepF3DRender\Program.cs
@@ -310,7 +310,7 @@ git commit -m "Support subset views in libf3d batch renderer"
 **Files:**
 - Modify: `EasyEDA-Loader/StepProjectionRenderer.cs`
 
-- [ ] **Step 1: Remove six-view-only restriction**
+- [x] **Step 1: Remove six-view-only restriction**
 
 In `TryRenderWithF3DLibraryBatch`, replace:
 
@@ -342,7 +342,7 @@ foreach (ViewSpec view in views)
 }
 ```
 
-- [ ] **Step 2: Pass `--views` to helper**
+- [x] **Step 2: Pass `--views` to helper**
 
 After adding `--size`, add:
 
@@ -351,7 +351,7 @@ startInfo.ArgumentList.Add("--views");
 startInfo.ArgumentList.Add(string.Join(",", views.Select(view => view.Name)));
 ```
 
-- [ ] **Step 3: Batch-render detection projection base images**
+- [x] **Step 3: Batch-render detection projection base images**
 
 In `ProjectDetectionFile`, after `renderedWithOpenCascadeBatch`, add:
 
@@ -380,7 +380,7 @@ else if (renderedWithF3DLibraryBatch && highlightsByView.TryGetValue(view.Name, 
 }
 ```
 
-- [ ] **Step 4: Build production project**
+- [x] **Step 4: Build production project**
 
 Run:
 
@@ -390,7 +390,7 @@ dotnet build EasyEDA-Loader\EasyEDA-Loader.csproj
 
 Expected: PASS.
 
-- [ ] **Step 5: Run guard test**
+- [x] **Step 5: Run guard test**
 
 Run:
 
@@ -400,7 +400,7 @@ dotnet run --project Test\StepCleaner\StepCleaner.Tests.csproj -- --model-cache
 
 Expected: still FAIL only for render-only option and wall-time timing guard.
 
-- [ ] **Step 6: Measure targeted highlighted path**
+- [x] **Step 6: Measure targeted highlighted path**
 
 Clear generated debug images and run full test once:
 
@@ -413,7 +413,7 @@ dotnet run --project Test\StepCleaner\StepCleaner.Tests.csproj
 
 Expected: PASS. `detection_debug_images` and `original_detection_side_projection_render_ms` should be materially lower than baseline `44049 ms` and `39597 ms`.
 
-- [ ] **Step 7: Commit highlighted batch rendering**
+- [x] **Step 7: Commit highlighted batch rendering**
 
 ```powershell
 git add EasyEDA-Loader\StepProjectionRenderer.cs Test\StepCleaner\Data\full_no_cache_timing.log
@@ -429,7 +429,7 @@ git commit -m "Batch highlighted projections through libf3d"
 - Modify: `EasyEDA-Loader/StepProjectionRenderer.cs`
 - Modify: `Test/StepCleaner/Program.cs`
 
-- [ ] **Step 1: Add explicit option**
+- [x] **Step 1: Add explicit option**
 
 In `StepProjectionOptions`, add:
 
@@ -437,7 +437,7 @@ In `StepProjectionOptions`, add:
 public bool SkipGeometryModelForExternalRender { get; set; }
 ```
 
-- [ ] **Step 2: Preserve option in clone paths**
+- [x] **Step 2: Preserve option in clone paths**
 
 Where `StepProjectionOptions` is cloned, add:
 
@@ -452,7 +452,7 @@ private static StepProjectionOptions CloneSingleViewOptions(...)
 private static StepProjectionOptions CreateProjectionOptionsForViews(...)
 ```
 
-- [ ] **Step 3: Add a fast external-render branch at the start of `ProjectFile`**
+- [x] **Step 3: Add a fast external-render branch at the start of `ProjectFile`**
 
 After normalizing options and creating `outputDirectory`, before reading/parsing STEP bytes, add:
 
@@ -480,7 +480,7 @@ if (options.SkipGeometryModelForExternalRender &&
 
 Then remove the duplicate later declarations of `modelName`, `selectedViews`, and `outputPathsByView`; keep `transformsByView` creation after `drawingModel` exists.
 
-- [ ] **Step 4: Enable the option in verification projections**
+- [x] **Step 4: Enable the option in verification projections**
 
 In `CreateVerificationProjectionOptions()`, return:
 
@@ -494,7 +494,7 @@ return new StepProjectionOptions
 };
 ```
 
-- [ ] **Step 5: Build and run guard**
+- [x] **Step 5: Build and run guard**
 
 Run:
 
@@ -505,7 +505,7 @@ dotnet run --project Test\StepCleaner\StepCleaner.Tests.csproj -- --model-cache
 
 Expected: FAIL only for `full_test_wall_ms` if Task 5 is not done yet.
 
-- [ ] **Step 6: Measure clean/validated projection improvement**
+- [x] **Step 6: Measure clean/validated projection improvement**
 
 Clear generated outputs:
 
@@ -520,7 +520,7 @@ dotnet run --project Test\StepCleaner\StepCleaner.Tests.csproj
 
 Expected: PASS. `clean_projection_render_ms` and `validated_projection_render_ms` should be lower than baseline `28238 ms` and `28742 ms`.
 
-- [ ] **Step 7: Commit render-only projection mode**
+- [x] **Step 7: Commit render-only projection mode**
 
 ```powershell
 git add EasyEDA-Loader\StepProjectionRenderer.cs Test\StepCleaner\Program.cs
@@ -534,7 +534,7 @@ git commit -m "Skip geometry parsing for external verification renders"
 **Files:**
 - Modify: `Test/StepCleaner/Program.cs`
 
-- [ ] **Step 1: Add wall stopwatch**
+- [x] **Step 1: Add wall stopwatch**
 
 At the start of the no-args `try` block in `Main`, add:
 
@@ -556,7 +556,7 @@ fullTestStopwatch.Stop();
 Console.WriteLine("full_test_wall_ms=" + fullTestStopwatch.ElapsedMilliseconds.ToString(CultureInfo.InvariantCulture));
 ```
 
-- [ ] **Step 2: Build and run guard**
+- [x] **Step 2: Build and run guard**
 
 Run:
 
@@ -566,7 +566,7 @@ dotnet run --project Test\StepCleaner\StepCleaner.Tests.csproj -- --model-cache
 
 Expected: PASS.
 
-- [ ] **Step 3: Commit timing output**
+- [x] **Step 3: Commit timing output**
 
 ```powershell
 git add Test\StepCleaner\Program.cs
@@ -581,7 +581,7 @@ git commit -m "Print full StepCleaner test wall timing"
 - Modify: `EasyEDA-Loader/StepProjectionRenderer.cs`
 - Modify: `Test/StepCleaner/Program.cs`
 
-- [ ] **Step 1: Add option for parallel file projection**
+- [x] **Step 1: Add option for parallel file projection**
 
 In `StepProjectionOptions`, add:
 
@@ -589,7 +589,7 @@ In `StepProjectionOptions`, add:
 public int MaxParallelFiles { get; set; } = 1;
 ```
 
-- [ ] **Step 2: Preserve option in clone paths**
+- [x] **Step 2: Preserve option in clone paths**
 
 Add to every `StepProjectionOptions` clone:
 
@@ -597,7 +597,7 @@ Add to every `StepProjectionOptions` clone:
 MaxParallelFiles = options.MaxParallelFiles
 ```
 
-- [ ] **Step 3: Add bounded parallel branch in `ProjectDirectory`**
+- [x] **Step 3: Add bounded parallel branch in `ProjectDirectory`**
 
 Replace the sequential loop:
 
@@ -633,7 +633,7 @@ return results.ToList();
 
 Add `using System.Threading.Tasks;` if not already present.
 
-- [ ] **Step 4: Enable conservative parallelism in the full-test verification options**
+- [x] **Step 4: Enable conservative parallelism in the full-test verification options**
 
 In `CreateVerificationProjectionOptions()`, add:
 
@@ -643,7 +643,7 @@ MaxParallelFiles = 2
 
 Use `2` first because F3D is GPU/OpenGL-backed and too much parallelism may become slower or unstable.
 
-- [ ] **Step 5: Benchmark `1` versus `2`**
+- [x] **Step 5: Benchmark `1` versus `2`**
 
 Run the cold full test twice, changing only `MaxParallelFiles`.
 
@@ -656,7 +656,7 @@ MaxParallelFiles=2: pass, record full_test_wall_ms and projection stages
 
 Keep `MaxParallelFiles=2` only as a scoped full-test verification setting if it passes cold and improves the measured projection verification total without increasing full-test wall time. Do not make it the library default. If detection debug image generation regresses, leave that for a separate targeted optimization instead of increasing parallelism further.
 
-- [ ] **Step 6: Commit only if faster**
+- [x] **Step 6: Commit only if faster**
 
 If faster:
 
@@ -678,7 +678,7 @@ git restore EasyEDA-Loader\StepProjectionRenderer.cs Test\StepCleaner\Program.cs
 **Files:**
 - No planned code changes.
 
-- [ ] **Step 1: Clear generated outputs**
+- [x] **Step 1: Clear generated outputs**
 
 Run:
 
@@ -700,7 +700,7 @@ foreach ($name in $targets) {
 Remove-Item -LiteralPath (Join-Path $data 'FailedProjectionReport.md') -Force -ErrorAction SilentlyContinue
 ```
 
-- [ ] **Step 2: Run full cold test and capture log**
+- [x] **Step 2: Run full cold test and capture log**
 
 Run:
 
@@ -711,7 +711,7 @@ dotnet run --project Test\StepCleaner\StepCleaner.Tests.csproj 2>&1 | Tee-Object
 
 Expected: PASS.
 
-- [ ] **Step 3: Extract timing lines**
+- [x] **Step 3: Extract timing lines**
 
 Run:
 
@@ -721,7 +721,7 @@ Select-String -Path Test\StepCleaner\Data\full_no_cache_timing_after_projection_
 
 Expected: output includes all timing stages and `STEP cleaner regression test passed`.
 
-- [ ] **Step 4: Compare against baseline**
+- [x] **Step 4: Compare against baseline**
 
 Create this manual summary in the commit message or final response:
 
@@ -738,13 +738,846 @@ baseline validated_projection_render_ms=28742
 after validated_projection_render_ms=<measured>
 ```
 
-- [ ] **Step 5: Commit final timing note if docs are updated**
+- [x] **Step 5: Commit final timing note if docs are updated**
 
 If updating docs:
 
 ```powershell
 git add docs\superpowers\plans\2026-06-04-stepcleaner-cold-full-test-optimization.md
 git commit -m "Document cold StepCleaner optimization results"
+```
+
+---
+
+## Next Optimization Pass
+
+Measured signal after `7d33dc5`:
+
+```text
+Best run:
+  full_test_wall_ms=155753
+  detection_debug_images=50605 ms
+  post_clean_detection_ms=4075 ms
+  post_clean_detection_region_projection_ms=4384 ms
+  original_vs_clean_projection_compare_ms=4023 ms
+  clean_vs_validated_projection_compare_ms=2973 ms
+
+Final post-safety run:
+  full_test_wall_ms=196269
+  detection_debug_images=57222 ms
+  post_clean_detection_ms=10984 ms
+  post_clean_detection_region_projection_ms=11870 ms
+  original_vs_clean_projection_compare_ms=12673 ms
+  clean_vs_validated_projection_compare_ms=5958 ms
+```
+
+Conclusion: pure projection rendering improved, but the next wall-time wins are in repeated detection/parsing, detection-region projection, and PNG comparison. Keep `StepF3DRender.exe` as the color-correct helper until native OCCT color rendering is correct. Do not add silhouette projection output caching.
+
+### Task 8: First Priority - Replace Internal File Round-Trips With In-Memory Data
+
+**Files:**
+- Modify: `Test/StepCleaner/Program.cs`
+- Modify: `EasyEDA-Loader/StepProjectionRenderer.cs`
+- Modify: `EasyEDA-Loader/StepWatermarkCleanVerifier.cs`
+- Modify: `EasyEDA-Loader/StepSilhouetteProjection.cs`
+- Modify: `StepF3DRender/Program.cs`
+
+**Goal:** internal verification/import code should pass STEP bytes and raw rendered image buffers in memory. Saving STEP files, JSON metadata, and PNG files should remain available for explicit command-line tools, test artifacts, reports, and user-facing debug output only.
+
+- [x] **Step 1: Add source guards for in-memory internal APIs**
+
+In `RunModelCacheTests()`, add guards:
+
+```csharp
+AssertContains(
+    stepProjectionRenderer,
+    "ProjectFileImages(",
+    "internal projection rendering should expose an in-memory raw image API",
+    failures);
+AssertContains(
+    stepProjectionRenderer,
+    "ProjectDetectionFileImages(",
+    "internal detection projection rendering should expose an in-memory highlighted raw image API",
+    failures);
+AssertContains(
+    stepProjectionRenderer,
+    "TryRenderWithF3DLibraryBatchToRawImages",
+    "F3D library batch rendering should avoid saving and reloading image files for internal callers",
+    failures);
+AssertContains(
+    stepSilhouetteProjection,
+    "Generate(cleanedStep,",
+    "internal OCCT HLR projection should accept cleaned STEP bytes instead of requiring a saved STEP file",
+    failures);
+AssertContains(
+    stepWatermarkCleanVerifier,
+    "ProjectFileImages(",
+    "watermark verification should compare in-memory raw projection images before writing report artifacts",
+    failures);
+```
+
+- [x] **Step 2: Run guard test and verify it fails**
+
+Run:
+
+```powershell
+dotnet run --project Test\StepCleaner\StepCleaner.Tests.csproj -- --model-cache
+```
+
+Expected: FAIL with the new in-memory projection guards.
+
+- [x] **Step 3: Add an in-memory projection result type**
+
+In `StepProjectionRenderer.cs`, add:
+
+```csharp
+public sealed class StepProjectionImage
+{
+    public string ViewName { get; internal set; }
+    public int Width { get; internal set; }
+    public int Height { get; internal set; }
+    public byte[] RgbaBytes { get; internal set; }
+}
+```
+
+Keep the file-writing `ProjectFile()` API as a wrapper for CLI/test artifact paths.
+
+- [x] **Step 4: Add `ProjectFileImages()`**
+
+Add:
+
+```csharp
+public static IReadOnlyList<StepProjectionImage> ProjectFileImages(
+    byte[] stepData,
+    string modelName,
+    StepProjectionOptions options = null)
+{
+    if (stepData == null)
+        throw new ArgumentNullException(nameof(stepData));
+    if (string.IsNullOrWhiteSpace(modelName))
+        modelName = "model";
+
+    options = NormalizeOptions(options);
+    IReadOnlyList<ViewSpec> selectedViews = GetSelectedViews(options);
+
+    if (TryRenderWithF3DLibraryBatchToRawImages(stepData, modelName, selectedViews, options, out IReadOnlyList<StepProjectionImage> f3dImages))
+        return f3dImages;
+
+    string stepText = Encoding.Latin1.GetString(stepData);
+    StepModel model = StepModel.Parse(stepText);
+    model.BuildIndexes();
+    var drawingModel = ProjectionModel.Build(model);
+
+    var result = new List<StepProjectionImage>();
+    foreach (ViewSpec view in selectedViews)
+    {
+        ProjectionTransform transform = ProjectionTransform.Create(drawingModel.Bounds, view, options);
+        RgbaImage image = RenderProjectionImage(drawingModel, view, transform, options);
+        result.Add(image.ToProjectionImage(view.Name));
+    }
+
+    return result;
+}
+```
+
+Add raw conversion helpers beside PNG edge helpers:
+
+```csharp
+internal StepProjectionImage ToProjectionImage(string viewName);
+internal static RgbaImage FromProjectionImage(StepProjectionImage image);
+```
+
+- [x] **Step 5: Add `ProjectDetectionFileImages()`**
+
+Add an in-memory variant of `ProjectDetectionFile()`:
+
+```csharp
+public static IReadOnlyList<StepProjectionImage> ProjectDetectionFileImages(
+    byte[] stepData,
+    string modelName,
+    StepWatermarkDetectionReport detectionReport,
+    StepProjectionOptions options = null,
+    IReadOnlyList<StepWatermarkMarkedRegion> markedRegions = null)
+```
+
+It should:
+
+1. Parse/build the model once from `stepData`.
+2. Build detection highlights and selected detection views exactly like `ProjectDetectionFile()`.
+3. Try `TryRenderWithF3DLibraryBatchToRawImages(...)`.
+4. Overlay highlights on `RgbaImage.FromProjectionImage(image)` and return updated raw image buffers.
+5. Fall back to `RenderProjectionImage(...).ToProjectionImage(...)` without writing a temp PNG.
+
+- [x] **Step 6: Make file APIs wrappers**
+
+Change `ProjectFile(string inputPath, string outputDirectory, ...)` to:
+
+1. Read `byte[] stepData = File.ReadAllBytes(inputPath)`.
+2. Call `ProjectFileImages(stepData, Path.GetFileNameWithoutExtension(inputPath), options)`.
+3. Save each returned raw image as PNG to `outputDirectory`.
+4. Write metadata only when `options.WriteMetadata` is true.
+
+Change `ProjectDetectionFile(...)` to:
+
+1. Read bytes.
+2. Call `ProjectDetectionFileImages(...)`.
+3. Save returned raw images as PNGs to the requested debug/test output directory.
+
+- [x] **Step 7: Add an in-memory F3D helper mode**
+
+In `StepF3DRender/Program.cs`, add a command mode:
+
+```text
+StepF3DRender --six-sides-stdout <input.step|-> <model-name> [--size pixels] [--views x_plus,y_plus]
+```
+
+Rules:
+
+- `-` means read STEP bytes from stdin into a temp stream inside the helper process only if libf3d cannot load from memory directly.
+- Return JSON to stdout:
+
+```json
+{
+  "views": [
+    { "name": "x_plus", "width": 1000, "height": 1000, "channelCount": 4, "channelType": 0, "channelTypeSize": 1, "rawBase64": "..." }
+  ],
+  "elapsedMs": 1234
+}
+```
+
+- Do not write PNG files in this mode.
+- Keep the current `--six-sides` file-output mode for command-line/manual/test artifact requests.
+
+- [x] **Step 8: Add `TryRenderWithF3DLibraryBatchToRawImages()`**
+
+In `StepProjectionRenderer.cs`, add:
+
+```csharp
+private static bool TryRenderWithF3DLibraryBatchToRawImages(
+    byte[] stepData,
+    string modelName,
+    IReadOnlyList<ViewSpec> views,
+    StepProjectionOptions options,
+    out IReadOnlyList<StepProjectionImage> images)
+```
+
+It should invoke:
+
+```text
+StepF3DRender --six-sides-stdout - <model-name> --size <pixels> --views <names>
+```
+
+Write `stepData` to stdin, parse stdout JSON, decode `rawBase64`, validate dimensions/channel layout for every requested view, convert to RGBA when needed, and return raw image buffers. The existing file-output `TryRenderWithF3DLibraryBatch()` stays as the CLI/test artifact fallback.
+
+- [x] **Step 9: Move watermark verification to memory-first projection**
+
+In `StepWatermarkCleanVerifier.VerifyPostCleanOutput()`, replace file-output projection calls:
+
+```csharp
+StepProjectionRenderer.ProjectFile(originalPath, originalProjectionDirectory, renderOptions)
+StepProjectionRenderer.ProjectFile(cleanPath, cleanProjectionDirectory, renderOptions)
+```
+
+with memory-first projection of `originalStep` and `cleanStep` bytes. Only write files if a visual failure report needs side-by-side artifacts.
+
+- [x] **Step 10: Move import OCCT HLR to bytes-first input**
+
+In import/measurement paths, prefer:
+
+```csharp
+StepSilhouetteProjection.Generate(cleanedStep, placement)
+```
+
+over:
+
+```csharp
+StepSilhouetteProjection.GenerateFromFile(cleanedStepPath, placement)
+```
+
+Only write the cleaned STEP file when Altium needs a 3D body file attachment or when a command-line/test artifact explicitly requests it. If Altium still needs the file, write once at the edge and keep internal verification/projection from rereading it.
+
+- [x] **Step 11: Verify**
+
+Run:
+
+```powershell
+dotnet build StepF3DRender\StepF3DRender.csproj
+dotnet build EasyEDA-Loader\EasyEDA-Loader.csproj
+dotnet build StepCleaner\StepCleaner.csproj
+dotnet run --project Test\StepCleaner\StepCleaner.Tests.csproj -- --model-cache
+dotnet run --project Test\StepCleaner\StepCleaner.Tests.csproj -- --measure-model-import C5338332 --repeat 3
+```
+
+Expected:
+
+- all builds pass;
+- guard test passes;
+- measurement still prints `watermark_clean_cache_ms`, `occt_hlr_projection_total_ms`, and `projection_primitives`;
+- internal paths no longer save/load projection PNGs except explicit test/CLI/debug artifact paths, and import HLR projection no longer reloads the already-available STEP body bytes.
+
+Verified after raw row-origin fix:
+
+```text
+StepF3DRender build: PASS
+EasyEDA-Loader build: PASS
+StepCleaner build: PASS
+model-cache guard: PASS
+raw F3D stdout smoke: x_plus 64x64, channelCount=3, rawBytes=12288
+full StepCleaner run: PASS, full_test_wall_ms=272594
+C5338332 warm import measurement:
+  watermark_clean_cache_ms=2,2,1
+  occt_hlr_projection_total_ms=2389,2058,1992
+  projection_primitives=344
+```
+
+- [x] **Step 12: Commit**
+
+Run:
+
+```powershell
+git add EasyEDA-Loader\StepProjectionRenderer.cs EasyEDA-Loader\StepWatermarkCleanVerifier.cs EasyEDA-Loader\StepSilhouetteProjection.cs StepF3DRender\Program.cs Test\StepCleaner\Program.cs
+git commit -m "Use in-memory projection data for internal verification"
+```
+
+### Task 9: Add A Shared Full-Test Detection Cache
+
+**Files:**
+- Modify: `Test/StepCleaner/Program.cs`
+
+- [ ] **Step 1: Add a failing guard**
+
+In `RunModelCacheTests()`, add:
+
+```csharp
+AssertContains(
+    stepCleanerProgram,
+    "FullTestDetectionCache",
+    "full StepCleaner regression should reuse original-model detection reports between debug image generation and post-clean verification",
+    failures);
+```
+
+- [ ] **Step 2: Run guard test**
+
+Run:
+
+```powershell
+dotnet run --project Test\StepCleaner\StepCleaner.Tests.csproj -- --model-cache
+```
+
+Expected: FAIL with the new `FullTestDetectionCache` guard.
+
+- [ ] **Step 3: Introduce the cache**
+
+Add this private helper class near `ProjectionVerificationTimings`:
+
+```csharp
+private sealed class FullTestDetectionCache
+{
+    private readonly Dictionary<string, StepWatermarkDetectionReport> _reportsByFileName =
+        new Dictionary<string, StepWatermarkDetectionReport>(StringComparer.OrdinalIgnoreCase);
+
+    public StepWatermarkDetectionReport GetReport(string originalFile)
+    {
+        string fileName = Path.GetFileName(originalFile);
+        if (!_reportsByFileName.TryGetValue(fileName, out StepWatermarkDetectionReport report))
+        {
+            report = StepWatermarkCleaner.Detect(
+                File.ReadAllBytes(originalFile),
+                new StepWatermarkCleanerOptions());
+            _reportsByFileName[fileName] = report;
+        }
+
+        return report;
+    }
+}
+```
+
+- [ ] **Step 4: Create one cache in `Main`**
+
+After `var projectionTimings = new ProjectionVerificationTimings();`, add:
+
+```csharp
+var detectionCache = new FullTestDetectionCache();
+```
+
+Pass `detectionCache` into:
+
+```csharp
+VerifyDetectionDebugImages(..., detectionCache, failures);
+VerifyPostCleanProjections(..., detectionCache, projectionTimings, ...);
+```
+
+- [ ] **Step 5: Use the cache in detection debug**
+
+Change the `VerifyDetectionDebugImages` signature to include:
+
+```csharp
+FullTestDetectionCache detectionCache,
+```
+
+Replace:
+
+```csharp
+var detectionReport = StepWatermarkCleaner.Detect(File.ReadAllBytes(originalFile), new StepWatermarkCleanerOptions());
+```
+
+with:
+
+```csharp
+var detectionReport = detectionCache.GetReport(originalFile);
+```
+
+- [ ] **Step 6: Use the cache in post-clean verification**
+
+Change the `VerifyPostCleanProjections` signature to include:
+
+```csharp
+FullTestDetectionCache detectionCache,
+```
+
+Replace:
+
+```csharp
+var detectionReport = projectionTimings.Measure(
+    "post_clean_detection_ms",
+    () => StepWatermarkCleaner.Detect(File.ReadAllBytes(originalFile), new StepWatermarkCleanerOptions()));
+```
+
+with:
+
+```csharp
+var detectionReport = projectionTimings.Measure(
+    "post_clean_detection_ms",
+    () => detectionCache.GetReport(originalFile));
+```
+
+Expected: `post_clean_detection_ms` should drop sharply when detection debug already regenerated the same original model in the same run.
+
+- [ ] **Step 7: Verify**
+
+Run:
+
+```powershell
+dotnet run --project Test\StepCleaner\StepCleaner.Tests.csproj -- --model-cache
+dotnet run --project Test\StepCleaner\StepCleaner.Tests.csproj
+```
+
+Expected: both PASS. Record `detection_debug_images`, `post_clean_detection_ms`, and `full_test_wall_ms`.
+
+### Task 10: Cache Projected Detection Regions In The Full-Test Harness
+
+**Files:**
+- Modify: `Test/StepCleaner/Program.cs`
+- Optional Modify: `EasyEDA-Loader/StepProjectionRenderer.cs`
+
+- [ ] **Step 1: Extend the guard**
+
+In `RunModelCacheTests()`, add:
+
+```csharp
+AssertContains(
+    stepCleanerProgram,
+    "GetDetectionRegions(",
+    "full StepCleaner regression should reuse projected detection regions for original-vs-clean and clean-vs-validated comparisons",
+    failures);
+```
+
+- [ ] **Step 2: Extend `FullTestDetectionCache`**
+
+Add region storage:
+
+```csharp
+private readonly Dictionary<string, IReadOnlyList<StepProjectionDetectionRegion>> _regionsByKey =
+    new Dictionary<string, IReadOnlyList<StepProjectionDetectionRegion>>(StringComparer.OrdinalIgnoreCase);
+
+public IReadOnlyList<StepProjectionDetectionRegion> GetDetectionRegions(
+    string originalFile,
+    StepProjectionOptions projectionOptions)
+{
+    string key =
+        Path.GetFileName(originalFile) +
+        "|" +
+        projectionOptions.ImageSizePixels.ToString(CultureInfo.InvariantCulture) +
+        "|" +
+        projectionOptions.PaddingPixels.ToString(CultureInfo.InvariantCulture) +
+        "|" +
+        string.Join(",", projectionOptions.ViewNames);
+
+    if (!_regionsByKey.TryGetValue(key, out IReadOnlyList<StepProjectionDetectionRegion> regions))
+    {
+        regions = StepProjectionRenderer.ProjectDetectionRegions(
+            originalFile,
+            GetReport(originalFile),
+            projectionOptions).ToList();
+        _regionsByKey[key] = regions;
+    }
+
+    return regions;
+}
+```
+
+- [ ] **Step 3: Use cached regions in `VerifyPostCleanProjections`**
+
+Replace:
+
+```csharp
+var detectionRegions = projectionTimings.Measure(
+    "post_clean_detection_region_projection_ms",
+    () => StepProjectionRenderer.ProjectDetectionRegions(
+        originalFile,
+        detectionReport,
+        projectionOptions)
+    .ToList());
+```
+
+with:
+
+```csharp
+var detectionRegions = projectionTimings.Measure(
+    "post_clean_detection_region_projection_ms",
+    () => detectionCache.GetDetectionRegions(originalFile, projectionOptions).ToList());
+```
+
+- [ ] **Step 4: Keep debug-image region filtering separate**
+
+Do not reuse marked-region-filtered debug results for post-clean verification. `VerifyDetectionDebugImages()` uses marker sidecars, while post-clean verification must use unmarked automatic detection regions.
+
+- [ ] **Step 5: Verify**
+
+Run:
+
+```powershell
+dotnet run --project Test\StepCleaner\StepCleaner.Tests.csproj -- --model-cache
+dotnet run --project Test\StepCleaner\StepCleaner.Tests.csproj
+```
+
+Expected: PASS. Record `post_clean_detection_region_projection_ms` and `original_detection_side_projection_render_ms`.
+
+### Task 11: Add Fine-Grained Detection Debug Timings
+
+**Files:**
+- Modify: `Test/StepCleaner/Program.cs`
+
+- [ ] **Step 1: Add stage timing fields**
+
+Inside `VerifyDetectionDebugImages()`, add local counters:
+
+```csharp
+long loadMarkedRegionsMs = 0;
+long cacheCheckMs = 0;
+long detectMs = 0;
+long projectDetectionFileMs = 0;
+```
+
+- [ ] **Step 2: Time each expensive per-model operation**
+
+Use `Stopwatch.StartNew()` around:
+
+```csharp
+StepWatermarkCleaner.LoadMarkedRegionsForStepFile(...)
+IsDetectionDebugImageCacheFresh(...)
+detectionCache.GetReport(originalFile)
+StepProjectionRenderer.ProjectDetectionFile(...)
+```
+
+Add elapsed milliseconds to the counters after each call.
+
+- [ ] **Step 3: Print detail lines**
+
+After the existing `Detection debug images:` line, print:
+
+```csharp
+Console.WriteLine("  detection_debug_load_marked_regions_ms=" + loadMarkedRegionsMs.ToString(CultureInfo.InvariantCulture) + " ms");
+Console.WriteLine("  detection_debug_cache_check_ms=" + cacheCheckMs.ToString(CultureInfo.InvariantCulture) + " ms");
+Console.WriteLine("  detection_debug_detect_ms=" + detectMs.ToString(CultureInfo.InvariantCulture) + " ms");
+Console.WriteLine("  detection_debug_project_file_ms=" + projectDetectionFileMs.ToString(CultureInfo.InvariantCulture) + " ms");
+```
+
+- [ ] **Step 4: Add guard**
+
+In `RunModelCacheTests()`, add:
+
+```csharp
+AssertContains(
+    stepCleanerProgram,
+    "detection_debug_project_file_ms",
+    "detection debug image generation should expose detailed timing for the remaining bottleneck",
+    failures);
+```
+
+- [ ] **Step 5: Verify**
+
+Run:
+
+```powershell
+dotnet run --project Test\StepCleaner\StepCleaner.Tests.csproj -- --model-cache
+dotnet run --project Test\StepCleaner\StepCleaner.Tests.csproj
+```
+
+Expected: PASS and the full run prints all four detail lines. Use this output to choose the next implementation task.
+
+### Task 12: Add A Fast Path For Identical Clean/Validated Projection PNGs
+
+**Files:**
+- Modify: `Test/StepCleaner/Program.cs`
+
+- [ ] **Step 1: Add a guard**
+
+In `RunModelCacheTests()`, add:
+
+```csharp
+AssertContains(
+    stepCleanerProgram,
+    "FilesEqualByLengthAndBytes",
+    "clean-vs-validated projection comparison should skip PNG decode when files are byte-identical",
+    failures);
+```
+
+- [ ] **Step 2: Add a byte equality helper**
+
+Add near `ProjectionPixelsEqual()`:
+
+```csharp
+private static bool FilesEqualByLengthAndBytes(string leftPath, string rightPath)
+{
+    var leftInfo = new FileInfo(leftPath);
+    var rightInfo = new FileInfo(rightPath);
+    if (leftInfo.Length != rightInfo.Length)
+        return false;
+
+    byte[] leftBytes = File.ReadAllBytes(leftPath);
+    byte[] rightBytes = File.ReadAllBytes(rightPath);
+    return leftBytes.SequenceEqual(rightBytes);
+}
+```
+
+- [ ] **Step 3: Use the fast path**
+
+At the start of `ProjectionPixelsEqual()`, add:
+
+```csharp
+if (FilesEqualByLengthAndBytes(cleanProjectionPath, validatedProjectionPath))
+    return true;
+```
+
+Do not add this shortcut to `VerifyPostCleanProjectionImage()`, because original-vs-clean still needs `VerifyCleanedRegionFlatness()` even when outside-region pixels do not change.
+
+- [ ] **Step 4: Verify**
+
+Run:
+
+```powershell
+dotnet run --project Test\StepCleaner\StepCleaner.Tests.csproj -- --model-cache
+dotnet run --project Test\StepCleaner\StepCleaner.Tests.csproj
+```
+
+Expected: PASS. Compare `clean_vs_validated_projection_compare_ms` before and after.
+
+### Task 13: Add Fast Pixel Buffer Comparison For Remaining PNG Compares
+
+**Files:**
+- Modify: `Test/StepCleaner/Program.cs`
+
+- [ ] **Step 1: Add a guard**
+
+In `RunModelCacheTests()`, add:
+
+```csharp
+AssertContains(
+    stepCleanerProgram,
+    "CopyBitmapPixelsToInt32Rows",
+    "projection comparison should avoid per-pixel SKBitmap.GetPixel calls in hot loops",
+    failures);
+```
+
+- [ ] **Step 2: Add a row-copy helper**
+
+Add:
+
+```csharp
+private static int[] CopyBitmapPixelsToInt32Rows(SKBitmap bitmap)
+{
+    if (bitmap == null)
+        throw new ArgumentNullException(nameof(bitmap));
+
+    int[] pixels = new int[bitmap.Width * bitmap.Height];
+    IntPtr source = bitmap.GetPixels();
+    if (source == IntPtr.Zero)
+        return pixels;
+
+    int bytesPerPixel = bitmap.BytesPerPixel;
+    if (bytesPerPixel != 4)
+        return pixels;
+
+    for (int y = 0; y < bitmap.Height; y++)
+    {
+        IntPtr row = IntPtr.Add(source, y * bitmap.RowBytes);
+        System.Runtime.InteropServices.Marshal.Copy(row, pixels, y * bitmap.Width, bitmap.Width);
+    }
+
+    return pixels;
+}
+```
+
+- [ ] **Step 3: Use copied buffers in `ProjectionPixelsEqual()`**
+
+After decoding and validating image dimensions, replace nested `GetPixel()` calls with:
+
+```csharp
+int[] cleanPixels = CopyBitmapPixelsToInt32Rows(cleanImage);
+int[] validatedPixels = CopyBitmapPixelsToInt32Rows(validatedImage);
+for (int i = 0; i < cleanPixels.Length; i++)
+{
+    if (cleanPixels[i] != validatedPixels[i])
+        return false;
+}
+
+return true;
+```
+
+If tolerance must be preserved, add a small `PixelsDifferent(int left, int right, int tolerance)` overload that extracts RGBA bytes from the packed integer and matches the existing `PixelsDifferent(SKColor, SKColor, int)` semantics.
+
+- [ ] **Step 4: Use copied buffers in `VerifyPostCleanProjectionImage()`**
+
+Only do this after `ProjectionPixelsEqual()` is green. Replace the hot nested `GetPixel()` loop with indexed buffers while preserving `allowedMask`, `ProjectionDifferenceTolerance`, and `VerifyCleanedRegionFlatness()` behavior.
+
+- [ ] **Step 5: Verify**
+
+Run:
+
+```powershell
+dotnet run --project Test\StepCleaner\StepCleaner.Tests.csproj -- --model-cache
+dotnet run --project Test\StepCleaner\StepCleaner.Tests.csproj
+```
+
+Expected: PASS. Compare `original_vs_clean_projection_compare_ms` and `clean_vs_validated_projection_compare_ms`.
+
+### Task 14: Add A Dedicated C5338332 Import Optimization Baseline
+
+**Files:**
+- Modify: `docs/superpowers/plans/2026-06-04-stepcleaner-cold-full-test-optimization.md`
+- Optional Modify: `Test/StepCleaner/Program.cs`
+
+- [ ] **Step 1: Run the warm-cache import measurement**
+
+Run:
+
+```powershell
+dotnet run --project Test\StepCleaner\StepCleaner.Tests.csproj -- --measure-model-import C5338332 --repeat 3
+```
+
+Expected: PASS. Capture:
+
+```text
+component_lookup_ms
+model_download_cache_read_ms
+raw_obj_download_cache_read_ms
+watermark_clean_cache_ms
+raw_obj_z_info_ms
+occt_hlr_projection_total_ms
+projection_primitives
+```
+
+- [ ] **Step 2: Run a clean-cache-miss measurement**
+
+Remove only the C5338332 clean STEP cache file for the chosen clean mode, then run:
+
+```powershell
+dotnet run --project Test\StepCleaner\StepCleaner.Tests.csproj -- --measure-model-import C5338332 --repeat 1
+```
+
+Expected: PASS. Capture all `watermark_clean_detail_*_ms` lines.
+
+- [ ] **Step 3: Add missing detail timing if output is not enough**
+
+If `watermark_clean_cache_ms` is still too coarse, add timing around these existing stages in `StepWatermarkCleaner.cs`:
+
+```text
+BuildCleanupContext
+DetectAutomaticWatermarks
+CleanWithAutomaticDetection
+BuildPublicDetectionReport
+RemoveInactiveDefinitions
+```
+
+Expected: the measurement command prints enough detail to select one concrete edit optimization before touching OCCT HLR.
+
+- [ ] **Step 4: Record the baseline in this plan**
+
+Add a small table under this task:
+
+```text
+C5338332 import baseline:
+  run_date=<date>
+  cache_state=<warm|clean-cache-miss>
+  watermark_clean_cache_ms=<measured>
+  occt_hlr_projection_total_ms=<measured>
+  raw_obj_z_info_ms=<measured>
+  projection_primitives=<measured>
+```
+
+### Task 15: Optimize Only The Measured C5338332 Winner
+
+**Files:**
+- Modify based on Task 14 result:
+  - `EasyEDA-Loader/StepWatermarkCleaner.cs` for `watermark_clean_cache_ms`
+  - `EasyEDA-Loader/StepSilhouetteProjection.cs` and `StepOcctHlr/*` for `occt_hlr_projection_total_ms`
+  - `EasyEDA-Loader/ModelZInfoCache.cs` for `raw_obj_z_info_ms`
+
+- [ ] **Step 1: Choose exactly one next target**
+
+Use this rule:
+
+```text
+If watermark_clean_cache_ms is largest: optimize StepWatermarkCleaner first.
+If occt_hlr_projection_total_ms is largest: optimize OCCT HLR projection first.
+If raw_obj_z_info_ms is largest on warm cache: optimize ModelZInfoCache/raw OBJ parsing first.
+```
+
+- [ ] **Step 2: Add a guard before editing**
+
+Add a source guard in `RunModelCacheTests()` for the selected optimization. Examples:
+
+```csharp
+AssertContains(
+    stepWatermarkCleaner,
+    "SelectedConcreteOptimizationName",
+    "watermark cleaner should use the selected measured optimization",
+    failures);
+```
+
+or:
+
+```csharp
+AssertContains(
+    stepSilhouetteProjection,
+    "SelectedConcreteOptimizationName",
+    "OCCT HLR projection should use the selected measured optimization",
+    failures);
+```
+
+- [ ] **Step 3: Implement the smallest measured optimization**
+
+Do not batch unrelated edits. One commit should target one measured phase.
+
+- [ ] **Step 4: Verify with C5338332 and full guards**
+
+Run:
+
+```powershell
+dotnet run --project Test\StepCleaner\StepCleaner.Tests.csproj -- --model-cache
+dotnet run --project Test\StepCleaner\StepCleaner.Tests.csproj -- --measure-model-import C5338332 --repeat 3
+```
+
+Expected: guard test PASS and the chosen phase improves versus the Task 14 baseline.
+
+- [ ] **Step 5: Commit**
+
+Run:
+
+```powershell
+git add <changed files>
+git commit -m "Optimize measured C5338332 import bottleneck"
 ```
 
 ---
@@ -757,6 +1590,8 @@ Spec coverage:
 - The largest stages are covered first: detection/debug selected views, original selected side projection, clean/validated full projection renders.
 - The plan preserves F3D as the color renderer and does not reintroduce OCCT color rendering.
 - Bounded parallelism is explicitly experimental and only kept if measured faster.
+- The next pass targets the latest noisy stages: repeated detection, projected detection regions, PNG comparison, and the standalone C5338332 import measurement.
+- The plan explicitly avoids silhouette projection output caching.
 
 Placeholder scan:
 
@@ -768,3 +1603,4 @@ Type consistency:
 - `StepProjectionOptions.SkipGeometryModelForExternalRender` is introduced before use.
 - `StepProjectionOptions.MaxParallelFiles` is introduced before use.
 - `TryRenderWithF3DLibraryBatch` remains the central production integration point.
+- `FullTestDetectionCache` is introduced before use in detection debug and post-clean verification tasks.
