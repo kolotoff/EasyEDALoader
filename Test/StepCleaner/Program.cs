@@ -397,6 +397,36 @@ namespace StepCleaner.Tests
                 "dialog clean/projection cache actions should be scoped to the selected component row",
                 failures);
             AssertContains(
+                dialogWindow,
+                "WarmSelectedComponentCacheAsync",
+                "form load and row selection preview should warm missing selected-component cache elements",
+                failures);
+            AssertContains(
+                dialogWindow,
+                "ModelCache.GetRawObjModelAsync(Api, modelInfo.Uuid",
+                "selected-component cache warm-up should store the raw OBJ model cache when missing",
+                failures);
+            AssertContains(
+                dialogWindow,
+                "ModelZInfoCache.GetOrCreateAsync",
+                "selected-component cache warm-up should store the derived raw OBJ ZInfo cache when missing",
+                failures);
+            AssertContains(
+                dialogWindow,
+                "await interactivePreviewTask.ConfigureAwait(false)",
+                "selected-component clean STEP warm-up should wait for the active preview to avoid cold-cache clean races",
+                failures);
+            AssertContains(
+                dialogWindow,
+                "CleanStepCacheKeys.GetCleanModeKeys(selectedComponentCacheKey)",
+                "selected-component cache warm-up should store every clean STEP cache variant when missing",
+                failures);
+            AssertContains(
+                dialogWindow,
+                "ModelCache.GetSearchProductInfoAsync(Api, partViewModel.PartInfo.Part",
+                "selected-component cache warm-up should store search metadata when restored session skipped a live search",
+                failures);
+            AssertContains(
                 footprint3dModel,
                 "CleanStepModelFastWithReport",
                 "footprint import clean-cache misses should skip projection verification and use the fast cleaner report path",
@@ -643,7 +673,7 @@ namespace StepCleaner.Tests
                 failures);
             AssertContains(
                 dialogWindow,
-                "Task interactivePreviewTask = ShowInteractiveModelPreviewAsync(_currentModel, stepDataTask",
+                "interactivePreviewTask = ShowInteractiveModelPreviewAsync(_currentModel, stepDataTask",
                 "interactive 3D preview should start from the shared STEP task independently of other preview data",
                 failures);
             AssertContains(
@@ -668,13 +698,13 @@ namespace StepCleaner.Tests
                 failures);
             AssertAppearsBefore(
                 dialogWindow,
-                "Task interactivePreviewTask = ShowInteractiveModelPreviewAsync(_currentModel, stepDataTask",
+                "interactivePreviewTask = ShowInteractiveModelPreviewAsync(_currentModel, stepDataTask",
                 "eeFootprint.DrawToCanvas",
                 "interactive 3D preview should begin before footprint drawing blocks the UI preview path",
                 failures);
             AssertAppearsBefore(
                 dialogWindow,
-                "Task interactivePreviewTask = ShowInteractiveModelPreviewAsync(_currentModel, stepDataTask",
+                "interactivePreviewTask = ShowInteractiveModelPreviewAsync(_currentModel, stepDataTask",
                 "ShowModelProjectionPreviewAsync(_currentModel,",
                 "interactive 3D preview should begin before 2D projection rendering",
                 failures);

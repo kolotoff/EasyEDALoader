@@ -324,6 +324,8 @@ namespace EasyEDA_Loader
                 {
                     _currentComponent = root.Component;
                     _currentRoot = root;
+                    Task<byte[]> stepDataTask = null;
+                    Task interactivePreviewTask = null;
 
                     if (_currentComponent.Symbol?.Shapes != null)
                     {
@@ -344,12 +346,11 @@ namespace EasyEDA_Loader
 
                         UpdateModelActionButtonState();
 
-                        Task<byte[]> stepDataTask = null;
                         if (_currentModel != null)
                         {
                             UpdatePreviewProgress("Loading 3D preview...", 62);
                             stepDataTask = ModelCache.GetStepModelAsync(Api, _currentModel.Uuid, cancellationToken);
-                            Task interactivePreviewTask = ShowInteractiveModelPreviewAsync(_currentModel, stepDataTask, cancellationToken);
+                            interactivePreviewTask = ShowInteractiveModelPreviewAsync(_currentModel, stepDataTask, cancellationToken);
                             ObservePreviewTask(interactivePreviewTask, "3D preview");
                         }
 
@@ -388,6 +389,9 @@ namespace EasyEDA_Loader
 
                         }
                     }
+
+                    Task cacheWarmTask = WarmSelectedComponentCacheAsync(partViewModel, _currentModel, stepDataTask, interactivePreviewTask, cancellationToken);
+                    ObservePreviewTask(cacheWarmTask, "selected component cache warm-up");
 
                     if (!string.IsNullOrEmpty(_currentComponent.Thumb))
                     {
@@ -659,6 +663,90 @@ namespace EasyEDA_Loader
                 throw new InvalidOperationException("Clean STEP data is empty.");
 
             return cleanStepData;
+        }
+
+        private async Task WarmSelectedComponentCacheAsync(
+            PartInfoViewModel partViewModel,
+            EeFootprint3dModel modelInfo,
+            Task<byte[]> originalStepDataTask,
+            Task interactivePreviewTask,
+            CancellationToken cancellationToken)
+        {
+            if (partViewModel?.PartInfo == null)
+                return;
+
+            await ModelCache.GetSearchProductInfoAsync(Api, partViewModel.PartInfo.Part, cancellationToken)
+                .ConfigureAwait(false);
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (modelInfo == null)
+                return;
+
+            byte[] originalStepData = originalStepDataTask == null
+                ? await ModelCache.GetStepModelAsync(Api, modelInfo.Uuid, cancellationToken).ConfigureAwait(false)
+                : await originalStepDataTask.ConfigureAwait(false);
+            cancellationToken.ThrowIfCancellationRequested();
+
+            try
+            {
+                byte[] rawObjData = await ModelCache.GetRawObjModelAsync(Api, modelInfo.Uuid, cancellationToken)
+                    .ConfigureAwait(false);
+                cancellationToken.ThrowIfCancellationRequested();
+
+                if (rawObjData != null && rawObjData.Length > 0)
+                {
+                    await ModelZInfoCache.GetOrCreateAsync(
+                            modelInfo.Uuid,
+                            () => Task.FromResult(rawObjData),
+                            cancellationToken)
+                        .ConfigureAwait(false);
+                    cancellationToken.ThrowIfCancellationRequested();
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                EasyEDALoaderModule.Trace("Raw OBJ/ZInfo cache warm-up failed: " + ex);
+            }
+
+            if (originalStepData == null || originalStepData.Length == 0)
+                return;
+
+            if (interactivePreviewTask != null)
+            {
+                try
+                {
+                    await interactivePreviewTask.ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    throw;
+                }
+                catch
+                {
+                }
+
+                cancellationToken.ThrowIfCancellationRequested();
+            }
+
+            string selectedComponentCacheKey = GetSelectedComponentCacheKey(partViewModel, modelInfo);
+            foreach (string cleanModeKey in CleanStepCacheKeys.GetCleanModeKeys(selectedComponentCacheKey))
+            {
+                bool cleanText = cleanModeKey.EndsWith("__watermark_text", StringComparison.Ordinal);
+                await ModelCache.GetCleanStepModelWithStatusAsync(
+                        cleanModeKey,
+                        () => Task.Run(() =>
+                            StepWatermarkCleanVerifier.CleanStepModelFastWithReport(
+                                originalStepData,
+                                cleanText).CleanStep,
+                            cancellationToken),
+                        cancellationToken)
+                    .ConfigureAwait(false);
+                cancellationToken.ThrowIfCancellationRequested();
+            }
         }
 
         private F3DPreviewCameraSnapshot CaptureF3DPreviewCameraSnapshot()
