@@ -12,6 +12,7 @@ using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using SkiaSharp;
+using StepF3DRenderLib;
 
 namespace StepCleaner.Tests
 {
@@ -229,6 +230,9 @@ namespace StepCleaner.Tests
             if (IsOption(args[0], "--f3d-buffer-smoke"))
                 return RunF3DBufferSmoke(args);
 
+            if (IsOption(args[0], "--f3d-preview-smoke"))
+                return RunF3DPreviewSmoke(args);
+
             if (IsOption(args[0], "--clean-text"))
                 return RunCleanTextTests();
 
@@ -254,6 +258,7 @@ namespace StepCleaner.Tests
             Console.Error.WriteLine("Usage: StepCleaner.Tests --occt-overlap-unit");
             Console.Error.WriteLine("Usage: StepCleaner.Tests --occt-stage-report [output-dir]");
             Console.Error.WriteLine("Usage: StepCleaner.Tests --f3d-buffer-smoke <input.step>");
+            Console.Error.WriteLine("Usage: StepCleaner.Tests --f3d-preview-smoke <input.step> [output.png]");
             Console.Error.WriteLine("Usage: StepCleaner.Tests --clean-text");
             Console.Error.WriteLine("Usage: StepCleaner.Tests --silhouette <input.step> <output.png> [--rotx deg] [--roty deg] [--rotz deg] [--rotation2d deg] [--size pixels] [--padding pixels] [--no-grid] [--no-axes]");
             Console.Error.WriteLine("Usage: StepCleaner.Tests --silhouette-dump <input.step> <output.csv>");
@@ -302,6 +307,7 @@ namespace StepCleaner.Tests
             string modelCache = File.ReadAllText(Path.Combine(repoRoot, "EasyEDA-Loader", "ModelCache.cs"));
             string easyEdaLoader = File.ReadAllText(Path.Combine(repoRoot, "EasyEDA-Loader", "EasyEDALoader.cs"));
             string dialogWindow = File.ReadAllText(Path.Combine(repoRoot, "EasyEDA-Loader", "DialogWindow.cs"));
+            string dialogWindowXaml = File.ReadAllText(Path.Combine(repoRoot, "EasyEDA-Loader", "DialogWindow.xaml"));
             string stepWatermarkCleaner = File.ReadAllText(Path.Combine(repoRoot, "EasyEDA-Loader", "StepWatermarkCleaner.cs"));
             string stepWatermarkCleanVerifier = File.ReadAllText(Path.Combine(repoRoot, "EasyEDA-Loader", "StepWatermarkCleanVerifier.cs"));
             string stepProjectionRenderer = File.ReadAllText(Path.Combine(repoRoot, "EasyEDA-Loader", "StepProjectionRenderer.cs"));
@@ -422,28 +428,173 @@ namespace StepCleaner.Tests
                 failures);
             AssertContains(
                 dialogWindow,
-                "StartF3DPreviewAsync",
-                "interactive colored STEP preview should keep the F3D preview path until native XCAFPrs_AISObject support exists",
+                "CreatePreviewSession(",
+                "interactive colored STEP preview should create an in-process libf3d preview session",
                 failures);
             AssertContains(
                 dialogWindow,
-                "--scalar-coloring",
-                "interactive colored STEP preview should preserve F3D scalar-coloring",
+                "CreatePreviewSession(previewStepData",
+                "interactive colored STEP preview should create a single active libf3d preview session from the selected clean/original STEP bytes",
                 failures);
             AssertContains(
                 dialogWindow,
-                "--coloring-array=Colors",
-                "interactive colored STEP preview should use the STEP Colors array",
+                "CreatePreviewSession(previewStepData, cameraSnapshot)",
+                "interactive colored STEP preview should restore the F3D camera when toggling clean/original STEP data",
                 failures);
             AssertContains(
                 dialogWindow,
-                "--coloring-component=-2",
-                "interactive colored STEP preview should use F3D RGB scalar components",
+                "DrainF3DPreviewInteractions()",
+                "interactive colored STEP preview should apply queued wheel/mouse input before capturing camera for clean/original toggles",
+                failures);
+            AssertContains(
+                dialogWindow,
+                "if (_currentModel != null)",
+                "clean option changes should refresh only the current 3D preview instead of reloading the whole component",
+                failures);
+            AssertContains(
+                dialogWindow,
+                "CoalesceF3DPreviewInteraction",
+                "interactive colored STEP preview should coalesce drag mouse moves before rendering",
+                failures);
+            AssertContains(
+                dialogWindow,
+                "ScheduleF3DPreviewRender",
+                "interactive colored STEP preview should throttle rendering without canceling every mouse move",
+                failures);
+            AssertContains(
+                dialogWindow,
+                "int maxEdge = isInteractive ? 320 : 720",
+                "interactive colored STEP preview should render smaller frames while dragging for lower latency",
+                failures);
+            AssertContains(
+                dialogWindow,
+                "RenderInteractivePreviewImage",
+                "interactive colored STEP preview should render one active image instead of rendering original and clean windows every frame",
+                failures);
+            AssertContains(
+                dialogWindow,
+                "QueueF3DPreviewRender",
+                "interactive colored STEP preview should queue renders for the active preview image",
+                failures);
+            AssertContains(
+                dialogWindowXaml,
+                "f3dModelImage",
+                "interactive colored STEP preview should host the selected original/clean model in one WPF Image",
+                failures);
+            AssertDoesNotContain(
+                dialogWindowXaml,
+                "f3dOriginalModelImage",
+                "interactive colored STEP preview should not keep a second original-model preview image",
+                failures);
+            AssertDoesNotContain(
+                dialogWindowXaml,
+                "f3dCleanModelImage",
+                "interactive colored STEP preview should not keep a second clean-model preview image",
                 failures);
             AssertDoesNotContain(
                 dialogWindow,
                 "AIS_ColoredShape",
                 "interactive colored STEP preview should not use the managed OCCT color probe with wrong DF56 colors",
+                failures);
+            AssertDoesNotContain(
+                dialogWindow,
+                "SetParent(",
+                "interactive colored STEP preview should not reparent external f3d.exe windows",
+                failures);
+            AssertDoesNotContain(
+                dialogWindow,
+                "WaitForMainWindowHandleAsync",
+                "interactive colored STEP preview should not wait for an external f3d.exe main window",
+                failures);
+            AssertDoesNotContain(
+                dialogWindow,
+                "RegisterRawInputDevices",
+                "dual STEP preview sync should not use global raw-input mirroring",
+                failures);
+            AssertDoesNotContain(
+                dialogWindow,
+                "MirrorF3DRawMouseInput",
+                "dual STEP preview sync should not mirror Win32 mouse messages between external windows",
+                failures);
+            AssertContains(
+                stepF3DRenderLib,
+                "F3DPreviewCameraState",
+                "F3D library helper should expose a shared preview camera state",
+                failures);
+            AssertContains(
+                stepF3DRenderLib,
+                "CreatePreviewSession",
+                "F3D library helper should expose a persistent in-process preview session",
+                failures);
+            AssertContains(
+                stepF3DRenderLib,
+                "CreatePreviewSession(byte[] stepData)",
+                "F3D library helper should expose a single-model preview session for faster dialog previews",
+                failures);
+            AssertContains(
+                stepF3DRenderLib,
+                "RenderInteractivePreviewImage",
+                "F3D library helper should render a single active preview image without a paired clean/original engine",
+                failures);
+            AssertContains(
+                stepF3DRenderLib,
+                "GetCameraSnapshot",
+                "F3D library helper should expose absolute camera capture for clean/original preview toggles",
+                failures);
+            AssertContains(
+                stepF3DRenderLib,
+                "ApplyCameraSnapshot",
+                "F3D library helper should restore an absolute camera capture on a new preview session",
+                failures);
+            AssertContains(
+                stepF3DRenderLib,
+                "OrthographicZoomFactor",
+                "F3D library helper should preserve orthographic zoom because F3D stores it as parallel scale, not view angle",
+                failures);
+            AssertContains(
+                stepF3DRenderLib,
+                "PreviewMouseWheelZoomFactor",
+                "F3D library helper should track wheel zoom factor for camera restore in orthographic mode",
+                failures);
+            AssertContains(
+                stepF3DRenderLib,
+                "_pendingCameraSnapshot",
+                "F3D library helper should defer camera restore until the preview window has its final render size",
+                failures);
+            AssertContains(
+                stepF3DRenderLib,
+                "ApplyPendingCameraSnapshot",
+                "F3D library helper should apply saved zoom after PreparePreviewWindows sets the sized viewport",
+                failures);
+            AssertContains(
+                stepF3DRenderLib,
+                "f3d_camera_azimuth",
+                "F3D library helper should apply preview orbit through libf3d camera APIs",
+                failures);
+            AssertContains(
+                stepF3DRenderLib,
+                "f3d_camera_pan",
+                "F3D library helper should apply preview pan through libf3d camera APIs",
+                failures);
+            AssertContains(
+                stepF3DRenderLib,
+                "f3d_camera_zoom",
+                "F3D library helper should apply preview zoom through libf3d camera APIs",
+                failures);
+            AssertContains(
+                stepF3DRenderLib,
+                "f3d_engine_get_interactor",
+                "interactive colored STEP preview should use F3D's native interactor for mouse behavior",
+                failures);
+            AssertContains(
+                stepF3DRenderLib,
+                "f3d_interactor_trigger_mouse_position",
+                "interactive colored STEP preview should forward mouse movement to F3D's native interactor",
+                failures);
+            AssertContains(
+                stepF3DRenderLib,
+                "f3d_interactor_trigger_mouse_wheel",
+                "interactive colored STEP preview should forward mouse wheel input to F3D's native interactor",
                 failures);
             AssertContains(
                 stepProjectionRenderer,
@@ -599,6 +750,61 @@ namespace StepCleaner.Tests
                 buildAndInstallScript,
                 "StepF3DRender.exe",
                 "Altium install script should copy the F3D library render helper",
+                failures);
+            AssertContains(
+                buildAndInstallScript,
+                "STEPCLEANER_F3D_LIB",
+                "Altium install script should honor the configured native F3D library path",
+                failures);
+            AssertContains(
+                buildAndInstallScript,
+                "f3d_c_api.dll",
+                "Altium install script should package the native libf3d C API for internal previews",
+                failures);
+            AssertContains(
+                buildAndInstallScript,
+                "F3D\\bin",
+                "Altium install script should install native F3D runtime DLLs under the extension F3D bin folder",
+                failures);
+            AssertContains(
+                buildAndInstallScript,
+                "Installed F3D native library",
+                "Altium install script should report the installed native F3D library path",
+                failures);
+            AssertContains(
+                buildAndInstallScript,
+                "Install-F3DCompatibleMsvcRuntime",
+                "Altium install script should update Altium's app-local MSVCP140.dll when it is too old for in-process F3D",
+                failures);
+            AssertContains(
+                buildAndInstallScript,
+                "EasyEDA-Loader-MsvcBackup",
+                "Altium install script should back up Altium's MSVCP140.dll before installing the F3D-compatible runtime",
+                failures);
+            AssertContains(
+                buildAndInstallScript,
+                "Updated Altium MSVCP140.dll for in-process F3D",
+                "Altium install script should report MSVC runtime updates needed by in-process F3D",
+                failures);
+            AssertContains(
+                stepF3DRenderLib,
+                "Path.Combine(baseDirectory, \"F3D\", \"bin\", \"f3d_c_api.dll\")",
+                "F3D renderer should load the native library bundled by the Altium install script",
+                failures);
+            AssertContains(
+                stepF3DRenderLib,
+                "typeof(F3DProjectionRenderer).Assembly.Location",
+                "F3D renderer should locate the bundled native library beside StepF3DRenderLib when Altium is the host process",
+                failures);
+            AssertContains(
+                stepF3DRenderLib,
+                "LoadLibrarySearchDllLoadDir | LoadLibrarySearchDefaultDirs",
+                "F3D renderer should isolate native dependency resolution from Altium's process directory",
+                failures);
+            AssertContains(
+                stepF3DRenderLib,
+                "Loaded MSVCP140.dll=",
+                "F3D renderer should diagnose Altium's already-loaded MSVCP140.dll when native initialization fails",
                 failures);
             AssertContains(
                 stepProjectionRenderer,
@@ -938,6 +1144,168 @@ namespace StepCleaner.Tests
             {
                 Console.Error.WriteLine("F3D buffer smoke failed: " + ex.Message);
                 return 4;
+            }
+        }
+
+        private static int RunF3DPreviewSmoke(string[] args)
+        {
+            if (args.Length < 2 || args.Length > 4)
+            {
+                Console.Error.WriteLine("Usage: StepCleaner.Tests --f3d-preview-smoke <input.step> [output.png] [--cross-thread]");
+                return 1;
+            }
+
+            string inputPath = args[1];
+            if (!File.Exists(inputPath))
+            {
+                Console.Error.WriteLine("Input STEP file was not found: " + inputPath);
+                return 2;
+            }
+
+            try
+            {
+                byte[] stepData = File.ReadAllBytes(inputPath);
+                bool crossThread = args.Any(arg => IsOption(arg, "--cross-thread"));
+                string outputPath = args
+                    .Skip(2)
+                    .FirstOrDefault(arg => !IsOption(arg, "--cross-thread"));
+                F3DRenderedImage image = crossThread
+                    ? RenderPreviewSmokeCrossThread(stepData)
+                    : RenderPreviewSmokeSameThread(stepData);
+                if (image == null)
+                {
+                    Console.Error.WriteLine("Preview render did not return an image.");
+                    return 1;
+                }
+
+                byte[] rgba = ConvertRawF3DImageToRgba(image);
+                int nonWhitePixels = CountNonWhitePixels(rgba);
+                Console.WriteLine("f3d_preview_smoke=" + (nonWhitePixels > 0 ? "PASS" : "FAIL"));
+                Console.WriteLine("cross_thread=" + crossThread.ToString(CultureInfo.InvariantCulture));
+                Console.WriteLine("size=" + image.Width.ToString(CultureInfo.InvariantCulture) + "x" + image.Height.ToString(CultureInfo.InvariantCulture));
+                Console.WriteLine("channels=" + image.ChannelCount.ToString(CultureInfo.InvariantCulture));
+                Console.WriteLine("channel_type=" + image.ChannelType.ToString(CultureInfo.InvariantCulture));
+                Console.WriteLine("channel_type_size=" + image.ChannelTypeSize.ToString(CultureInfo.InvariantCulture));
+                Console.WriteLine("non_white_pixels=" + nonWhitePixels.ToString(CultureInfo.InvariantCulture));
+
+                if (!string.IsNullOrWhiteSpace(outputPath))
+                    SaveRgbaPng(rgba, image.Width, image.Height, outputPath);
+
+                return nonWhitePixels > 0 ? 0 : 1;
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine("F3D preview smoke failed: " + ex.Message);
+                return 1;
+            }
+        }
+
+        private static F3DRenderedImage RenderPreviewSmokeSameThread(byte[] stepData)
+        {
+            using (F3DProjectionRenderer.F3DPreviewSession session =
+                F3DProjectionRenderer.CreatePreviewSession(stepData))
+            {
+                return session.RenderInteractivePreviewImage(
+                    320,
+                    240,
+                    new F3DPreviewCameraState());
+            }
+        }
+
+        private static F3DRenderedImage RenderPreviewSmokeCrossThread(byte[] stepData)
+        {
+            F3DProjectionRenderer.F3DPreviewSession session = Task.Run(
+                () => F3DProjectionRenderer.CreatePreviewSession(stepData))
+                .ConfigureAwait(false)
+                .GetAwaiter()
+                .GetResult();
+            try
+            {
+                return Task.Run(
+                    () => session.RenderInteractivePreviewImage(
+                        320,
+                        240,
+                        new F3DPreviewCameraState()))
+                    .ConfigureAwait(false)
+                    .GetAwaiter()
+                    .GetResult();
+            }
+            finally
+            {
+                session.Dispose();
+            }
+        }
+
+        private static byte[] ConvertRawF3DImageToRgba(F3DRenderedImage image)
+        {
+            if (image == null)
+                throw new ArgumentNullException(nameof(image));
+            if (image.RawBytes == null)
+                throw new InvalidDataException("F3D preview raw bytes are missing.");
+            if (image.Width <= 0 || image.Height <= 0 || image.ChannelCount <= 0)
+                throw new InvalidDataException("F3D preview image shape is invalid.");
+            if (image.ChannelType != 0 || image.ChannelTypeSize != 1)
+                throw new InvalidDataException("F3D preview image uses an unsupported channel type.");
+
+            int pixelCount = checked(image.Width * image.Height);
+            if (image.RawBytes.Length < pixelCount * image.ChannelCount)
+                throw new InvalidDataException("F3D preview image data is incomplete.");
+
+            var rgba = new byte[pixelCount * 4];
+            for (int y = 0; y < image.Height; y++)
+            {
+                int sourceRow = (image.Height - 1 - y) * image.Width * image.ChannelCount;
+                int targetRow = y * image.Width * 4;
+                for (int x = 0; x < image.Width; x++)
+                {
+                    int source = sourceRow + x * image.ChannelCount;
+                    int target = targetRow + x * 4;
+                    if (image.ChannelCount == 1)
+                    {
+                        byte value = image.RawBytes[source];
+                        rgba[target] = value;
+                        rgba[target + 1] = value;
+                        rgba[target + 2] = value;
+                        rgba[target + 3] = 255;
+                        continue;
+                    }
+
+                    rgba[target] = image.RawBytes[source];
+                    rgba[target + 1] = image.RawBytes[source + 1];
+                    rgba[target + 2] = image.RawBytes[source + 2];
+                    rgba[target + 3] = image.ChannelCount >= 4 ? image.RawBytes[source + 3] : (byte)255;
+                }
+            }
+
+            return rgba;
+        }
+
+        private static int CountNonWhitePixels(byte[] rgba)
+        {
+            int count = 0;
+            for (int i = 0; i + 3 < rgba.Length; i += 4)
+            {
+                if (rgba[i] < 245 || rgba[i + 1] < 245 || rgba[i + 2] < 245)
+                    count++;
+            }
+
+            return count;
+        }
+
+        private static void SaveRgbaPng(byte[] rgba, int width, int height, string outputPath)
+        {
+            string directory = Path.GetDirectoryName(Path.GetFullPath(outputPath));
+            if (!string.IsNullOrWhiteSpace(directory))
+                Directory.CreateDirectory(directory);
+
+            using (var bitmap = new SKBitmap(width, height, SKColorType.Rgba8888, SKAlphaType.Unpremul))
+            {
+                Marshal.Copy(rgba, 0, bitmap.GetPixels(), rgba.Length);
+                using (SKImage image = SKImage.FromBitmap(bitmap))
+                using (SKData data = image.Encode(SKEncodedImageFormat.Png, 95))
+                {
+                    File.WriteAllBytes(outputPath, data.ToArray());
+                }
             }
         }
 

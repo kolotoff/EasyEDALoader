@@ -128,5 +128,6 @@ namespace StepF3DRender
             public int SizePixels { get; set; }
             public IReadOnlyList<string> ViewNames { get; set; }
         }
+
     }
 }

@@ -3,7 +3,6 @@
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
     xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
-    xmlns:wfi="clr-namespace:System.Windows.Forms.Integration;assembly=WindowsFormsIntegration"
     mc:Ignorable="d"
     Title="EasyEDA Component Loader"
     Height="820"
@@ -479,43 +478,27 @@
                 Padding="10">
             <Grid>
                 <Grid.RowDefinitions>
-                    <RowDefinition Height="*"/>
+                    <RowDefinition Height="Auto"/>
                     <RowDefinition Height="*"/>
                 </Grid.RowDefinitions>
 
-                <Grid Grid.Row="0" Margin="0,0,0,10">
-                    <Grid.RowDefinitions>
-                        <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="*"/>
-                    </Grid.RowDefinitions>
+                <TextBlock x:Name="f3dPreviewTitleTextBlock"
+                           Grid.Row="0"
+                           Text="Original STEP"
+                           FontSize="14"
+                           FontWeight="SemiBold"
+                           Margin="0,0,0,10"/>
 
-                    <TextBlock Grid.Row="0"
-                               Text="Original STEP"
-                               FontSize="14"
-                               FontWeight="SemiBold"
-                               Margin="0,0,0,10"/>
-
-                    <Border Grid.Row="1" Background="White">
-                        <wfi:WindowsFormsHost x:Name="f3dOriginalModelHost"/>
-                    </Border>
-                </Grid>
-
-                <Grid Grid.Row="1">
-                    <Grid.RowDefinitions>
-                        <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="*"/>
-                    </Grid.RowDefinitions>
-
-                    <TextBlock Grid.Row="0"
-                               Text="Clean STEP"
-                               FontSize="14"
-                               FontWeight="SemiBold"
-                               Margin="0,0,0,10"/>
-
-                    <Border Grid.Row="1" Background="White">
-                        <wfi:WindowsFormsHost x:Name="f3dCleanModelHost"/>
-                    </Border>
-                </Grid>
+                <Border Grid.Row="1" Background="White">
+                    <Image x:Name="f3dModelImage"
+                           Stretch="Uniform"
+                           SnapsToDevicePixels="True"
+                           MouseDown="F3DPreviewImage_MouseDown"
+                           MouseMove="F3DPreviewImage_MouseMove"
+                           MouseUp="F3DPreviewImage_MouseUp"
+                           MouseWheel="F3DPreviewImage_MouseWheel"
+                           SizeChanged="F3DPreviewImage_SizeChanged"/>
+                </Border>
             </Grid>
         </Border>
     </Grid>

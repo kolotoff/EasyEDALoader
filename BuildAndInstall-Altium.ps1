@@ -16,6 +16,89 @@ function Write-Step {
     Write-Host "==> $Message" -ForegroundColor Cyan
 }
 
+function Resolve-F3DNativeLibrary {
+    $configuredPath = [Environment]::GetEnvironmentVariable("STEPCLEANER_F3D_LIB")
+    if (-not [string]::IsNullOrWhiteSpace($configuredPath) -and (Test-Path -LiteralPath $configuredPath)) {
+        return (Resolve-Path -LiteralPath $configuredPath).Path
+    }
+
+    $programFiles = [Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFiles)
+    $programFilesX86 = [Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFilesX86)
+    $candidates = @(
+        (Join-Path $programFiles "F3D\bin\f3d_c_api.dll"),
+        (Join-Path $programFilesX86 "F3D\bin\f3d_c_api.dll")
+    )
+
+    foreach ($candidate in $candidates) {
+        if (-not [string]::IsNullOrWhiteSpace($candidate) -and (Test-Path -LiteralPath $candidate)) {
+            return $candidate
+        }
+    }
+
+    return $null
+}
+
+function Get-FileVersionOrNull {
+    param([string]$Path)
+
+    if ([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path -LiteralPath $Path)) {
+        return $null
+    }
+
+    $fileVersion = (Get-Item -LiteralPath $Path).VersionInfo.FileVersion
+    if ([string]::IsNullOrWhiteSpace($fileVersion)) {
+        return $null
+    }
+
+    $match = [regex]::Match($fileVersion, '^\d+(\.\d+){1,3}')
+    if (-not $match.Success) {
+        return $null
+    }
+
+    return [version]$match.Value
+}
+
+function Install-F3DCompatibleMsvcRuntime {
+    param(
+        [string]$F3DRuntimeSourceDir,
+        [string]$AltiumExecutablePath
+    )
+
+    if ([string]::IsNullOrWhiteSpace($F3DRuntimeSourceDir) -or -not (Test-Path -LiteralPath $F3DRuntimeSourceDir)) {
+        return
+    }
+
+    $sourceMsvcp = Join-Path $F3DRuntimeSourceDir "MSVCP140.dll"
+    if (-not (Test-Path -LiteralPath $sourceMsvcp)) {
+        return
+    }
+
+    $altiumExeDir = Split-Path -Parent $AltiumExecutablePath
+    $targetMsvcp = Join-Path $altiumExeDir "MSVCP140.dll"
+    $sourceVersion = Get-FileVersionOrNull $sourceMsvcp
+    $targetVersion = Get-FileVersionOrNull $targetMsvcp
+
+    if ($sourceVersion -eq $null -or $targetVersion -eq $null) {
+        Write-Warning "Could not compare MSVCP140.dll versions. F3D source='$sourceMsvcp' Altium target='$targetMsvcp'."
+        return
+    }
+
+    if ($targetVersion -ge $sourceVersion) {
+        Write-Host "Altium MSVCP140.dll is compatible: $targetVersion"
+        return
+    }
+
+    $backupDirectory = Join-Path $altiumExeDir "EasyEDA-Loader-MsvcBackup"
+    New-Item -ItemType Directory -Path $backupDirectory -Force | Out-Null
+    $backupPath = Join-Path $backupDirectory ("MSVCP140.dll." + (Get-Date -Format "yyyyMMdd-HHmmss") + ".bak")
+    Copy-Item -LiteralPath $targetMsvcp -Destination $backupPath -Force
+    Copy-Item -LiteralPath $sourceMsvcp -Destination $targetMsvcp -Force
+
+    $installedVersion = Get-FileVersionOrNull $targetMsvcp
+    Write-Host "Updated Altium MSVCP140.dll for in-process F3D: $targetVersion -> $installedVersion"
+    Write-Host "Altium MSVCP140.dll backup: $backupPath"
+}
+
 function Assert-AltiumClosed {
     $processes = @(Get-Process -Name $AltiumProcessName -ErrorAction SilentlyContinue)
     if ($processes.Count -gt 0) {
@@ -126,6 +209,14 @@ if (-not (Test-Path -LiteralPath $builtF3DHelperExe)) {
     throw "Built F3D render helper executable was not found: $builtF3DHelperExe"
 }
 
+$f3dNativeLibraryPath = Resolve-F3DNativeLibrary
+$f3dNativeRuntimeSourceDir = $null
+if ([string]::IsNullOrWhiteSpace($f3dNativeLibraryPath)) {
+    Write-Warning "F3D native library f3d_c_api.dll was not found. Install F3D or set STEPCLEANER_F3D_LIB if internal STEP preview is needed."
+} else {
+    $f3dNativeRuntimeSourceDir = Split-Path -Parent $f3dNativeLibraryPath
+}
+
 Write-Step "Installing to Altium extension folder"
 New-Item -ItemType Directory -Path $installDir -Force | Out-Null
 Copy-Item -Path (Join-Path $buildDir "*") -Destination $installDir -Force
@@ -139,6 +230,19 @@ Copy-Item -Path (Join-Path $helperBuildDir "*") -Destination $helperInstallDir -
 $f3dHelperInstallDir = Join-Path $installDir "StepF3DRender"
 New-Item -ItemType Directory -Path $f3dHelperInstallDir -Force | Out-Null
 Copy-Item -Path (Join-Path $f3dHelperBuildDir "*") -Destination $f3dHelperInstallDir -Recurse -Force
+
+$f3dNativeInstallDir = Join-Path $installDir "F3D\bin"
+$installedF3DNativeLibrary = Join-Path $f3dNativeInstallDir "f3d_c_api.dll"
+if (-not [string]::IsNullOrWhiteSpace($f3dNativeRuntimeSourceDir)) {
+    New-Item -ItemType Directory -Path $f3dNativeInstallDir -Force | Out-Null
+    Copy-Item -Path (Join-Path $f3dNativeRuntimeSourceDir "*") -Destination $f3dNativeInstallDir -Recurse -Force
+
+    if (-not (Test-Path -LiteralPath $installedF3DNativeLibrary)) {
+        throw "Installed F3D native library was not found: $installedF3DNativeLibrary"
+    }
+
+    Install-F3DCompatibleMsvcRuntime -F3DRuntimeSourceDir $f3dNativeRuntimeSourceDir -AltiumExecutablePath $AltiumExe
+}
 
 $installedDll = Join-Path $installDir "EasyEDA-Loader.dll"
 $installedHelperExe = Join-Path $helperInstallDir "StepOcctHlr.exe"
@@ -174,6 +278,10 @@ $easyEdaItem = @($registryXml.Extensions.Item | Where-Object { $_.HRID -eq "Easy
 $hash = (Get-FileHash -LiteralPath $installedDll -Algorithm SHA256).Hash
 $helperHash = (Get-FileHash -LiteralPath $installedHelperExe -Algorithm SHA256).Hash
 $f3dHelperHash = (Get-FileHash -LiteralPath $installedF3DHelperExe -Algorithm SHA256).Hash
+$f3dNativeHash = $null
+if (Test-Path -LiteralPath $installedF3DNativeLibrary) {
+    $f3dNativeHash = (Get-FileHash -LiteralPath $installedF3DNativeLibrary -Algorithm SHA256).Hash
+}
 Write-Host "Installed DLL: $installedDll"
 Write-Host "Assembly version: $version"
 Write-Host "SHA256: $hash"
@@ -181,6 +289,12 @@ Write-Host "Installed OCCT HLR helper: $installedHelperExe"
 Write-Host "OCCT HLR helper SHA256: $helperHash"
 Write-Host "Installed F3D render helper: $installedF3DHelperExe"
 Write-Host "F3D render helper SHA256: $f3dHelperHash"
+if (-not [string]::IsNullOrWhiteSpace($f3dNativeHash)) {
+    Write-Host "Installed F3D native library: $installedF3DNativeLibrary"
+    Write-Host "F3D native library SHA256: $f3dNativeHash"
+} else {
+    Write-Host "Installed F3D native library: not bundled; f3d_c_api.dll was not found"
+}
 Write-Host "Registry Items=$registryItems NonItem=$nonItemNodes EasyEDA=$($easyEdaItem.Version) VersionGuid=$($easyEdaItem.VersionGuid)"
 
 if (-not $NoLaunch) {

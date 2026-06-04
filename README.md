@@ -21,9 +21,11 @@ Using the extension is pretty straight forward once it is installed, there will 
 ## F3D for STEP preview
 
 The interactive 3D preview in the loader dialog uses [F3D](https://f3d.app/) to
-render the cached STEP file directly. F3D provides the OpenCascade/OCCT STEP
-reader used for proper STEP tessellation and display; the preview does not use
-the EasyEDA OBJ model.
+render the cached STEP file directly. The loader uses F3D's in-process
+`f3d_c_api.dll` renderer for the side-by-side original/clean STEP preview, so
+the preview stays inside the dialog instead of launching or embedding external
+`f3d.exe` windows. F3D provides the OpenCascade/OCCT STEP reader used for proper
+STEP tessellation and display; the preview does not use the EasyEDA OBJ model.
 
 Install F3D on Windows with WinGet:
 
@@ -37,25 +39,48 @@ Or download and run the Windows x64 installer from:
 https://github.com/f3d-app/f3d/releases
 ```
 
-The default installer path is:
+The default installer path for the preview library is:
 
 ```text
-C:\Program Files\F3D\bin\f3d.exe
+C:\Program Files\F3D\bin\f3d_c_api.dll
 ```
 
-The extension looks for F3D in that default location. If F3D is installed
-somewhere else, set `STEPCLEANER_F3D` to the full path of `f3d.exe` and restart
-Altium so the extension can read the updated environment:
+The extension looks for `f3d_c_api.dll` in that default location. If F3D is
+installed somewhere else, set `STEPCLEANER_F3D_LIB` to the full path of
+`f3d_c_api.dll` and restart Altium so the extension can read the updated
+environment:
 
 ```powershell
 [Environment]::SetEnvironmentVariable(
-    "STEPCLEANER_F3D",
-    "D:\Tools\F3D\bin\f3d.exe",
+    "STEPCLEANER_F3D_LIB",
+    "D:\Tools\F3D\bin\f3d_c_api.dll",
     "User")
 ```
 
 If F3D is missing, footprint import can still download and attach STEP models,
 but the right-side interactive STEP preview will not be available.
+
+### Altium `MSVCP140.dll` compatibility
+
+The in-process F3D preview also needs a compatible Visual C++ runtime. Some
+Altium installs ship an old app-local `MSVCP140.dll`; because Windows reuses
+already-loaded DLLs by filename inside `X2.EXE`, F3D can fail to initialize even
+when `f3d_c_api.dll` is present.
+
+`BuildAndInstall-Altium.ps1` checks the version of Altium's app-local
+`MSVCP140.dll` against the version bundled with F3D. If Altium's copy is older,
+the script backs it up and installs the F3D-compatible copy before launching
+Altium. The backup is stored beside `X2.EXE` in:
+
+```text
+<Altium exe folder>\EasyEDA-Loader-MsvcBackup\MSVCP140.dll.<yyyyMMdd-HHmmss>.bak
+```
+
+For the default Agile path used by the install script, that is:
+
+```text
+D:\Program files\ADAgile\EasyEDA-Loader-MsvcBackup\
+```
 
 # Comparisons
 

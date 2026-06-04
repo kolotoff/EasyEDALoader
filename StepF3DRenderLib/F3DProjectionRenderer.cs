@@ -1,10 +1,14 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Reflection;
 using System.Runtime.InteropServices;
+using System.Runtime.ExceptionServices;
+using System.Threading;
 
 namespace StepF3DRenderLib
 {
@@ -25,10 +29,109 @@ namespace StepF3DRenderLib
         public string OutputPath { get; set; }
     }
 
+    public sealed class F3DPreviewCameraState
+    {
+        public double AzimuthDegrees { get; set; }
+        public double ElevationDegrees { get; set; }
+        public double PanRight { get; set; }
+        public double PanUp { get; set; }
+        public double ZoomFactor { get; set; } = 1.0;
+
+        public F3DPreviewCameraState Clone()
+        {
+            return new F3DPreviewCameraState
+            {
+                AzimuthDegrees = AzimuthDegrees,
+                ElevationDegrees = ElevationDegrees,
+                PanRight = PanRight,
+                PanUp = PanUp,
+                ZoomFactor = ZoomFactor
+            };
+        }
+    }
+
+    public sealed class F3DPreviewCameraSnapshot
+    {
+        public double[] Position { get; set; }
+        public double[] FocalPoint { get; set; }
+        public double[] ViewUp { get; set; }
+        public double ViewAngle { get; set; }
+        public double OrthographicZoomFactor { get; set; } = 1.0;
+
+        public F3DPreviewCameraSnapshot Clone()
+        {
+            return new F3DPreviewCameraSnapshot
+            {
+                Position = CloneVector(Position),
+                FocalPoint = CloneVector(FocalPoint),
+                ViewUp = CloneVector(ViewUp),
+                ViewAngle = ViewAngle,
+                OrthographicZoomFactor = OrthographicZoomFactor
+            };
+        }
+
+        private static double[] CloneVector(double[] vector)
+        {
+            if (vector == null)
+                return null;
+
+            var clone = new double[vector.Length];
+            Array.Copy(vector, clone, vector.Length);
+            return clone;
+        }
+    }
+
+    public sealed class F3DPreviewRenderPair
+    {
+        public F3DRenderedImage OriginalImage { get; set; }
+        public F3DRenderedImage CleanImage { get; set; }
+    }
+
+    public enum F3DPreviewInteractionKind
+    {
+        MousePosition,
+        MouseButtonPress,
+        MouseButtonRelease,
+        MouseWheel,
+        ResetCamera
+    }
+
+    public enum F3DPreviewMouseButton
+    {
+        Left = 0,
+        Right = 1,
+        Middle = 2
+    }
+
+    public enum F3DPreviewWheelDirection
+    {
+        Forward = 0,
+        Backward = 1
+    }
+
+    public enum F3DPreviewInputModifier
+    {
+        None = 0,
+        Control = 1,
+        Shift = 2,
+        ControlShift = 3
+    }
+
+    public sealed class F3DPreviewInteraction
+    {
+        public F3DPreviewInteractionKind Kind { get; set; }
+        public double X { get; set; }
+        public double Y { get; set; }
+        public F3DPreviewMouseButton Button { get; set; }
+        public F3DPreviewWheelDirection WheelDirection { get; set; }
+        public F3DPreviewInputModifier Modifier { get; set; }
+    }
+
     public static class F3DProjectionRenderer
     {
         private const string F3DLibraryName = "f3d_c_api";
         private const int PngFormat = 0;
+        private const double PreviewMouseWheelZoomFactor = 1.1;
 
         private static readonly object NativeConfigurationLock = new object();
         private static readonly object NativeRenderLock = new object();
@@ -64,6 +167,38 @@ namespace StepF3DRenderLib
 
             lock (NativeRenderLock)
                 return RenderRawImagesCore(stepData, sizePixels, views);
+        }
+
+        public static F3DPreviewSession CreatePreviewSession(byte[] originalStepData, byte[] cleanStepData)
+        {
+            if (originalStepData == null || originalStepData.Length == 0)
+                throw new ArgumentException("Original STEP data is required.", nameof(originalStepData));
+            if (cleanStepData == null || cleanStepData.Length == 0)
+                throw new ArgumentException("Clean STEP data is required.", nameof(cleanStepData));
+
+            ConfigureNativeAccess();
+            lock (NativeRenderLock)
+                return new F3DPreviewSession(originalStepData, cleanStepData);
+        }
+
+        public static F3DPreviewSession CreatePreviewSession(byte[] stepData)
+        {
+            if (stepData == null || stepData.Length == 0)
+                throw new ArgumentException("STEP data is required.", nameof(stepData));
+
+            ConfigureNativeAccess();
+            lock (NativeRenderLock)
+                return new F3DPreviewSession(stepData);
+        }
+
+        public static F3DPreviewSession CreatePreviewSession(byte[] stepData, F3DPreviewCameraSnapshot cameraSnapshot)
+        {
+            if (stepData == null || stepData.Length == 0)
+                throw new ArgumentException("STEP data is required.", nameof(stepData));
+
+            ConfigureNativeAccess();
+            lock (NativeRenderLock)
+                return new F3DPreviewSession(stepData, cameraSnapshot);
         }
 
         private static IReadOnlyList<F3DRenderedImage> RenderRawImagesCore(
@@ -257,9 +392,14 @@ namespace StepF3DRenderLib
         {
             ApplyViewCamera(window, view);
 
+            return RenderCurrentWindowToRawImage(window, view.Name);
+        }
+
+        private static F3DRenderedImage RenderCurrentWindowToRawImage(IntPtr window, string imageName)
+        {
             IntPtr image = f3d_window_render_to_image(window, 0);
             if (image == IntPtr.Zero)
-                throw new InvalidOperationException("F3D render failed for view " + view.Name + ".");
+                throw new InvalidOperationException("F3D render failed for view " + imageName + ".");
 
             try
             {
@@ -270,14 +410,14 @@ namespace StepF3DRenderLib
                 int channelTypeSize = checked((int)f3d_image_get_channel_type_size(image));
                 IntPtr content = f3d_image_get_content(image);
                 if (content == IntPtr.Zero || width <= 0 || height <= 0 || channelCount <= 0 || channelTypeSize <= 0)
-                    throw new InvalidOperationException("F3D raw image content was not available for view " + view.Name + ".");
+                    throw new InvalidOperationException("F3D raw image content was not available for view " + imageName + ".");
 
                 int byteCount = checked(width * height * channelCount * channelTypeSize);
                 var rawBytes = new byte[byteCount];
                 Marshal.Copy(content, rawBytes, 0, byteCount);
                 return new F3DRenderedImage
                 {
-                    Name = view.Name,
+                    Name = imageName,
                     Width = width,
                     Height = height,
                     ChannelCount = channelCount,
@@ -333,6 +473,29 @@ namespace StepF3DRenderLib
             f3d_camera_reset_to_bounds(camera, 0.9);
         }
 
+        private static void ApplyInteractivePreviewCamera(IntPtr window, F3DPreviewCameraState state)
+        {
+            IntPtr camera = f3d_window_get_camera(window);
+            if (camera == IntPtr.Zero)
+                throw new InvalidOperationException("F3D camera handle was not available.");
+
+            F3DPreviewCameraState actual = state ?? new F3DPreviewCameraState();
+            double zoomFactor = actual.ZoomFactor;
+            if (double.IsNaN(zoomFactor) || double.IsInfinity(zoomFactor) || zoomFactor <= 0.0)
+                zoomFactor = 1.0;
+
+            f3d_camera_reset_to_bounds(camera, 0.9);
+
+            if (actual.AzimuthDegrees != 0.0)
+                f3d_camera_azimuth(camera, actual.AzimuthDegrees);
+            if (actual.ElevationDegrees != 0.0)
+                f3d_camera_elevation(camera, actual.ElevationDegrees);
+            if (zoomFactor != 1.0)
+                f3d_camera_zoom(camera, zoomFactor);
+            if (actual.PanRight != 0.0 || actual.PanUp != 0.0)
+                f3d_camera_pan(camera, actual.PanRight, actual.PanUp, 0.0);
+        }
+
         private static void ConfigureRenderingOptions(IntPtr options)
         {
             f3d_options_set_as_bool(options, "scene.camera.orthographic", 1);
@@ -372,7 +535,7 @@ namespace StepF3DRenderLib
 
                             _f3dBinDirectory = Path.GetDirectoryName(libraryPath);
                             SetDllDirectory(_f3dBinDirectory);
-                            return NativeLibrary.Load(libraryPath);
+                            return LoadNativeLibraryFromOwnDirectory(libraryPath);
                         });
                     _nativeResolverConfigured = true;
                 }
@@ -393,9 +556,13 @@ namespace StepF3DRenderLib
                 return configuredPath;
 
             string baseDirectory = AppContext.BaseDirectory;
+            string assemblyDirectory = Path.GetDirectoryName(typeof(F3DProjectionRenderer).Assembly.Location);
             var candidates = new List<string>
             {
                 Path.Combine(baseDirectory, "f3d_c_api.dll"),
+                Path.Combine(baseDirectory, "F3D", "bin", "f3d_c_api.dll"),
+                Path.Combine(assemblyDirectory ?? string.Empty, "f3d_c_api.dll"),
+                Path.Combine(assemblyDirectory ?? string.Empty, "F3D", "bin", "f3d_c_api.dll"),
                 Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "F3D", "bin", "f3d_c_api.dll"),
                 Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), "F3D", "bin", "f3d_c_api.dll")
             };
@@ -409,8 +576,90 @@ namespace StepF3DRenderLib
             return null;
         }
 
+        private static IntPtr LoadNativeLibraryFromOwnDirectory(string libraryPath)
+        {
+            const int LoadLibrarySearchDllLoadDir = 0x00000100;
+            const int LoadLibrarySearchDefaultDirs = 0x00001000;
+
+            IntPtr handle = LoadLibraryEx(
+                libraryPath,
+                IntPtr.Zero,
+                LoadLibrarySearchDllLoadDir | LoadLibrarySearchDefaultDirs);
+            if (handle != IntPtr.Zero)
+                return handle;
+
+            int errorCode = Marshal.GetLastWin32Error();
+            try
+            {
+                return NativeLibrary.Load(libraryPath);
+            }
+            catch (Exception ex)
+            {
+                throw new DllNotFoundException(
+                    "Unable to load F3D native library from " + libraryPath +
+                    ". LoadLibraryEx failed with Win32 error " +
+                    errorCode.ToString(CultureInfo.InvariantCulture) + "." +
+                    DescribeLoadedMsvcRuntimeCollision(libraryPath),
+                    ex);
+            }
+        }
+
+        private static string DescribeLoadedMsvcRuntimeCollision(string libraryPath)
+        {
+            string loadedMsvcpPath = GetLoadedModulePath("MSVCP140.dll");
+            if (string.IsNullOrWhiteSpace(loadedMsvcpPath))
+                return string.Empty;
+
+            string f3dMsvcpPath = Path.Combine(Path.GetDirectoryName(libraryPath) ?? string.Empty, "MSVCP140.dll");
+            string loadedVersion = GetFileVersion(loadedMsvcpPath);
+            string f3dVersion = GetFileVersion(f3dMsvcpPath);
+            return " Loaded MSVCP140.dll='" + loadedMsvcpPath +
+                "' version='" + loadedVersion +
+                "'; F3D MSVCP140.dll='" + f3dMsvcpPath +
+                "' version='" + f3dVersion +
+                "'. Update Altium's app-local MSVCP140.dll with BuildAndInstall-Altium.ps1 so F3D can initialize in-process.";
+        }
+
+        private static string GetLoadedModulePath(string moduleName)
+        {
+            IntPtr moduleHandle = GetModuleHandle(moduleName);
+            if (moduleHandle == IntPtr.Zero)
+                return null;
+
+            var buffer = new char[32768];
+            int length = GetModuleFileName(moduleHandle, buffer, buffer.Length);
+            if (length <= 0)
+                return null;
+
+            return new string(buffer, 0, length);
+        }
+
+        private static string GetFileVersion(string path)
+        {
+            try
+            {
+                if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+                    return "missing";
+
+                return FileVersionInfo.GetVersionInfo(path).FileVersion ?? "unknown";
+            }
+            catch
+            {
+                return "unknown";
+            }
+        }
+
         [DllImport("kernel32", SetLastError = true, CharSet = CharSet.Unicode)]
         private static extern bool SetDllDirectory(string lpPathName);
+
+        [DllImport("kernel32", SetLastError = true, CharSet = CharSet.Unicode)]
+        private static extern IntPtr LoadLibraryEx(string lpFileName, IntPtr hFile, int dwFlags);
+
+        [DllImport("kernel32", SetLastError = true, CharSet = CharSet.Unicode)]
+        private static extern IntPtr GetModuleHandle(string lpModuleName);
+
+        [DllImport("kernel32", SetLastError = true, CharSet = CharSet.Unicode)]
+        private static extern int GetModuleFileName(IntPtr hModule, [Out] char[] lpFilename, int nSize);
 
         [DllImport(F3DLibraryName, CallingConvention = CallingConvention.Cdecl)]
         private static extern IntPtr f3d_engine_create(int offscreen);
@@ -429,6 +678,9 @@ namespace StepF3DRenderLib
 
         [DllImport(F3DLibraryName, CallingConvention = CallingConvention.Cdecl)]
         private static extern IntPtr f3d_engine_get_scene(IntPtr engine);
+
+        [DllImport(F3DLibraryName, CallingConvention = CallingConvention.Cdecl)]
+        private static extern IntPtr f3d_engine_get_interactor(IntPtr engine);
 
         [DllImport(F3DLibraryName, CallingConvention = CallingConvention.Cdecl)]
         private static extern int f3d_engine_load_plugin([MarshalAs(UnmanagedType.LPUTF8Str)] string pathOrName);
@@ -504,7 +756,562 @@ namespace StepF3DRenderLib
         private static extern void f3d_camera_set_view_up(IntPtr camera, [In] double[] viewUp);
 
         [DllImport(F3DLibraryName, CallingConvention = CallingConvention.Cdecl)]
+        private static extern void f3d_camera_get_position(IntPtr camera, [Out] double[] position);
+
+        [DllImport(F3DLibraryName, CallingConvention = CallingConvention.Cdecl)]
+        private static extern void f3d_camera_get_focal_point(IntPtr camera, [Out] double[] focalPoint);
+
+        [DllImport(F3DLibraryName, CallingConvention = CallingConvention.Cdecl)]
+        private static extern void f3d_camera_get_view_up(IntPtr camera, [Out] double[] viewUp);
+
+        [DllImport(F3DLibraryName, CallingConvention = CallingConvention.Cdecl)]
+        private static extern void f3d_camera_set_view_angle(IntPtr camera, double angle);
+
+        [DllImport(F3DLibraryName, CallingConvention = CallingConvention.Cdecl)]
+        private static extern double f3d_camera_get_view_angle(IntPtr camera);
+
+        [DllImport(F3DLibraryName, CallingConvention = CallingConvention.Cdecl)]
         private static extern void f3d_camera_reset_to_bounds(IntPtr camera, double zoomFactor);
+
+        [DllImport(F3DLibraryName, CallingConvention = CallingConvention.Cdecl)]
+        private static extern void f3d_camera_azimuth(IntPtr camera, double angle);
+
+        [DllImport(F3DLibraryName, CallingConvention = CallingConvention.Cdecl)]
+        private static extern void f3d_camera_elevation(IntPtr camera, double angle);
+
+        [DllImport(F3DLibraryName, CallingConvention = CallingConvention.Cdecl)]
+        private static extern void f3d_camera_pan(IntPtr camera, double right, double up, double forward);
+
+        [DllImport(F3DLibraryName, CallingConvention = CallingConvention.Cdecl)]
+        private static extern void f3d_camera_zoom(IntPtr camera, double factor);
+
+        [DllImport(F3DLibraryName, CallingConvention = CallingConvention.Cdecl)]
+        private static extern void f3d_interactor_init_commands(IntPtr interactor);
+
+        [DllImport(F3DLibraryName, CallingConvention = CallingConvention.Cdecl)]
+        private static extern void f3d_interactor_init_bindings(IntPtr interactor);
+
+        [DllImport(F3DLibraryName, CallingConvention = CallingConvention.Cdecl)]
+        private static extern void f3d_interactor_enable_camera_movement(IntPtr interactor);
+
+        [DllImport(F3DLibraryName, CallingConvention = CallingConvention.Cdecl)]
+        private static extern void f3d_interactor_trigger_mod_update(IntPtr interactor, int modifier);
+
+        [DllImport(F3DLibraryName, CallingConvention = CallingConvention.Cdecl)]
+        private static extern void f3d_interactor_trigger_mouse_button(IntPtr interactor, int action, int button);
+
+        [DllImport(F3DLibraryName, CallingConvention = CallingConvention.Cdecl)]
+        private static extern void f3d_interactor_trigger_mouse_position(IntPtr interactor, double xpos, double ypos);
+
+        [DllImport(F3DLibraryName, CallingConvention = CallingConvention.Cdecl)]
+        private static extern void f3d_interactor_trigger_mouse_wheel(IntPtr interactor, int direction);
+
+        [DllImport(F3DLibraryName, CallingConvention = CallingConvention.Cdecl)]
+        private static extern void f3d_interactor_trigger_event_loop(IntPtr interactor, double deltaTime);
+
+        public sealed class F3DPreviewSession : IDisposable
+        {
+            private readonly BlockingCollection<PreviewWorkItem> _workItems = new BlockingCollection<PreviewWorkItem>();
+            private readonly Thread _renderThread;
+            private readonly object _disposeLock = new object();
+            private IntPtr _originalEngine;
+            private IntPtr _cleanEngine;
+            private double _orthographicZoomFactor = 1.0;
+            private F3DPreviewCameraSnapshot _pendingCameraSnapshot;
+            private bool _previewCameraInitialized;
+            private bool _disposed;
+
+            internal F3DPreviewSession(byte[] stepData)
+            {
+                _renderThread = CreateRenderThread();
+                _renderThread.Start();
+
+                RunOnRenderThread(() =>
+                {
+                    _originalEngine = CreatePreviewEngine(stepData);
+                    return 0;
+                });
+            }
+
+            internal F3DPreviewSession(byte[] stepData, F3DPreviewCameraSnapshot cameraSnapshot)
+            {
+                _renderThread = CreateRenderThread();
+                _renderThread.Start();
+
+                RunOnRenderThread(() =>
+                {
+                    _originalEngine = CreatePreviewEngine(stepData);
+                    _pendingCameraSnapshot = cameraSnapshot?.Clone();
+                    return 0;
+                });
+            }
+
+            internal F3DPreviewSession(byte[] originalStepData, byte[] cleanStepData)
+            {
+                _renderThread = CreateRenderThread();
+                _renderThread.Start();
+
+                RunOnRenderThread(() =>
+                {
+                    _originalEngine = CreatePreviewEngine(originalStepData);
+                    _cleanEngine = CreatePreviewEngine(cleanStepData);
+                    return 0;
+                });
+            }
+
+            public F3DRenderedImage RenderInteractivePreviewImage(
+                int width,
+                int height,
+                F3DPreviewCameraState cameraState)
+            {
+                return RenderInteractivePreviewImage(width, height, cameraState, null);
+            }
+
+            public F3DRenderedImage RenderInteractivePreviewImage(
+                int width,
+                int height,
+                F3DPreviewCameraState cameraState,
+                IReadOnlyList<F3DPreviewInteraction> interactions)
+            {
+                ValidatePreviewSize(width, height);
+
+                return RunOnRenderThread(() =>
+                {
+                    lock (NativeRenderLock)
+                    {
+                        PrepareInteractivePreviewFrame(width, height, cameraState, interactions);
+                        return RenderPreviewImage(_originalEngine, "preview");
+                    }
+                });
+            }
+
+            public F3DPreviewCameraSnapshot GetCameraSnapshot()
+            {
+                return GetCameraSnapshot(null);
+            }
+
+            public F3DPreviewCameraSnapshot GetCameraSnapshot(IReadOnlyList<F3DPreviewInteraction> interactions)
+            {
+                return RunOnRenderThread(() =>
+                {
+                    lock (NativeRenderLock)
+                    {
+                        EnsurePreviewCameraInitialized();
+                        ApplyPreviewInteractions(interactions);
+                        return CaptureCameraSnapshot(GetWindow(_originalEngine), _orthographicZoomFactor);
+                    }
+                });
+            }
+
+            public F3DPreviewRenderPair RenderInteractivePreview(
+                int width,
+                int height,
+                F3DPreviewCameraState cameraState)
+            {
+                return RenderInteractivePreview(width, height, cameraState, null);
+            }
+
+            public F3DPreviewRenderPair RenderInteractivePreview(
+                int width,
+                int height,
+                F3DPreviewCameraState cameraState,
+                IReadOnlyList<F3DPreviewInteraction> interactions)
+            {
+                ValidatePreviewSize(width, height);
+                if (_cleanEngine == IntPtr.Zero)
+                    throw new InvalidOperationException("The preview session was created for one STEP model.");
+
+                return RunOnRenderThread(() =>
+                {
+                    lock (NativeRenderLock)
+                    {
+                        PrepareInteractivePreviewFrame(width, height, cameraState, interactions);
+                        return new F3DPreviewRenderPair
+                        {
+                            OriginalImage = RenderPreviewImage(_originalEngine, "original"),
+                            CleanImage = RenderPreviewImage(_cleanEngine, "clean")
+                        };
+                    }
+                });
+            }
+
+            public void Dispose()
+            {
+                lock (_disposeLock)
+                {
+                    if (_disposed)
+                        return;
+
+                    try
+                    {
+                        RunOnRenderThread(() =>
+                        {
+                            DeleteEngine(ref _originalEngine);
+                            DeleteEngine(ref _cleanEngine);
+                            return 0;
+                        });
+                    }
+                    finally
+                    {
+                        _disposed = true;
+                        _workItems.CompleteAdding();
+                        if (Thread.CurrentThread != _renderThread)
+                            _renderThread.Join();
+                        _workItems.Dispose();
+                    }
+                }
+            }
+
+            private Thread CreateRenderThread()
+            {
+                return new Thread(RenderThreadMain)
+                {
+                    IsBackground = true,
+                    Name = "EasyEDA F3D Preview Renderer"
+                };
+            }
+
+            private static void ValidatePreviewSize(int width, int height)
+            {
+                if (width <= 0)
+                    throw new ArgumentOutOfRangeException(nameof(width), "Preview width must be greater than zero.");
+                if (height <= 0)
+                    throw new ArgumentOutOfRangeException(nameof(height), "Preview height must be greater than zero.");
+            }
+
+            private void ApplyCameraSnapshot(F3DPreviewCameraSnapshot snapshot)
+            {
+                if (snapshot == null)
+                    return;
+
+                _orthographicZoomFactor = SanitizeOrthographicZoomFactor(snapshot.OrthographicZoomFactor);
+                ApplyCameraSnapshot(GetWindow(_originalEngine), snapshot);
+                SyncOriginalCameraToClean();
+                _previewCameraInitialized = true;
+            }
+
+            private T RunOnRenderThread<T>(Func<T> action)
+            {
+                if (action == null)
+                    throw new ArgumentNullException(nameof(action));
+                if (_disposed)
+                    throw new ObjectDisposedException(nameof(F3DPreviewSession));
+                if (Thread.CurrentThread == _renderThread)
+                    return action();
+
+                var workItem = new PreviewWorkItem(() => action());
+                try
+                {
+                    _workItems.Add(workItem);
+                }
+                catch (InvalidOperationException ex)
+                {
+                    throw new ObjectDisposedException(nameof(F3DPreviewSession), ex);
+                }
+
+                workItem.Wait();
+                if (workItem.Exception != null)
+                    ExceptionDispatchInfo.Capture(workItem.Exception).Throw();
+
+                return (T)workItem.Result;
+            }
+
+            private void RenderThreadMain()
+            {
+                foreach (PreviewWorkItem workItem in _workItems.GetConsumingEnumerable())
+                {
+                    try
+                    {
+                        workItem.Result = workItem.Action();
+                    }
+                    catch (Exception ex)
+                    {
+                        workItem.Exception = ex;
+                    }
+                    finally
+                    {
+                        workItem.Complete();
+                    }
+                }
+            }
+
+            private sealed class PreviewWorkItem
+            {
+                private readonly ManualResetEventSlim _completed = new ManualResetEventSlim();
+
+                public PreviewWorkItem(Func<object> action)
+                {
+                    Action = action;
+                }
+
+                public Func<object> Action { get; }
+                public object Result { get; set; }
+                public Exception Exception { get; set; }
+
+                public void Complete()
+                {
+                    _completed.Set();
+                }
+
+                public void Wait()
+                {
+                    _completed.Wait();
+                    _completed.Dispose();
+                }
+            }
+            private static IntPtr CreatePreviewEngine(byte[] stepData)
+            {
+                IntPtr engine = CreateEngine();
+                try
+                {
+                    IntPtr options = f3d_engine_get_options(engine);
+                    if (options == IntPtr.Zero)
+                        throw new InvalidOperationException("F3D options handle was not available.");
+                    ConfigureRenderingOptions(options);
+                    ConfigurePreviewInteractor(engine);
+
+                    IntPtr scene = GetScene(engine);
+                    GCHandle pinnedStepData = GCHandle.Alloc(stepData, GCHandleType.Pinned);
+                    try
+                    {
+                        if (f3d_scene_add_buffer(scene, pinnedStepData.AddrOfPinnedObject(), (UIntPtr)stepData.Length) == 0)
+                            throw new InvalidOperationException("F3D failed to load STEP data from memory.");
+                    }
+                    finally
+                    {
+                        pinnedStepData.Free();
+                    }
+
+                    return engine;
+                }
+                catch
+                {
+                    f3d_engine_delete(engine);
+                    throw;
+                }
+            }
+
+            private static F3DRenderedImage RenderPreviewImage(
+                IntPtr engine,
+                string name)
+            {
+                IntPtr window = GetWindow(engine);
+                return RenderCurrentWindowToRawImage(window, name);
+            }
+
+            private void PreparePreviewWindows(int width, int height)
+            {
+                f3d_window_set_size(GetWindow(_originalEngine), width, height);
+                if (_cleanEngine != IntPtr.Zero)
+                    f3d_window_set_size(GetWindow(_cleanEngine), width, height);
+            }
+
+            private void PrepareInteractivePreviewFrame(
+                int width,
+                int height,
+                F3DPreviewCameraState cameraState,
+                IReadOnlyList<F3DPreviewInteraction> interactions)
+            {
+                PreparePreviewWindows(width, height);
+                if (!ApplyPendingCameraSnapshot())
+                {
+                    if (cameraState != null)
+                    {
+                        ApplyInteractivePreviewCamera(GetWindow(_originalEngine), cameraState);
+                        SyncOriginalCameraToClean();
+                        _previewCameraInitialized = true;
+                    }
+                    else
+                    {
+                        EnsurePreviewCameraInitialized();
+                    }
+                }
+
+                ApplyPreviewInteractions(interactions);
+            }
+
+            private bool ApplyPendingCameraSnapshot()
+            {
+                if (_pendingCameraSnapshot == null)
+                    return false;
+
+                F3DPreviewCameraSnapshot snapshot = _pendingCameraSnapshot;
+                _pendingCameraSnapshot = null;
+                ApplyCameraSnapshot(snapshot);
+                return true;
+            }
+
+            private void EnsurePreviewCameraInitialized()
+            {
+                if (_previewCameraInitialized)
+                    return;
+
+                ResetOriginalCameraToBounds();
+                SyncOriginalCameraToClean();
+                _previewCameraInitialized = true;
+            }
+
+            private void ApplyPreviewInteractions(IReadOnlyList<F3DPreviewInteraction> interactions)
+            {
+                if (interactions == null || interactions.Count == 0)
+                    return;
+
+                EnsurePreviewCameraInitialized();
+                IntPtr interactor = GetInteractor(_originalEngine);
+                foreach (F3DPreviewInteraction interaction in interactions)
+                {
+                    if (interaction == null)
+                        continue;
+
+                    if (interaction.Kind == F3DPreviewInteractionKind.ResetCamera)
+                    {
+                        ResetOriginalCameraToBounds();
+                        _orthographicZoomFactor = 1.0;
+                        continue;
+                    }
+
+                    f3d_interactor_trigger_mod_update(interactor, (int)interaction.Modifier);
+                    if (interaction.Kind == F3DPreviewInteractionKind.MousePosition ||
+                        interaction.Kind == F3DPreviewInteractionKind.MouseButtonPress ||
+                        interaction.Kind == F3DPreviewInteractionKind.MouseButtonRelease ||
+                        interaction.Kind == F3DPreviewInteractionKind.MouseWheel)
+                    {
+                        f3d_interactor_trigger_mouse_position(interactor, interaction.X, interaction.Y);
+                    }
+
+                    if (interaction.Kind == F3DPreviewInteractionKind.MouseButtonPress)
+                        f3d_interactor_trigger_mouse_button(interactor, 0, (int)interaction.Button);
+                    else if (interaction.Kind == F3DPreviewInteractionKind.MouseButtonRelease)
+                        f3d_interactor_trigger_mouse_button(interactor, 1, (int)interaction.Button);
+                    else if (interaction.Kind == F3DPreviewInteractionKind.MouseWheel)
+                    {
+                        f3d_interactor_trigger_mouse_wheel(interactor, (int)interaction.WheelDirection);
+                        if (interaction.WheelDirection == F3DPreviewWheelDirection.Forward)
+                            _orthographicZoomFactor *= PreviewMouseWheelZoomFactor;
+                        else
+                            _orthographicZoomFactor /= PreviewMouseWheelZoomFactor;
+                    }
+
+                    f3d_interactor_trigger_event_loop(interactor, 1.0 / 60.0);
+                }
+
+                SyncOriginalCameraToClean();
+            }
+
+            private void ResetOriginalCameraToBounds()
+            {
+                IntPtr camera = f3d_window_get_camera(GetWindow(_originalEngine));
+                if (camera == IntPtr.Zero)
+                    throw new InvalidOperationException("F3D camera handle was not available.");
+
+                f3d_camera_reset_to_bounds(camera, 0.9);
+            }
+
+            private void SyncOriginalCameraToClean()
+            {
+                if (_cleanEngine == IntPtr.Zero)
+                    return;
+
+                ApplyCameraSnapshot(
+                    GetWindow(_cleanEngine),
+                    CaptureCameraSnapshot(GetWindow(_originalEngine), _orthographicZoomFactor));
+            }
+
+            private static void CopyCameraState(IntPtr sourceWindow, IntPtr destinationWindow)
+            {
+                ApplyCameraSnapshot(destinationWindow, CaptureCameraSnapshot(sourceWindow, 1.0));
+            }
+
+            private static F3DPreviewCameraSnapshot CaptureCameraSnapshot(IntPtr window, double orthographicZoomFactor)
+            {
+                IntPtr camera = f3d_window_get_camera(window);
+                if (camera == IntPtr.Zero)
+                    throw new InvalidOperationException("F3D camera handle was not available.");
+
+                double[] position = new double[3];
+                double[] focalPoint = new double[3];
+                double[] viewUp = new double[3];
+                f3d_camera_get_position(camera, position);
+                f3d_camera_get_focal_point(camera, focalPoint);
+                f3d_camera_get_view_up(camera, viewUp);
+
+                return new F3DPreviewCameraSnapshot
+                {
+                    Position = position,
+                    FocalPoint = focalPoint,
+                    ViewUp = viewUp,
+                    ViewAngle = f3d_camera_get_view_angle(camera),
+                    OrthographicZoomFactor = SanitizeOrthographicZoomFactor(orthographicZoomFactor)
+                };
+            }
+
+            private static void ApplyCameraSnapshot(IntPtr window, F3DPreviewCameraSnapshot snapshot)
+            {
+                IntPtr camera = f3d_window_get_camera(window);
+                if (camera == IntPtr.Zero)
+                    throw new InvalidOperationException("F3D camera handle was not available.");
+                if (!IsValidCameraVector(snapshot.Position) ||
+                    !IsValidCameraVector(snapshot.FocalPoint) ||
+                    !IsValidCameraVector(snapshot.ViewUp))
+                {
+                    return;
+                }
+
+                double orthographicZoomFactor = SanitizeOrthographicZoomFactor(snapshot.OrthographicZoomFactor);
+                f3d_camera_reset_to_bounds(camera, 0.9);
+                f3d_camera_set_position(camera, snapshot.Position);
+                f3d_camera_set_focal_point(camera, snapshot.FocalPoint);
+                f3d_camera_set_view_up(camera, snapshot.ViewUp);
+                if (!double.IsNaN(snapshot.ViewAngle) &&
+                    !double.IsInfinity(snapshot.ViewAngle) &&
+                    snapshot.ViewAngle > 0.0)
+                {
+                    f3d_camera_set_view_angle(camera, snapshot.ViewAngle);
+                }
+                if (orthographicZoomFactor != 1.0)
+                    f3d_camera_zoom(camera, orthographicZoomFactor);
+            }
+
+            private static bool IsValidCameraVector(double[] vector)
+            {
+                return vector != null &&
+                    vector.Length >= 3 &&
+                    vector.Take(3).All(value => !double.IsNaN(value) && !double.IsInfinity(value));
+            }
+
+            private static double SanitizeOrthographicZoomFactor(double zoomFactor)
+            {
+                if (double.IsNaN(zoomFactor) || double.IsInfinity(zoomFactor) || zoomFactor <= 0.0)
+                    return 1.0;
+
+                return zoomFactor;
+            }
+
+            private static void ConfigurePreviewInteractor(IntPtr engine)
+            {
+                IntPtr interactor = GetInteractor(engine);
+                f3d_interactor_init_commands(interactor);
+                f3d_interactor_init_bindings(interactor);
+                f3d_interactor_enable_camera_movement(interactor);
+            }
+
+            private static IntPtr GetInteractor(IntPtr engine)
+            {
+                IntPtr interactor = f3d_engine_get_interactor(engine);
+                if (interactor == IntPtr.Zero)
+                    throw new InvalidOperationException("F3D interactor handle was not available.");
+                return interactor;
+            }
+
+            private static void DeleteEngine(ref IntPtr engine)
+            {
+                if (engine == IntPtr.Zero)
+                    return;
+
+                f3d_engine_delete(engine);
+                engine = IntPtr.Zero;
+            }
+        }
 
         private readonly struct ViewSpec
         {
