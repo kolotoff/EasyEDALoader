@@ -1656,7 +1656,7 @@ namespace EasyEDA_Loader
             }
         }
 
-        private void RemoveCacheButton_Click(object sender, RoutedEventArgs e)
+        private async void RemoveCacheButton_Click(object sender, RoutedEventArgs e)
         {
             if (!IsCurrentPreviewForSelectedComponent(out PartInfoViewModel partViewModel))
                 return;
@@ -1681,7 +1681,10 @@ namespace EasyEDA_Loader
                 });
 
                 previewCts?.Cancel();
-                ClearPreview();
+                previewCts?.Dispose();
+                previewCts = new CancellationTokenSource();
+
+                await LoadPreviewAsync(partViewModel, previewCts.Token);
 
                 CompleteCriticalOperation("Selected component cache removed.", true);
             }

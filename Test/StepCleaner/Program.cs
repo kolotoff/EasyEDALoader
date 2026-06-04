@@ -685,6 +685,11 @@ namespace StepCleaner.Tests
                 failures);
             AssertContains(
                 dialogWindow,
+                "previewCts = new CancellationTokenSource();\n\n                await LoadPreviewAsync(partViewModel, previewCts.Token);\n\n                CompleteCriticalOperation(\"Selected component cache removed.\", true);",
+                "Remove cache should reload fresh selected-component data into cache and preview after deletion",
+                failures);
+            AssertContains(
+                dialogWindow,
                 "IsCurrentPreviewForSelectedComponent",
                 "model cache buttons should only act when the loaded preview belongs to the selected grid row",
                 failures);
