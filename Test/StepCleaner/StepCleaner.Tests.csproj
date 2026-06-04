@@ -14,12 +14,15 @@
     <Compile Include="OcctOverlapCleanupTests.cs" />
     <Compile Include="OcctSilhouetteStageReport.cs" />
     <Compile Include="..\..\EasyEDA-Loader\StepWatermarkCleaner.cs" Link="StepWatermarkCleaner.cs" />
+    <Compile Include="..\..\EasyEDA-Loader\StepWatermarkCleanVerifier.cs" Link="StepWatermarkCleanVerifier.cs" />
     <Compile Include="..\..\EasyEDA-Loader\StepProjectionRenderer.cs" Link="StepProjectionRenderer.cs" />
     <Compile Include="..\..\EasyEDA-Loader\StepSilhouetteProjection.cs" Link="StepSilhouetteProjection.cs" />
     <Compile Include="..\..\EasyEDA-Loader\FootprintModelPlacement.cs" Link="FootprintModelPlacement.cs" />
     <Compile Include="..\..\EasyEDA-Loader\StepSilhouetteImageRenderer.cs" Link="StepSilhouetteImageRenderer.cs" />
     <Compile Include="..\..\EasyEDA-Loader\FootprintMetadataSelector.cs" Link="FootprintMetadataSelector.cs" />
     <Compile Include="..\..\EasyEDA-Loader\FootprintLayerMap.cs" Link="FootprintLayerMap.cs" />
+    <Compile Include="..\..\EasyEDA-Loader\ModelZInfoCache.cs" Link="ModelZInfoCache.cs" />
+    <Compile Include="..\..\EasyEDA-Loader\ModelImportTrace.cs" Link="ModelImportTrace.cs" />
     <Compile Include="..\..\EasyEDA-Loader\CleanStepCacheKeys.cs" Link="CleanStepCacheKeys.cs" />
     <Compile Include="..\..\EasyEDA-Loader\ImportLibrarySavePolicy.cs" Link="ImportLibrarySavePolicy.cs" />
     <Compile Include="..\..\EasyEDA-Loader\SymbolImportRules.cs" Link="SymbolImportRules.cs" />

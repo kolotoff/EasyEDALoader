@@ -474,9 +474,14 @@ namespace EasyEDA_Loader
                         $"Processing {selectionIndex + 1}/{selections.Count}: {partName}",
                         componentStartProgress);
 
-                    // Prefetch model if we can
-                    Task<byte[]> modelTask = model != null ? ModelCache.GetStepModelAsync(api, model.Uuid, ctx.Token) : null;
-                    Task<byte[]> rawModelTask = model != null ? ModelCache.GetRawObjModelAsync(api, model.Uuid, ctx.Token) : null;
+                    // Prefetch model if we can.
+                    string modelTraceIdentifier = FirstNonEmpty(partNumber, partName, model?.Uuid);
+                    Task<byte[]> modelTask = model != null
+                        ? ModelImportTrace.MeasureAsync("model_download_cache_read", modelTraceIdentifier, () => ModelCache.GetStepModelAsync(api, model.Uuid, ctx.Token))
+                        : null;
+                    Task<byte[]> rawModelTask = model != null
+                        ? ModelImportTrace.MeasureAsync("raw_obj_download_cache_read", modelTraceIdentifier, () => ModelCache.GetRawObjModelAsync(api, model.Uuid, ctx.Token))
+                        : null;
 
                     // Get product info (use cached from search if available)
                     string footprintName = FootprintMetadataSelector.SelectName(package, partNumber);

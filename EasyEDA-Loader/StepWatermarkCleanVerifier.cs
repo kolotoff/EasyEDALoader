@@ -5,6 +5,7 @@ using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Text;
+using System.Threading.Tasks;
 
 namespace EasyEDA_Loader
 {
@@ -102,8 +103,9 @@ namespace EasyEDA_Loader
             if (detectedViewNames.Length > 0)
             {
                 var renderOptions = CreateProjectionOptionsForViews(detectedViewNames, projectionOptions);
-                StepProjectionRenderer.ProjectFile(originalPath, originalProjectionDirectory, renderOptions);
-                StepProjectionRenderer.ProjectFile(cleanPath, cleanProjectionDirectory, renderOptions);
+                var originalProjectionTask = Task.Run(() => StepProjectionRenderer.ProjectFile(originalPath, originalProjectionDirectory, renderOptions));
+                var cleanProjectionTask = Task.Run(() => StepProjectionRenderer.ProjectFile(cleanPath, cleanProjectionDirectory, renderOptions));
+                Task.WaitAll(originalProjectionTask, cleanProjectionTask);
 
                 string originalModelName = Path.GetFileNameWithoutExtension(originalPath);
                 string cleanModelName = Path.GetFileNameWithoutExtension(cleanPath);

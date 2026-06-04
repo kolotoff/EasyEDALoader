@@ -151,46 +151,49 @@ namespace EasyEDA_Loader
 
                 var standardOutput = new StringBuilder();
                 var standardError = new StringBuilder();
-                using (Process process = Process.Start(startInfo))
+                ModelImportTrace.Measure("occt_hlr_projection", null, () =>
                 {
-                    if (process == null)
-                        throw new InvalidOperationException("OCCT HLR helper process did not start: " + helperPath);
-                    process.OutputDataReceived += (sender, args) =>
+                    using (Process process = Process.Start(startInfo))
                     {
-                        if (args.Data != null)
-                            standardOutput.AppendLine(args.Data);
-                    };
-                    process.ErrorDataReceived += (sender, args) =>
-                    {
-                        if (args.Data != null)
-                            standardError.AppendLine(args.Data);
-                    };
-                    process.BeginOutputReadLine();
-                    process.BeginErrorReadLine();
-                    if (!process.WaitForExit(30000))
-                    {
-                        try { process.Kill(); }
-                        catch { }
-                        throw new TimeoutException("OCCT HLR helper timed out after 30 seconds: " + helperPath);
-                    }
-                    process.WaitForExit();
+                        if (process == null)
+                            throw new InvalidOperationException("OCCT HLR helper process did not start: " + helperPath);
+                        process.OutputDataReceived += (sender, args) =>
+                        {
+                            if (args.Data != null)
+                                standardOutput.AppendLine(args.Data);
+                        };
+                        process.ErrorDataReceived += (sender, args) =>
+                        {
+                            if (args.Data != null)
+                                standardError.AppendLine(args.Data);
+                        };
+                        process.BeginOutputReadLine();
+                        process.BeginErrorReadLine();
+                        if (!process.WaitForExit(30000))
+                        {
+                            try { process.Kill(); }
+                            catch { }
+                            throw new TimeoutException("OCCT HLR helper timed out after 30 seconds: " + helperPath);
+                        }
+                        process.WaitForExit();
 
-                    if (process.ExitCode != 0 || !File.Exists(tempJson))
-                    {
-                        string detail = FirstNonEmpty(
-                            standardError.ToString().Trim(),
-                            standardOutput.ToString().Trim(),
-                            File.Exists(tempJson) ? ReadOcctError(tempJson) : null,
-                            "No error output.");
-                        throw new InvalidOperationException(
-                            "OCCT HLR helper failed with exit code " +
-                            process.ExitCode.ToString(CultureInfo.InvariantCulture) +
-                            ": " +
-                            detail);
+                        if (process.ExitCode != 0 || !File.Exists(tempJson))
+                        {
+                            string detail = FirstNonEmpty(
+                                standardError.ToString().Trim(),
+                                standardOutput.ToString().Trim(),
+                                File.Exists(tempJson) ? ReadOcctError(tempJson) : null,
+                                "No error output.");
+                            throw new InvalidOperationException(
+                                "OCCT HLR helper failed with exit code " +
+                                process.ExitCode.ToString(CultureInfo.InvariantCulture) +
+                                ": " +
+                                detail);
+                        }
                     }
-                }
+                });
 
-                return ReadOcctProjectionJson(tempJson, placement.TargetBounds);
+                return ModelImportTrace.Measure("projection_optimization", null, () => ReadOcctProjectionJson(tempJson, placement.TargetBounds));
             }
             catch (Exception ex)
             {

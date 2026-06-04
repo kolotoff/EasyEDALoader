@@ -5,7 +5,6 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
-using System.Text;
 using System.Threading.Tasks;
 
 namespace EasyEDA_Loader
@@ -69,57 +68,44 @@ namespace EasyEDA_Loader
         }
         public async Task<ModelZInfo> GetZInfoFromOrigin(EeFootprintContext ctx)
         {
-            double? minZ = null;
-            double? maxZ = null;
-
-            byte[] model = ctx.RawModelTask != null
-                ? await ctx.RawModelTask.ConfigureAwait(false)
-                : await ModelCache.GetRawObjModelAsync(new EasyedaApi(), Uuid, ctx.CancelToken).ConfigureAwait(false);
-
-            using var reader = new StringReader(Encoding.UTF8.GetString(model));
-
-            string line;
-            while ((line = reader.ReadLine()) != null)
-            {
-                if (line.StartsWith("v ", StringComparison.OrdinalIgnoreCase))
-                {
-                    var parts = line.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
-                    if (parts.Length >= 4 &&
-                        double.TryParse(parts[3], NumberStyles.Float, CultureInfo.InvariantCulture, out double z))
-                    {
-                        if (!minZ.HasValue || z < minZ)
-                            minZ = z;
-                        if (!maxZ.HasValue || z > maxZ)
-                            maxZ = z;
-                    }
-                }
-            }
-
-            if (!minZ.HasValue || !maxZ.HasValue)
-                throw new InvalidDataException("No vertices found in OBJ file.");
-
-            return new ModelZInfo
-            {
-                OffsetFromOrigin = Math.Abs(minZ.Value),
-                Height = Math.Max(0, maxZ.Value - minZ.Value)
-            };
+            return await ModelZInfoCache.GetOrCreateAsync(
+                Uuid,
+                async () => ctx.RawModelTask != null
+                    ? await ctx.RawModelTask.ConfigureAwait(false)
+                    : await ModelCache.GetRawObjModelAsync(new EasyedaApi(), Uuid, ctx.CancelToken).ConfigureAwait(false),
+                ctx.CancelToken).ConfigureAwait(false);
         }
 
         public override bool AddToComponent(IPCB_LibComponent c, EeFootprintContext ctx)
         {
             try
             {
-                var modelTask = ctx.ModelTask ?? ModelCache.GetStepModelAsync(new EasyedaApi(), Uuid, ctx.CancelToken);
-                var zInfoTask = Task.Run(() => GetZInfoFromOrigin(ctx));
+                string modelTraceIdentifier = FirstNonEmpty(ctx.PartNumber, Name, Uuid);
+                var modelTask = ctx.ModelTask ?? ModelImportTrace.MeasureAsync("model_download_cache_read", modelTraceIdentifier, () => ModelCache.GetStepModelAsync(new EasyedaApi(), Uuid, ctx.CancelToken));
+                var zInfoTask = ModelImportTrace.MeasureAsync("raw_obj_z_info", modelTraceIdentifier, () => GetZInfoFromOrigin(ctx));
                 Task.WhenAll(modelTask, zInfoTask).ConfigureAwait(false).GetAwaiter().GetResult();
 
                 byte[] originalModel = modelTask.GetAwaiter().GetResult();
 
-                byte[] footprintModel = ctx.RemoveWatermark
-                    ? StepWatermarkCleanVerifier.CleanOrThrow(originalModel, GetSafeCacheFileName(), CreateVerificationDirectory(), ctx.CleanText)
-                    : originalModel;
+                byte[] footprintModel = originalModel;
+                if (ctx.RemoveWatermark)
+                {
+                    string cleanCacheKey = CleanStepCacheKeys.GetCleanModeKey(GetSafeCacheFileName(), ctx.CleanText);
+                    footprintModel = ModelImportTrace.Measure("watermark_clean_cache", modelTraceIdentifier, () => ModelCache.GetCleanStepModelAsync(
+                            cleanCacheKey,
+                            () => Task.Run(() => StepWatermarkCleanVerifier.CleanOrThrow(
+                                originalModel,
+                                GetSafeCacheFileName(),
+                                CreateVerificationDirectory(),
+                                ctx.CleanText),
+                                ctx.CancelToken),
+                            ctx.CancelToken)
+                        .ConfigureAwait(false)
+                        .GetAwaiter()
+                        .GetResult());
+                }
 
-                string modelIdentifier = FirstNonEmpty(ctx.PartNumber, Name, Uuid);
+                string modelIdentifier = modelTraceIdentifier;
                 string temp = Path.Combine(Path.GetTempPath(), $"{GetSafeFileName(modelIdentifier)}.step");
                 File.WriteAllBytes(temp, footprintModel);
 
@@ -269,12 +255,6 @@ namespace EasyEDA_Loader
                 fileName = Guid.NewGuid().ToString("N");
 
             return ModelCache.GetSafeFileName(fileName);
-        }
-
-        public class ModelZInfo
-        {
-            public double OffsetFromOrigin { get; set; }
-            public double Height { get; set; }
         }
 
         public string Name { get; set; }

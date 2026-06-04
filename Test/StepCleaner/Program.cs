@@ -5,7 +5,11 @@ using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Net.Http;
 using System.Text;
+using System.Text.Json;
+using System.Threading;
+using System.Threading.Tasks;
 using SkiaSharp;
 
 namespace StepCleaner.Tests
@@ -20,6 +24,7 @@ namespace StepCleaner.Tests
         private const int FlatnessEdgeThreshold = 28;
         private const double MaxCleanedRegionEdgeRatio = 0.035;
         private const double MaxRetainedRegionEdgeRatio = 0.45;
+        private const string DefaultMeasurePartNumber = "C5338332";
 
         private static int Main(string[] args)
         {
@@ -192,6 +197,9 @@ namespace StepCleaner.Tests
             if (IsOption(args[0], "--model-cache"))
                 return RunModelCacheTests();
 
+            if (IsOption(args[0], "--measure-model-import"))
+                return RunModelImportMeasurement(args);
+
             if (IsOption(args[0], "--silhouette-cleanup"))
                 return RunSilhouetteCleanupTests();
 
@@ -222,6 +230,7 @@ namespace StepCleaner.Tests
             Console.Error.WriteLine("Usage: StepCleaner.Tests --footprint-layers");
             Console.Error.WriteLine("Usage: StepCleaner.Tests --pcblib-actions");
             Console.Error.WriteLine("Usage: StepCleaner.Tests --model-cache");
+            Console.Error.WriteLine("Usage: StepCleaner.Tests --measure-model-import [part-number] [--repeat count] [--clean-text]");
             Console.Error.WriteLine("Usage: StepCleaner.Tests --silhouette-cleanup");
             Console.Error.WriteLine("Usage: StepCleaner.Tests --occt-hlr-smoke");
             Console.Error.WriteLine("Usage: StepCleaner.Tests --occt-overlap-unit");
@@ -235,6 +244,7 @@ namespace StepCleaner.Tests
         private static int RunModelCacheTests()
         {
             var failures = new List<string>();
+            string repoRoot = FindRepoRoot();
 
             AssertEqual(
                 "model-uuid__watermark",
@@ -267,6 +277,133 @@ namespace StepCleaner.Tests
                     " cleaned STEP cache variants, got " +
                     actualKeys.Length.ToString(CultureInfo.InvariantCulture) +
                     ".");
+            }
+
+            string footprint3dModel = File.ReadAllText(Path.Combine(repoRoot, "EasyEDA-Loader", "FootprintShapes", "EeFootprint3dModel.cs"));
+            string easyEdaLoader = File.ReadAllText(Path.Combine(repoRoot, "EasyEDA-Loader", "EasyEDALoader.cs"));
+            string stepSilhouetteProjection = File.ReadAllText(Path.Combine(repoRoot, "EasyEDA-Loader", "StepSilhouetteProjection.cs"));
+            string stepCleanerProgram = File.ReadAllText(Path.Combine(repoRoot, "Test", "StepCleaner", "Program.cs"));
+            AssertContains(
+                footprint3dModel,
+                "ModelCache.GetCleanStepModelAsync",
+                "footprint import should reuse the cleaned STEP model cache instead of cleaning every import",
+                failures);
+            AssertContains(
+                footprint3dModel,
+                "CleanStepCacheKeys.GetCleanModeKey(GetSafeCacheFileName(), ctx.CleanText)",
+                "footprint import should cache separate watermark-only and clean-text STEP outputs",
+                failures);
+            AssertDoesNotContain(
+                footprint3dModel,
+                "? StepWatermarkCleanVerifier.CleanOrThrow",
+                "footprint import should not call watermark cleanup directly inside the import branch",
+                failures);
+            AssertContains(
+                easyEdaLoader,
+                "ModelImportTrace.MeasureAsync(\"model_download_cache_read\"",
+                "model STEP download/cache read should be timed from the normal import prefetch path",
+                failures);
+            AssertContains(
+                easyEdaLoader,
+                "ModelImportTrace.MeasureAsync(\"raw_obj_download_cache_read\"",
+                "raw OBJ download/cache read should be timed from the normal import prefetch path",
+                failures);
+            AssertContains(
+                footprint3dModel,
+                "ModelImportTrace.Measure(\"watermark_clean_cache\"",
+                "watermark clean/cache phase should be timed during 3D model import",
+                failures);
+            AssertContains(
+                footprint3dModel,
+                "ModelImportTrace.MeasureAsync(\"raw_obj_z_info\"",
+                "raw OBJ Z info parse/cache phase should be timed during 3D model import",
+                failures);
+            AssertContains(
+                stepSilhouetteProjection,
+                "ModelImportTrace.Measure(\"occt_hlr_projection\"",
+                "OCCT HLR helper projection phase should be timed",
+                failures);
+            AssertContains(
+                stepSilhouetteProjection,
+                "ModelImportTrace.Measure(\"projection_optimization\"",
+                "projection parse/place/optimization phase should be timed",
+                failures);
+            AssertContains(
+                stepCleanerProgram,
+                "DefaultMeasure" + "PartNumber = \"C5338332\"",
+                "standalone model measurement should default to the C5338332 example",
+                failures);
+            AssertContains(
+                stepCleanerProgram,
+                "RunModelImport" + "Measurement(args)",
+                "test harness should expose a standalone model import measurement command",
+                failures);
+            AssertContains(
+                stepCleanerProgram,
+                "GetComponent" + "JsonPath(partNumber)",
+                "measurement command should cache component JSON lookup for repeatable measurements",
+                failures);
+            AssertContains(
+                stepCleanerProgram,
+                "--measure-" + "model-import",
+                "usage should document the standalone model import measurement command",
+                failures);
+            AssertContains(
+                stepCleanerProgram,
+                "StepWatermarkClean" + "Verifier.CleanOrThrow",
+                "measurement command should exercise the same watermark cleaner verifier as import",
+                failures);
+            AssertContains(
+                stepCleanerProgram,
+                "ModelZInfo" + "Cache.GetOrCreateAsync",
+                "measurement command should exercise cached raw OBJ Z info parsing",
+                failures);
+            AssertContains(
+                stepCleanerProgram,
+                "StepSilhouette" + "Projection.Generate(cleanedStep",
+                "measurement command should exercise OCCT HLR projection generation and optimization",
+                failures);
+
+            string zInfoCacheDirectory = Path.Combine(Path.GetTempPath(), "EasyEDALoaderZInfo_" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(zInfoCacheDirectory);
+            try
+            {
+                string zInfoCachePath = Path.Combine(zInfoCacheDirectory, "model.zinfo");
+                int rawObjLoadCount = 0;
+                Func<byte[]> rawObjLoader = () =>
+                {
+                    rawObjLoadCount++;
+                    return Encoding.UTF8.GetBytes(
+                        "v 0 0 -1.25" + Environment.NewLine +
+                        "v 1 0 2.75" + Environment.NewLine);
+                };
+
+                ModelZInfo firstZInfo = ModelZInfoCache.GetOrCreate(zInfoCachePath, rawObjLoader);
+                ModelZInfo secondZInfo = ModelZInfoCache.GetOrCreate(
+                    zInfoCachePath,
+                    () =>
+                    {
+                        rawObjLoadCount++;
+                        return Encoding.UTF8.GetBytes(
+                            "v 0 0 -9" + Environment.NewLine +
+                            "v 1 0 9" + Environment.NewLine);
+                    });
+
+                AssertNear(1.25, firstZInfo.OffsetFromOrigin, 0.00001, "raw OBJ Z info should keep the lowest vertex offset", failures);
+                AssertNear(4.0, firstZInfo.Height, 0.00001, "raw OBJ Z info should keep model height", failures);
+                AssertNear(firstZInfo.OffsetFromOrigin, secondZInfo.OffsetFromOrigin, 0.00001, "cached Z info should preserve the parsed offset", failures);
+                AssertNear(firstZInfo.Height, secondZInfo.Height, 0.00001, "cached Z info should preserve the parsed height", failures);
+                AssertEqual("1", rawObjLoadCount.ToString(CultureInfo.InvariantCulture), "cached Z info should avoid reparsing raw OBJ on repeated imports", failures);
+            }
+            finally
+            {
+                try
+                {
+                    Directory.Delete(zInfoCacheDirectory, true);
+                }
+                catch
+                {
+                }
             }
 
             if (failures.Count > 0)
@@ -351,6 +488,411 @@ namespace StepCleaner.Tests
 
             Console.WriteLine("Clean text regression test passed.");
             return 0;
+        }
+
+        private static int RunModelImportMeasurement(string[] args)
+        {
+            string partNumber = DefaultMeasurePartNumber;
+            int repeatCount = 2;
+            bool cleanText = false;
+
+            int index = 1;
+            if (index < args.Length && !args[index].StartsWith("--", StringComparison.Ordinal))
+            {
+                partNumber = args[index];
+                index++;
+            }
+
+            for (; index < args.Length; index++)
+            {
+                string option = args[index];
+                if (IsOption(option, "--repeat"))
+                {
+                    if (!TryReadIntOption(args, ref index, option, out repeatCount))
+                        return 2;
+                    continue;
+                }
+
+                if (IsOption(option, "--clean-text"))
+                {
+                    cleanText = true;
+                    continue;
+                }
+
+                Console.Error.WriteLine("Unknown measurement option: " + option);
+                return 2;
+            }
+
+            if (string.IsNullOrWhiteSpace(partNumber))
+            {
+                Console.Error.WriteLine("Part number is required.");
+                return 2;
+            }
+
+            if (repeatCount < 1)
+            {
+                Console.Error.WriteLine("--repeat must be at least 1.");
+                return 2;
+            }
+
+            try
+            {
+                return RunModelImportMeasurementAsync(partNumber, repeatCount, cleanText)
+                    .ConfigureAwait(false)
+                    .GetAwaiter()
+                    .GetResult();
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine("Model import measurement failed: " + ex.Message);
+                return 1;
+            }
+        }
+
+        private static async System.Threading.Tasks.Task<int> RunModelImportMeasurementAsync(
+            string partNumber,
+            int repeatCount,
+            bool cleanText)
+        {
+            using (var httpClient = new HttpClient())
+            using (var cancellation = new CancellationTokenSource(TimeSpan.FromMinutes(5)))
+            {
+                httpClient.DefaultRequestHeaders.UserAgent.ParseAdd(
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) EasyEDA-Loader-StepCleaner/1.0");
+
+                Console.WriteLine("Model import measurement: part=" + partNumber + ", repeat=" + repeatCount.ToString(CultureInfo.InvariantCulture));
+                Console.WriteLine("Clean text: " + cleanText.ToString(CultureInfo.InvariantCulture));
+
+                for (int repeatIndex = 1; repeatIndex <= repeatCount; repeatIndex++)
+                {
+                    var timings = new ModelImportMeasurementTimings();
+                    Console.WriteLine("Run " + repeatIndex.ToString(CultureInfo.InvariantCulture) + "/" + repeatCount.ToString(CultureInfo.InvariantCulture));
+
+                    MeasuredModelInfo model = await timings.MeasureAsync(
+                        "component_lookup",
+                        () => LoadMeasuredModelInfoAsync(httpClient, partNumber, cancellation.Token)).ConfigureAwait(false);
+
+                    Console.WriteLine("  model_uuid=" + model.Uuid);
+                    Console.WriteLine("  model_title=" + model.Title);
+
+                    byte[] originalStep = await timings.MeasureAsync(
+                        "model_download_cache_read",
+                        () => GetOrDownloadBytesAsync(
+                            GetOriginalStepPath(model.Uuid),
+                            () => DownloadBytesAsync(httpClient, "https://modules.easyeda.com/qAxj6KHrDKw4blvCG8QJPs7Y/" + model.Uuid, cancellation.Token),
+                            cancellation.Token)).ConfigureAwait(false);
+
+                    byte[] rawObj = await timings.MeasureAsync(
+                        "raw_obj_download_cache_read",
+                        () => GetOrDownloadBytesAsync(
+                            GetRawObjPath(model.Uuid),
+                            () => DownloadBytesAsync(httpClient, "https://modules.easyeda.com/3dmodel/" + model.Uuid, cancellation.Token),
+                            cancellation.Token)).ConfigureAwait(false);
+
+                    string cleanCacheKey = CleanStepCacheKeys.GetCleanModeKey(model.Uuid, cleanText);
+                    byte[] cleanedStep = await timings.MeasureAsync(
+                        "watermark_clean_cache",
+                        () => GetOrDownloadBytesAsync(
+                            GetCleanStepPath(cleanCacheKey),
+                            () => System.Threading.Tasks.Task.Run(
+                                () => StepWatermarkCleanVerifier.CleanOrThrow(
+                                    originalStep,
+                                    model.Uuid,
+                                    CreateMeasurementVerificationDirectory(partNumber, model.Uuid),
+                                    cleanText),
+                                cancellation.Token),
+                            cancellation.Token)).ConfigureAwait(false);
+
+                    ModelZInfo zInfo = await timings.MeasureAsync(
+                        "raw_obj_z_info",
+                        () => ModelZInfoCache.GetOrCreateAsync(
+                            model.Uuid,
+                            () => System.Threading.Tasks.Task.FromResult(rawObj),
+                            cancellation.Token)).ConfigureAwait(false);
+
+                    IReadOnlyList<StepSilhouettePrimitive> projectionPrimitives = timings.Measure(
+                        "occt_hlr_projection_total",
+                        () => StepSilhouetteProjection.Generate(cleanedStep, CreateMeasurementProjectionPlacement(model)));
+
+                    Console.WriteLine("  original_step_bytes=" + originalStep.Length.ToString(CultureInfo.InvariantCulture));
+                    Console.WriteLine("  raw_obj_bytes=" + rawObj.Length.ToString(CultureInfo.InvariantCulture));
+                    Console.WriteLine("  cleaned_step_bytes=" + cleanedStep.Length.ToString(CultureInfo.InvariantCulture));
+                    Console.WriteLine("  z_offset_mm=" + zInfo.OffsetFromOrigin.ToString("R", CultureInfo.InvariantCulture));
+                    Console.WriteLine("  model_height_mm=" + zInfo.Height.ToString("R", CultureInfo.InvariantCulture));
+                    Console.WriteLine("  projection_primitives=" + projectionPrimitives.Count.ToString(CultureInfo.InvariantCulture));
+                    timings.WriteToConsole("  ");
+                }
+            }
+
+            return 0;
+        }
+
+        private static async System.Threading.Tasks.Task<MeasuredModelInfo> LoadMeasuredModelInfoAsync(
+            HttpClient httpClient,
+            string partNumber,
+            CancellationToken cancellationToken)
+        {
+            string url = "https://easyeda.com/api/products/" + Uri.EscapeDataString(partNumber) + "/components?version=6.4.19.5";
+            string json = await GetOrDownloadTextAsync(
+                GetComponentJsonPath(partNumber),
+                () => httpClient.GetStringAsync(url, cancellationToken),
+                cancellationToken).ConfigureAwait(false);
+            using (JsonDocument document = JsonDocument.Parse(json))
+            {
+                JsonElement root = document.RootElement;
+                JsonElement packageData = root
+                    .GetProperty("result")
+                    .GetProperty("packageDetail")
+                    .GetProperty("dataStr");
+                JsonElement shapes = packageData.GetProperty("shape");
+                foreach (JsonElement shape in shapes.EnumerateArray())
+                {
+                    string rawShape = shape.GetString();
+                    if (rawShape != null && rawShape.StartsWith("SVGNODE~", StringComparison.Ordinal))
+                        return ParseMeasuredModelInfo(rawShape);
+                }
+            }
+
+            throw new InvalidDataException("Component does not contain a 3D SVGNODE model: " + partNumber);
+        }
+
+        private static MeasuredModelInfo ParseMeasuredModelInfo(string rawShape)
+        {
+            int separator = rawShape.IndexOf('~');
+            if (separator < 0 || separator + 1 >= rawShape.Length)
+                throw new InvalidDataException("Invalid SVGNODE model shape.");
+
+            using (JsonDocument document = JsonDocument.Parse(rawShape.Substring(separator + 1)))
+            {
+                JsonElement attrs = document.RootElement.GetProperty("attrs");
+                string[] rotationParts = attrs.GetProperty("c_rotation").GetString().Split(',');
+                return new MeasuredModelInfo
+                {
+                    Uuid = attrs.GetProperty("uuid").GetString(),
+                    Title = attrs.GetProperty("title").GetString(),
+                    WidthMm = ConvertEasyEdaUnitToMm(ParseInvariantDouble(attrs.GetProperty("c_width").GetString())),
+                    HeightMm = ConvertEasyEdaUnitToMm(ParseInvariantDouble(attrs.GetProperty("c_height").GetString())),
+                    RotX = rotationParts.Length > 0 ? ParseInvariantDouble(rotationParts[0]) : 0.0,
+                    RotY = rotationParts.Length > 1 ? ParseInvariantDouble(rotationParts[1]) : 0.0,
+                    RotZ = rotationParts.Length > 2 ? ParseInvariantDouble(rotationParts[2]) : 0.0
+                };
+            }
+        }
+
+        private static async Task<byte[]> DownloadBytesAsync(
+            HttpClient httpClient,
+            string url,
+            CancellationToken cancellationToken)
+        {
+            using (HttpResponseMessage response = await httpClient.GetAsync(url, cancellationToken).ConfigureAwait(false))
+            {
+                response.EnsureSuccessStatusCode();
+                return await response.Content.ReadAsByteArrayAsync().ConfigureAwait(false);
+            }
+        }
+
+        private static async Task<byte[]> GetOrDownloadBytesAsync(
+            string cachePath,
+            Func<Task<byte[]>> download,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (File.Exists(cachePath))
+            {
+                byte[] cached = File.ReadAllBytes(cachePath);
+                if (cached.Length > 0)
+                    return cached;
+            }
+
+            byte[] data = await download().ConfigureAwait(false);
+            cancellationToken.ThrowIfCancellationRequested();
+            if (data != null && data.Length > 0)
+            {
+                string directory = Path.GetDirectoryName(cachePath);
+                if (!string.IsNullOrWhiteSpace(directory))
+                    Directory.CreateDirectory(directory);
+                File.WriteAllBytes(cachePath, data);
+            }
+
+            return data;
+        }
+
+        private static async Task<string> GetOrDownloadTextAsync(
+            string cachePath,
+            Func<Task<string>> download,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (File.Exists(cachePath))
+            {
+                string cached = File.ReadAllText(cachePath, Encoding.UTF8);
+                if (!string.IsNullOrWhiteSpace(cached))
+                    return cached;
+            }
+
+            string data = await download().ConfigureAwait(false);
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!string.IsNullOrWhiteSpace(data))
+            {
+                string directory = Path.GetDirectoryName(cachePath);
+                if (!string.IsNullOrWhiteSpace(directory))
+                    Directory.CreateDirectory(directory);
+                File.WriteAllText(cachePath, data, Encoding.UTF8);
+            }
+
+            return data;
+        }
+
+        private static StepSilhouettePlacement CreateMeasurementProjectionPlacement(MeasuredModelInfo model)
+        {
+            FootprintModelRotation modelRotation = FootprintModelPlacement.ResolveAltiumModelRotationDeg(
+                model.RotX,
+                model.RotY,
+                model.RotZ);
+            FootprintModelRotation projectionRotation = FootprintModelPlacement.ResolveProjectionModelRotationDeg(modelRotation);
+            double halfWidth = Math.Max(model.WidthMm, 1.0) / 2.0;
+            double halfHeight = Math.Max(model.HeightMm, 1.0) / 2.0;
+            return new StepSilhouettePlacement
+            {
+                TargetBounds = new StepSilhouetteBounds
+                {
+                    Left = -halfWidth,
+                    Bottom = -halfHeight,
+                    Right = halfWidth,
+                    Top = halfHeight
+                },
+                RotX = projectionRotation.X,
+                RotY = projectionRotation.Y,
+                RotZ = projectionRotation.Z,
+                Rotation2D = FootprintModelPlacement.ProjectionPlacementRotationDeg()
+            };
+        }
+
+        private static string CreateMeasurementVerificationDirectory(string partNumber, string modelUuid)
+        {
+            string reportName =
+                GetSafeFileName(partNumber) +
+                "_" +
+                GetSafeFileName(modelUuid) +
+                "_" +
+                DateTime.Now.ToString("yyyyMMdd_HHmmss", CultureInfo.InvariantCulture);
+            string reportDirectory = Path.Combine(GetLocalDataRoot(), "StepCleanerReports", reportName);
+            Directory.CreateDirectory(reportDirectory);
+            return reportDirectory;
+        }
+
+        private static string GetOriginalStepPath(string modelUuid)
+        {
+            return Path.Combine(GetModelCacheDirectory("Original"), GetSafeFileName(modelUuid) + ".step");
+        }
+
+        private static string GetRawObjPath(string modelUuid)
+        {
+            return Path.Combine(GetModelCacheDirectory("Raw"), GetSafeFileName(modelUuid) + ".obj");
+        }
+
+        private static string GetCleanStepPath(string modelUuid)
+        {
+            return Path.Combine(GetModelCacheDirectory("Clean"), GetSafeFileName(modelUuid) + "_clean.step");
+        }
+
+        private static string GetComponentJsonPath(string partNumber)
+        {
+            return Path.Combine(GetLocalDataRoot(), "ComponentCache", GetSafeFileName(partNumber) + ".json");
+        }
+
+        private static string GetModelCacheDirectory(string kind)
+        {
+            return Path.Combine(GetLocalDataRoot(), "ModelCache", kind);
+        }
+
+        private static string GetLocalDataRoot()
+        {
+            string localApplicationData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+            return string.IsNullOrWhiteSpace(localApplicationData)
+                ? Path.Combine(Path.GetTempPath(), "EasyEDA-Loader")
+                : Path.Combine(localApplicationData, "EasyEDA-Loader");
+        }
+
+        private static string GetSafeFileName(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+                value = Guid.NewGuid().ToString("N");
+
+            foreach (char invalidChar in Path.GetInvalidFileNameChars())
+                value = value.Replace(invalidChar, '_');
+
+            return value;
+        }
+
+        private static double ParseInvariantDouble(string value)
+        {
+            return double.Parse(value, NumberStyles.Float, CultureInfo.InvariantCulture);
+        }
+
+        private static double ConvertEasyEdaUnitToMm(double value)
+        {
+            return value * 10.0 * 0.0254;
+        }
+
+        private sealed class MeasuredModelInfo
+        {
+            public string Uuid { get; set; }
+            public string Title { get; set; }
+            public double WidthMm { get; set; }
+            public double HeightMm { get; set; }
+            public double RotX { get; set; }
+            public double RotY { get; set; }
+            public double RotZ { get; set; }
+        }
+
+        private sealed class ModelImportMeasurementTimings
+        {
+            private readonly List<Tuple<string, long>> stages = new List<Tuple<string, long>>();
+
+            public async Task<T> MeasureAsync<T>(string stageName, Func<Task<T>> action)
+            {
+                Stopwatch stopwatch = Stopwatch.StartNew();
+                try
+                {
+                    return await action().ConfigureAwait(false);
+                }
+                finally
+                {
+                    stopwatch.Stop();
+                    stages.Add(Tuple.Create(stageName, stopwatch.ElapsedMilliseconds));
+                }
+            }
+
+            public T Measure<T>(string stageName, Func<T> action)
+            {
+                Stopwatch stopwatch = Stopwatch.StartNew();
+                try
+                {
+                    return action();
+                }
+                finally
+                {
+                    stopwatch.Stop();
+                    stages.Add(Tuple.Create(stageName, stopwatch.ElapsedMilliseconds));
+                }
+            }
+
+            public void WriteToConsole(string prefix)
+            {
+                long total = 0;
+                foreach (Tuple<string, long> stage in stages)
+                {
+                    total += stage.Item2;
+                    Console.WriteLine(
+                        prefix +
+                        stage.Item1 +
+                        "_ms=" +
+                        stage.Item2.ToString(CultureInfo.InvariantCulture));
+                }
+
+                Console.WriteLine(prefix + "total_measured_ms=" + total.ToString(CultureInfo.InvariantCulture));
+            }
         }
 
         private static void VerifyCleanTextPostProcessProjectionUsesCachedOriginal(
@@ -494,6 +1036,14 @@ namespace StepCleaner.Tests
         private static int RunSilhouetteCleanupTests()
         {
             var failures = new List<string>();
+            string repoRoot = FindRepoRoot();
+            string verifier = File.ReadAllText(Path.Combine(repoRoot, "EasyEDA-Loader", "StepWatermarkCleanVerifier.cs"));
+            AssertContains(
+                verifier,
+                "Task.WaitAll(originalProjectionTask, cleanProjectionTask)",
+                "watermark cleanup verification should render original and cleaned projections in parallel",
+                failures);
+
             string dataRoot = FindDataRoot();
             string sot223Path = Path.Combine(dataRoot, "Original", "SOT-223-4P_L6.5-W3.5-H1.6-LS7.0-P2.30.step");
             if (!File.Exists(sot223Path))
