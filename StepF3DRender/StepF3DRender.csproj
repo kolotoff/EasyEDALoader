@@ -9,4 +9,7 @@
     <Nullable>disable</Nullable>
     <SelfContained>false</SelfContained>
   </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\StepF3DRenderLib\StepF3DRenderLib.csproj" />
+  </ItemGroup>
 </Project>

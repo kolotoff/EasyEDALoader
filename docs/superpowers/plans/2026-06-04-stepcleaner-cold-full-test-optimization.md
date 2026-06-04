@@ -1580,6 +1580,114 @@ git add <changed files>
 git commit -m "Optimize measured C5338332 import bottleneck"
 ```
 
+### Task 16: Replace F3D Stdout/Base64 Bridge With Shared Library Calls
+
+**Files:**
+- Create: `StepF3DRenderLib/StepF3DRenderLib.csproj`
+- Create: `StepF3DRenderLib/F3DProjectionRenderer.cs`
+- Modify: `StepF3DRender/Program.cs`
+- Modify: `StepF3DRender/StepF3DRender.csproj`
+- Modify: `EasyEDA-Loader/StepProjectionRenderer.cs`
+- Modify: `EasyEDA-Loader/EasyEDA-Loader.csproj`
+- Modify: `StepCleaner/StepCleaner.csproj`
+- Modify: `Test/StepCleaner/Program.cs`
+- Modify: `Test/StepCleaner/StepCleaner.Tests.csproj`
+
+- [x] **Step 1: Add source guards**
+
+`RunModelCacheTests()` now checks that:
+
+- `StepF3DRenderLib` contains `f3d_scene_add_buffer`;
+- `StepProjectionRenderer` calls `F3DProjectionRenderer.RenderRawImages`;
+- `StepProjectionRenderer` no longer contains `--six-sides-stdout` or `rawBase64`;
+- the CLI uses `F3DProjectionRenderer.RenderPngFilesFromFile`;
+- `EasyEDA-Loader`, `StepCleaner`, and `StepCleaner.Tests` reference `StepF3DRenderLib.csproj`.
+
+Red run:
+
+```text
+Model cache regression test failed.
+  F3D shared renderer should load STEP bytes directly through libf3d without a temp STEP file: missing 'f3d_scene_add_buffer'.
+  internal colored projection rendering should call the shared F3D renderer library instead of a helper process: missing 'F3DProjectionRenderer.RenderRawImages'.
+  internal colored projection rendering should not send raw images through stdout: found '--six-sides-stdout'.
+  internal colored projection rendering should not base64-expand raw image buffers: found 'rawBase64'.
+```
+
+- [x] **Step 2: Move F3D native rendering into a shared library**
+
+`StepF3DRenderLib.F3DProjectionRenderer` now exposes:
+
+```csharp
+public static IReadOnlyList<F3DRenderedImage> RenderRawImages(
+    byte[] stepData,
+    int sizePixels,
+    IReadOnlyList<string> viewNames)
+
+public static IReadOnlyList<F3DRenderedFile> RenderPngFilesFromFile(
+    string inputPath,
+    string outputDirectory,
+    int sizePixels,
+    IReadOnlyList<string> viewNames)
+```
+
+The raw path pins caller STEP bytes and loads them with:
+
+```csharp
+f3d_scene_add_buffer(scene, pinnedStepData.AddrOfPinnedObject(), (UIntPtr)stepData.Length)
+```
+
+- [x] **Step 3: Replace the executable with a thin CLI wrapper**
+
+`StepF3DRender --six-sides <input.step> <output-directory> [--size pixels] [--views ...]` now only parses arguments and calls `F3DProjectionRenderer.RenderPngFilesFromFile(...)`.
+
+The old `--six-sides-stdout` JSON/base64 mode was removed from internal production usage.
+
+- [x] **Step 4: Switch `StepProjectionRenderer` to in-process F3D**
+
+`TryRenderWithF3DLibraryBatchToRawImages(...)` now calls `F3DProjectionRenderer.RenderRawImages(...)` directly and converts the returned raw F3D image buffers to top-down RGBA.
+
+`TryRenderWithF3DLibraryBatch(...)` now calls `F3DProjectionRenderer.RenderPngFilesFromFile(...)` directly for explicit file-output render requests.
+
+- [x] **Step 5: Serialize libf3d entry points**
+
+Full harness initially crashed with native heap corruption:
+
+```text
+exit_code=-1073740940
+```
+
+Root cause: the old helper process isolated F3D native state per render, while the shared library allowed parallel calls from post-clean verification tasks. `F3DProjectionRenderer` now uses a single `NativeRenderLock` around libf3d render operations.
+
+- [x] **Step 6: Verify**
+
+Commands:
+
+```powershell
+dotnet build Test\StepCleaner\StepCleaner.Tests.csproj
+dotnet run --no-build --project Test\StepCleaner\StepCleaner.Tests.csproj -- --f3d-buffer-smoke Test\StepCleaner\Data\Original\HDMI-SMD_HDMI-001S.step
+dotnet run --project StepF3DRender\StepF3DRender.csproj -- --six-sides Test\StepCleaner\Data\Original\HDMI-SMD_HDMI-001S.step <temp-dir> --size 128 --views x_plus,z_plus
+dotnet run --project Test\StepCleaner\StepCleaner.Tests.csproj -- --model-cache
+dotnet run --project Test\StepCleaner\StepCleaner.Tests.csproj
+```
+
+Result:
+
+```text
+f3d_buffer_smoke=PASS
+view=x_plus
+size=256x256
+raw_rgba_bytes=262144
+
+CLI smoke: generated x_plus and z_plus PNG files, six_side_f3d_library_ms=3252
+
+model-cache guard: PASS
+
+full StepCleaner run: PASS
+full_test_wall_ms=312357
+```
+
+Note: this removes internal stdout/base64 expansion and avoids temp STEP files for F3D raw internal rendering. Because libf3d is serialized for native stability, this is an architecture cleanup and prerequisite for future in-process optimization, not a measured wall-time win yet.
+
 ---
 
 ## Self-Review

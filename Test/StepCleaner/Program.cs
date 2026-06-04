@@ -222,6 +222,9 @@ namespace StepCleaner.Tests
             if (IsOption(args[0], "--occt-stage-report"))
                 return OcctSilhouetteStageReport.Run(args);
 
+            if (IsOption(args[0], "--f3d-buffer-smoke"))
+                return RunF3DBufferSmoke(args);
+
             if (IsOption(args[0], "--clean-text"))
                 return RunCleanTextTests();
 
@@ -246,6 +249,7 @@ namespace StepCleaner.Tests
             Console.Error.WriteLine("Usage: StepCleaner.Tests --occt-hlr-benchmark <input.step> [--repeat count]");
             Console.Error.WriteLine("Usage: StepCleaner.Tests --occt-overlap-unit");
             Console.Error.WriteLine("Usage: StepCleaner.Tests --occt-stage-report [output-dir]");
+            Console.Error.WriteLine("Usage: StepCleaner.Tests --f3d-buffer-smoke <input.step>");
             Console.Error.WriteLine("Usage: StepCleaner.Tests --clean-text");
             Console.Error.WriteLine("Usage: StepCleaner.Tests --silhouette <input.step> <output.png> [--rotx deg] [--roty deg] [--rotz deg] [--rotation2d deg] [--size pixels] [--padding pixels] [--no-grid] [--no-axes]");
             Console.Error.WriteLine("Usage: StepCleaner.Tests --silhouette-dump <input.step> <output.csv>");
@@ -304,6 +308,13 @@ namespace StepCleaner.Tests
             string stepF3DRenderProgram = File.Exists(stepF3DRenderProgramPath)
                 ? File.ReadAllText(stepF3DRenderProgramPath)
                 : string.Empty;
+            string stepF3DRenderLibPath = Path.Combine(repoRoot, "StepF3DRenderLib", "F3DProjectionRenderer.cs");
+            string stepF3DRenderLib = File.Exists(stepF3DRenderLibPath)
+                ? File.ReadAllText(stepF3DRenderLibPath)
+                : string.Empty;
+            string easyEdaProject = File.ReadAllText(Path.Combine(repoRoot, "EasyEDA-Loader", "EasyEDA-Loader.csproj"));
+            string stepCleanerProject = File.ReadAllText(Path.Combine(repoRoot, "StepCleaner", "StepCleaner.csproj"));
+            string stepCleanerTestsProject = File.ReadAllText(Path.Combine(repoRoot, "Test", "StepCleaner", "StepCleaner.Tests.csproj"));
             string stepCleanerProgram = File.ReadAllText(Path.Combine(repoRoot, "Test", "StepCleaner", "Program.cs"));
             AssertContains(
                 footprint3dModel,
@@ -436,9 +447,49 @@ namespace StepCleaner.Tests
                 "colored projection PNG rendering should try the single-load F3D library batch helper before f3d-console fallback",
                 failures);
             AssertContains(
-                stepF3DRenderProgram,
+                stepF3DRenderLib,
                 "f3d_scene_add",
                 "F3D library helper should load the STEP scene through f3d_c_api instead of f3d-console",
+                failures);
+            AssertContains(
+                stepF3DRenderLib,
+                "f3d_scene_add_buffer",
+                "F3D shared renderer should load STEP bytes directly through libf3d without a temp STEP file",
+                failures);
+            AssertContains(
+                stepProjectionRenderer,
+                "F3DProjectionRenderer.RenderRawImages",
+                "internal colored projection rendering should call the shared F3D renderer library instead of a helper process",
+                failures);
+            AssertDoesNotContain(
+                stepProjectionRenderer,
+                "--six-sides-stdout",
+                "internal colored projection rendering should not send raw images through stdout",
+                failures);
+            AssertDoesNotContain(
+                stepProjectionRenderer,
+                "rawBase64",
+                "internal colored projection rendering should not base64-expand raw image buffers",
+                failures);
+            AssertContains(
+                stepF3DRenderProgram,
+                "F3DProjectionRenderer.RenderPngFilesFromFile",
+                "StepF3DRender executable should be a tiny CLI wrapper over the shared renderer",
+                failures);
+            AssertContains(
+                easyEdaProject,
+                "StepF3DRenderLib.csproj",
+                "EasyEDA-Loader should reference the shared F3D renderer library for in-process projections",
+                failures);
+            AssertContains(
+                stepCleanerProject,
+                "StepF3DRenderLib.csproj",
+                "StepCleaner should reference the shared F3D renderer library used by linked projection code",
+                failures);
+            AssertContains(
+                stepCleanerTestsProject,
+                "StepF3DRenderLib.csproj",
+                "StepCleaner tests should reference the shared F3D renderer library used by linked projection code",
                 failures);
             AssertContains(
                 stepF3DRenderProgram,
@@ -446,7 +497,7 @@ namespace StepCleaner.Tests
                 "F3D library helper should expose a six-side render command",
                 failures);
             AssertContains(
-                stepF3DRenderProgram,
+                stepF3DRenderLib,
                 "model.scivis.array_name",
                 "F3D library helper should preserve the STEP Colors scalar array",
                 failures);
@@ -803,6 +854,56 @@ namespace StepCleaner.Tests
             {
                 Console.Error.WriteLine("Model import measurement failed: " + ex.Message);
                 return 1;
+            }
+        }
+
+        private static int RunF3DBufferSmoke(string[] args)
+        {
+            if (args.Length != 2)
+            {
+                Console.Error.WriteLine("Usage: StepCleaner.Tests --f3d-buffer-smoke <input.step>");
+                return 1;
+            }
+
+            string inputPath = args[1];
+            if (!File.Exists(inputPath))
+            {
+                Console.Error.WriteLine("Input STEP file was not found: " + inputPath);
+                return 2;
+            }
+
+            try
+            {
+                var options = new StepProjectionOptions
+                {
+                    ImageSizePixels = 256,
+                    PaddingPixels = 16,
+                    WriteMetadata = false,
+                    SkipGeometryModelForExternalRender = true
+                };
+                options.ViewNames.Add("x_plus");
+
+                IReadOnlyList<StepProjectionImage> images = StepProjectionRenderer.ProjectFileImages(
+                    File.ReadAllBytes(inputPath),
+                    Path.GetFileNameWithoutExtension(inputPath),
+                    options);
+                if (images.Count != 1)
+                {
+                    Console.Error.WriteLine("Expected one rendered image, got " + images.Count.ToString(CultureInfo.InvariantCulture) + ".");
+                    return 3;
+                }
+
+                StepProjectionImage image = images[0];
+                Console.WriteLine("f3d_buffer_smoke=PASS");
+                Console.WriteLine("view=" + image.ViewName);
+                Console.WriteLine("size=" + image.Width.ToString(CultureInfo.InvariantCulture) + "x" + image.Height.ToString(CultureInfo.InvariantCulture));
+                Console.WriteLine("raw_rgba_bytes=" + image.RgbaBytes.Length.ToString(CultureInfo.InvariantCulture));
+                return 0;
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine("F3D buffer smoke failed: " + ex.Message);
+                return 4;
             }
         }
 

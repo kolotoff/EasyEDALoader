@@ -6,10 +6,10 @@ using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text;
-using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using SkiaSharp;
+using StepF3DRenderLib;
 
 namespace EasyEDA_Loader
 {
@@ -954,10 +954,6 @@ namespace EasyEDA_Loader
         {
             try
             {
-                string executable = FindF3DRenderExecutable();
-                if (string.IsNullOrEmpty(executable))
-                    return false;
-
                 if (string.IsNullOrWhiteSpace(inputPath) || !File.Exists(inputPath))
                     return false;
 
@@ -981,46 +977,11 @@ namespace EasyEDA_Loader
                 if (string.IsNullOrWhiteSpace(outputDirectory))
                     return false;
 
-                var startInfo = new ProcessStartInfo
-                {
-                    FileName = executable,
-                    WorkingDirectory = Path.GetDirectoryName(executable),
-                    UseShellExecute = false,
-                    CreateNoWindow = true,
-                    RedirectStandardError = true,
-                    RedirectStandardOutput = true
-                };
-                startInfo.ArgumentList.Add("--six-sides");
-                startInfo.ArgumentList.Add(inputPath);
-                startInfo.ArgumentList.Add(outputDirectory);
-                startInfo.ArgumentList.Add("--size");
-                startInfo.ArgumentList.Add(options.ImageSizePixels.ToString(CultureInfo.InvariantCulture));
-                startInfo.ArgumentList.Add("--views");
-                startInfo.ArgumentList.Add(string.Join(",", views.Select(view => view.Name)));
-
-                using (var process = Process.Start(startInfo))
-                {
-                    if (process == null)
-                        return false;
-
-                    Task<string> standardOutputTask = process.StandardOutput.ReadToEndAsync();
-                    Task<string> standardErrorTask = process.StandardError.ReadToEndAsync();
-                    if (!process.WaitForExit(30000))
-                    {
-                        try { process.Kill(); }
-                        catch { }
-                        return false;
-                    }
-
-                    process.WaitForExit();
-                    string standardOutput = standardOutputTask.GetAwaiter().GetResult();
-                    string standardError = standardErrorTask.GetAwaiter().GetResult();
-                    if (process.ExitCode != 0)
-                    {
-                        Debug.WriteLine("F3D library batch render failed: " + FirstNonEmpty(standardError.Trim(), standardOutput.Trim(), "No error output."));
-                        return false;
-                    }
-                }
+                F3DProjectionRenderer.RenderPngFilesFromFile(
+                    inputPath,
+                    outputDirectory,
+                    options.ImageSizePixels,
+                    views.Select(view => view.Name).ToList());
 
                 foreach (ViewSpec view in views)
                 {
@@ -1048,10 +1009,6 @@ namespace EasyEDA_Loader
             images = Array.Empty<StepProjectionImage>();
             try
             {
-                string executable = FindF3DRenderExecutable();
-                if (string.IsNullOrEmpty(executable))
-                    return false;
-
                 if (stepData == null || stepData.Length == 0 || views == null || views.Count == 0)
                     return false;
 
@@ -1064,99 +1021,49 @@ namespace EasyEDA_Loader
                         return false;
                 }
 
-                var startInfo = new ProcessStartInfo
+                IReadOnlyList<F3DRenderedImage> renderedImages = F3DProjectionRenderer.RenderRawImages(
+                    stepData,
+                    options.ImageSizePixels,
+                    views.Select(view => view.Name).ToList());
+                var byName = new Dictionary<string, StepProjectionImage>(StringComparer.OrdinalIgnoreCase);
+                foreach (F3DRenderedImage renderedImage in renderedImages)
                 {
-                    FileName = executable,
-                    WorkingDirectory = Path.GetDirectoryName(executable),
-                    UseShellExecute = false,
-                    CreateNoWindow = true,
-                    RedirectStandardInput = true,
-                    RedirectStandardError = true,
-                    RedirectStandardOutput = true
-                };
-                startInfo.ArgumentList.Add("--six-sides-stdout");
-                startInfo.ArgumentList.Add("-");
-                startInfo.ArgumentList.Add(modelName);
-                startInfo.ArgumentList.Add("--size");
-                startInfo.ArgumentList.Add(options.ImageSizePixels.ToString(CultureInfo.InvariantCulture));
-                startInfo.ArgumentList.Add("--views");
-                startInfo.ArgumentList.Add(string.Join(",", views.Select(view => view.Name)));
-
-                string standardOutput;
-                string standardError;
-                using (var process = Process.Start(startInfo))
-                {
-                    if (process == null)
-                        return false;
-
-                    Task<string> standardOutputTask = process.StandardOutput.ReadToEndAsync();
-                    Task<string> standardErrorTask = process.StandardError.ReadToEndAsync();
-                    process.StandardInput.BaseStream.Write(stepData, 0, stepData.Length);
-                    process.StandardInput.Close();
-
-                    if (!process.WaitForExit(30000))
+                    if (renderedImage == null ||
+                        string.IsNullOrWhiteSpace(renderedImage.Name) ||
+                        renderedImage.Width <= 0 ||
+                        renderedImage.Height <= 0 ||
+                        renderedImage.ChannelType != 0 ||
+                        renderedImage.ChannelTypeSize != 1 ||
+                        renderedImage.RawBytes == null ||
+                        renderedImage.RawBytes.Length == 0)
                     {
-                        try { process.Kill(); }
-                        catch { }
                         return false;
                     }
 
-                    process.WaitForExit();
-                    standardOutput = standardOutputTask.GetAwaiter().GetResult();
-                    standardError = standardErrorTask.GetAwaiter().GetResult();
-                    if (process.ExitCode != 0)
+                    byte[] rgbaBytes = ConvertRawF3DImageToRgba(
+                        renderedImage.RawBytes,
+                        renderedImage.Width,
+                        renderedImage.Height,
+                        renderedImage.ChannelCount);
+                    byName[renderedImage.Name] = new StepProjectionImage
                     {
-                        Debug.WriteLine("F3D raw image batch render failed: " + FirstNonEmpty(standardError.Trim(), standardOutput.Trim(), "No error output."));
-                        return false;
-                    }
+                        ViewName = renderedImage.Name,
+                        Width = renderedImage.Width,
+                        Height = renderedImage.Height,
+                        RgbaBytes = rgbaBytes
+                    };
                 }
 
-                using (JsonDocument document = JsonDocument.Parse(standardOutput))
+                var ordered = new List<StepProjectionImage>();
+                foreach (ViewSpec view in views)
                 {
-                    if (!document.RootElement.TryGetProperty("views", out JsonElement viewsElement) ||
-                        viewsElement.ValueKind != JsonValueKind.Array)
+                    if (!byName.TryGetValue(view.Name, out StepProjectionImage image))
                         return false;
-
-                    var byName = new Dictionary<string, StepProjectionImage>(StringComparer.OrdinalIgnoreCase);
-                    foreach (JsonElement viewElement in viewsElement.EnumerateArray())
-                    {
-                        string viewName = viewElement.GetProperty("name").GetString();
-                        int width = viewElement.GetProperty("width").GetInt32();
-                        int height = viewElement.GetProperty("height").GetInt32();
-                        int channelCount = viewElement.GetProperty("channelCount").GetInt32();
-                        int channelType = viewElement.GetProperty("channelType").GetInt32();
-                        int channelTypeSize = viewElement.GetProperty("channelTypeSize").GetInt32();
-                        string rawBase64 = viewElement.GetProperty("rawBase64").GetString();
-                        if (string.IsNullOrWhiteSpace(viewName) ||
-                            width <= 0 ||
-                            height <= 0 ||
-                            channelType != 0 ||
-                            channelTypeSize != 1 ||
-                            string.IsNullOrWhiteSpace(rawBase64))
-                            return false;
-
-                        byte[] rawBytes = Convert.FromBase64String(rawBase64);
-                        byte[] rgbaBytes = ConvertRawF3DImageToRgba(rawBytes, width, height, channelCount);
-                        byName[viewName] = new StepProjectionImage
-                        {
-                            ViewName = viewName,
-                            Width = width,
-                            Height = height,
-                            RgbaBytes = rgbaBytes
-                        };
-                    }
-
-                    var ordered = new List<StepProjectionImage>();
-                    foreach (ViewSpec view in views)
-                    {
-                        if (!byName.TryGetValue(view.Name, out StepProjectionImage image))
-                            return false;
-                        ordered.Add(image);
-                    }
-
-                    images = ordered;
-                    return true;
+                    ordered.Add(image);
                 }
+
+                images = ordered;
+                return true;
             }
             catch (Exception ex)
             {
@@ -1257,87 +1164,6 @@ namespace EasyEDA_Loader
             }
 
             return null;
-        }
-
-        private static string FindF3DRenderExecutable()
-        {
-            string configuredPath = Environment.GetEnvironmentVariable("STEPCLEANER_F3D_RENDER");
-            if (!string.IsNullOrWhiteSpace(configuredPath) && File.Exists(configuredPath))
-                return configuredPath;
-
-            foreach (string baseDirectory in GetF3DRenderBaseDirectories())
-            {
-                string local = Path.Combine(baseDirectory, "StepF3DRender.exe");
-                if (File.Exists(local))
-                    return local;
-
-                string sibling = Path.Combine(baseDirectory, "StepF3DRender", "StepF3DRender.exe");
-                if (File.Exists(sibling))
-                    return sibling;
-
-                string solutionDebug = Path.GetFullPath(Path.Combine(baseDirectory, "..", "..", "..", "..", "StepF3DRender", "bin", "Debug", "net8.0-windows7.0", "win-x64", "StepF3DRender.exe"));
-                if (File.Exists(solutionDebug))
-                    return solutionDebug;
-
-                string solutionRelease = Path.GetFullPath(Path.Combine(baseDirectory, "..", "..", "..", "..", "StepF3DRender", "bin", "Release", "net8.0-windows7.0", "win-x64", "StepF3DRender.exe"));
-                if (File.Exists(solutionRelease))
-                    return solutionRelease;
-
-                string testHarnessDebug = Path.GetFullPath(Path.Combine(baseDirectory, "..", "..", "..", "..", "..", "StepF3DRender", "bin", "Debug", "net8.0-windows7.0", "win-x64", "StepF3DRender.exe"));
-                if (File.Exists(testHarnessDebug))
-                    return testHarnessDebug;
-
-                string testHarnessRelease = Path.GetFullPath(Path.Combine(baseDirectory, "..", "..", "..", "..", "..", "StepF3DRender", "bin", "Release", "net8.0-windows7.0", "win-x64", "StepF3DRender.exe"));
-                if (File.Exists(testHarnessRelease))
-                    return testHarnessRelease;
-            }
-
-            return null;
-        }
-
-        private static string FirstNonEmpty(params string[] values)
-        {
-            if (values == null)
-                return "";
-
-            foreach (string value in values)
-            {
-                if (!string.IsNullOrWhiteSpace(value))
-                    return value;
-            }
-
-            return "";
-        }
-
-        private static IEnumerable<string> GetF3DRenderBaseDirectories()
-        {
-            var directories = new List<string>();
-            AddDirectory(directories, AppContext.BaseDirectory);
-
-            string assemblyLocation = typeof(StepProjectionRenderer).Assembly.Location;
-            if (!string.IsNullOrWhiteSpace(assemblyLocation))
-                AddDirectory(directories, Path.GetDirectoryName(assemblyLocation));
-
-            return directories;
-        }
-
-        private static void AddDirectory(List<string> directories, string directory)
-        {
-            if (string.IsNullOrWhiteSpace(directory))
-                return;
-
-            string fullPath;
-            try
-            {
-                fullPath = Path.GetFullPath(directory);
-            }
-            catch
-            {
-                return;
-            }
-
-            if (!directories.Any(existing => string.Equals(existing, fullPath, StringComparison.OrdinalIgnoreCase)))
-                directories.Add(fullPath);
         }
 
         private static List<ProjectionHighlight> BuildDetectionHighlights(

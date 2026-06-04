@@ -32,4 +32,8 @@
     <PackageReference Include="SkiaSharp" Version="3.119.2" />
     <PackageReference Include="SkiaSharp.NativeAssets.Win32" Version="3.119.2" />
   </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\StepF3DRenderLib\StepF3DRenderLib.csproj" />
+  </ItemGroup>
 </Project>
