@@ -321,6 +321,14 @@ namespace StepCleaner
             Directory.CreateDirectory(cleanProjectionDirectory);
 
             var projectionOptions = CreateVerificationProjectionOptions();
+            var residualTopology = StepWatermarkCleaner.FindResidualCleanupTopology(
+                Encoding.Latin1.GetString(File.ReadAllBytes(inputPath)),
+                Encoding.Latin1.GetString(File.ReadAllBytes(outputPath)),
+                detectionReport,
+                new StepWatermarkCleanerOptions());
+            foreach (string failure in residualTopology.Failures)
+                result.Failures.Add(failure);
+
             var detectionRegions = StepProjectionRenderer.ProjectDetectionRegions(
                     inputPath,
                     detectionReport,
@@ -334,7 +342,10 @@ namespace StepCleaner
                 .ToArray();
             if (detectedViewNames.Length == 0)
             {
-                WriteFailedProjectionReport(result.ReportPath, result.ReportDirectory, result.VisualFailures);
+                result.Failures.Add(
+                    Path.GetFileName(inputPath) +
+                    " has no detected watermark cleanup regions; post-clean verification cannot prove the watermark was removed.");
+                WriteFailedProjectionReport(result.ReportPath, result.ReportDirectory, result.Failures, result.VisualFailures);
                 return;
             }
 
@@ -361,7 +372,7 @@ namespace StepCleaner
                     result);
             }
 
-            WriteFailedProjectionReport(result.ReportPath, result.ReportDirectory, result.VisualFailures);
+            WriteFailedProjectionReport(result.ReportPath, result.ReportDirectory, result.Failures, result.VisualFailures);
         }
 
         private static void VerifyPostCleanProjectionImage(
@@ -654,6 +665,7 @@ namespace StepCleaner
         private static void WriteFailedProjectionReport(
             string reportPath,
             string reportDirectory,
+            List<string> failures,
             List<ProjectionVisualFailure> visualFailures)
         {
             Directory.CreateDirectory(reportDirectory);
@@ -670,7 +682,18 @@ namespace StepCleaner
 
             if (visualFailures.Count == 0)
             {
-                lines.Add("No failed projections.");
+                if (failures.Count == 0)
+                {
+                    lines.Add("No failed projections.");
+                }
+                else
+                {
+                    lines.Add("Projection verification failures without comparison images: " + failures.Count.ToString(CultureInfo.InvariantCulture));
+                    lines.Add(string.Empty);
+                    foreach (string failure in failures)
+                        lines.Add("- " + failure);
+                }
+
                 File.WriteAllLines(reportPath, lines, Encoding.UTF8);
                 return;
             }

@@ -118,6 +118,11 @@ namespace EasyEDA_Loader
         public string ProjectionAxis { get; internal set; }
     }
 
+    public sealed class StepWatermarkResidualTopologyReport
+    {
+        public IReadOnlyList<string> Failures { get; internal set; }
+    }
+
     public static class StepWatermarkCleaner
     {
         private static readonly Regex ReferenceRegex = new Regex(@"#(\d+)", RegexOptions.Compiled);
@@ -161,6 +166,131 @@ namespace EasyEDA_Loader
             var context = BuildCleanupContext(stepText, options, null);
             var detection = DetectAutomaticWatermarks(context);
             return BuildPublicDetectionReport(context, detection);
+        }
+
+        public static StepWatermarkResidualTopologyReport FindResidualCleanupTopology(
+            string originalStepText,
+            string cleanStepText,
+            StepWatermarkDetectionReport detectionReport,
+            StepWatermarkCleanerOptions options = null)
+        {
+            if (originalStepText == null)
+                throw new ArgumentNullException(nameof(originalStepText));
+            if (cleanStepText == null)
+                throw new ArgumentNullException(nameof(cleanStepText));
+
+            options = options ?? new StepWatermarkCleanerOptions();
+            var failures = new List<string>();
+            if (detectionReport == null)
+            {
+                failures.Add("Detection report is missing; residual cleanup topology cannot be verified.");
+                return new StepWatermarkResidualTopologyReport
+                {
+                    Failures = failures
+                };
+            }
+
+            if (detectionReport.HostLoopCount > 0 &&
+                (detectionReport.HostLoops == null || detectionReport.HostLoops.Count == 0))
+            {
+                failures.Add("Detection report is missing host-loop details; residual cleanup topology cannot be verified.");
+            }
+
+            if (detectionReport.HostLoops == null || detectionReport.HostLoops.Count == 0)
+            {
+                return new StepWatermarkResidualTopologyReport
+                {
+                    Failures = failures
+                };
+            }
+
+            var originalData = StepData.Parse(originalStepText);
+            originalData.BuildIndexes();
+            var cleanData = StepData.Parse(cleanStepText);
+            cleanData.BuildIndexes();
+
+            foreach (var hostLoop in detectionReport.HostLoops)
+            {
+                var originalLoopBounds = originalData.GetBounds(hostLoop.BoundId);
+                var originalHostBounds = originalData.GetBounds(hostLoop.HostFaceId);
+                if (!originalLoopBounds.HasValue || !originalHostBounds.HasValue)
+                {
+                    failures.Add(
+                        "Detected host loop #" +
+                        hostLoop.BoundId.ToString(CultureInfo.InvariantCulture) +
+                        " on host face #" +
+                        hostLoop.HostFaceId.ToString(CultureInfo.InvariantCulture) +
+                        " is missing original topology bounds; residual cleanup topology cannot be verified.");
+                    continue;
+                }
+
+                if (!cleanData.Entities.TryGetValue(hostLoop.HostFaceId, out var cleanHostFace) ||
+                    cleanHostFace.Type != "ADVANCED_FACE")
+                {
+                    failures.Add(
+                        "Cleaned output is missing detected host face #" +
+                        hostLoop.HostFaceId.ToString(CultureInfo.InvariantCulture) +
+                        "; residual cleanup topology cannot be verified.");
+                    continue;
+                }
+
+                if (cleanData.GetAdvancedFaceBounds(hostLoop.HostFaceId).Contains(hostLoop.BoundId))
+                {
+                    failures.Add(
+                        "Detected host loop #" +
+                        hostLoop.BoundId.ToString(CultureInfo.InvariantCulture) +
+                        " remains on host face #" +
+                        hostLoop.HostFaceId.ToString(CultureInfo.InvariantCulture) +
+                        ".");
+                }
+
+                int axis = ProjectionAxisIndex(hostLoop.ProjectionAxis);
+                if (axis < 0)
+                    axis = FindPlanarAxis(originalHostBounds.Value, options);
+                if (axis < 0)
+                    axis = GetSmallestAxis(originalHostBounds.Value);
+
+                double hostCoordinate = (originalHostBounds.Value.Min.Get(axis) + originalHostBounds.Value.Max.Get(axis)) / 2.0;
+                double maxResidualDepth = Math.Max(
+                    Math.Max(options.HostLoopAdjacentMaxDepth, options.HostPlaneSearchDistance),
+                    options.EmbeddedReliefMaxDepth) * 2.0;
+
+                foreach (var entity in cleanData.Entities.Values)
+                {
+                    if (entity.Type != "ADVANCED_FACE" || entity.Id == hostLoop.HostFaceId)
+                        continue;
+
+                    var faceBounds = cleanData.GetBounds(entity.Id);
+                    if (!faceBounds.HasValue)
+                        continue;
+
+                    if (!ProjectedBoundsInside(faceBounds.Value, originalLoopBounds.Value, axis, options.HostPlaneProjectionPadding))
+                        continue;
+
+                    double minDistance = Math.Abs(faceBounds.Value.Min.Get(axis) - hostCoordinate);
+                    double maxDistance = Math.Abs(faceBounds.Value.Max.Get(axis) - hostCoordinate);
+                    if (Math.Max(minDistance, maxDistance) <= options.PlaneTolerance)
+                        continue;
+
+                    if (Math.Max(minDistance, maxDistance) > maxResidualDepth)
+                        continue;
+
+                    failures.Add(
+                        "Residual cleanup face #" +
+                        entity.Id.ToString(CultureInfo.InvariantCulture) +
+                        " remains inside detected host loop #" +
+                        hostLoop.BoundId.ToString(CultureInfo.InvariantCulture) +
+                        " on host face #" +
+                        hostLoop.HostFaceId.ToString(CultureInfo.InvariantCulture) +
+                        ".");
+                    break;
+                }
+            }
+
+            return new StepWatermarkResidualTopologyReport
+            {
+                Failures = failures
+            };
         }
 
         public static IReadOnlyList<StepWatermarkMarkedRegion> LoadMarkedRegionsForStepFile(
@@ -2372,13 +2502,6 @@ namespace EasyEDA_Loader
                 if (!ownerInfo.FaceIds.Contains(region.HostFaceId))
                     continue;
 
-                if (!TouchesProjectedBoundary(
-                    region.Bounds,
-                    region.HostBounds,
-                    region.Axis,
-                    GetAutomaticEdgeMargin(region.HostBounds, region.Axis)))
-                    continue;
-
                 if (!flattenResult.HostFaceBoundsToRemove.TryGetValue(region.HostFaceId, out var boundIds))
                 {
                     boundIds = new HashSet<int>();
@@ -2393,7 +2516,9 @@ namespace EasyEDA_Loader
                     .Where(boundId => EntityInsideDetectedRegion(data, boundId, region.Bounds, region.Axis, options.HostPlaneProjectionPadding)))
                     boundIds.Add(boundId);
 
-                double maxDepth = Math.Max(options.HostPlaneSearchDistance, options.HostLoopAdjacentMaxDepth);
+                double maxDepth = Math.Max(
+                    Math.Max(options.HostPlaneSearchDistance, options.HostLoopAdjacentMaxDepth),
+                    options.EmbeddedReliefMaxDepth) * 2.0;
                 foreach (int faceId in ownerInfo.FaceIds)
                 {
                     if (faceId == region.HostFaceId)
@@ -2412,6 +2537,7 @@ namespace EasyEDA_Loader
                         continue;
 
                     int changedPoints = 0;
+                    bool hasOffPlanePoint = false;
                     foreach (int pointId in data.GetPointIds(faceId, includeSurface: true))
                     {
                         if (!data.TryGetPoint(pointId, out var point))
@@ -2420,12 +2546,16 @@ namespace EasyEDA_Loader
                         if (Math.Abs(point.Get(region.Axis) - region.HostCoordinate) <= options.PlaneTolerance)
                             continue;
 
+                        hasOffPlanePoint = true;
                         if (!editedPoints.Add(pointId))
                             continue;
 
                         edits[pointId] = data.ReplacePointCoordinate(pointId, region.Axis, region.HostCoordinate);
                         changedPoints++;
                     }
+
+                    if (!hasOffPlanePoint)
+                        continue;
 
                     if (flattenResult.FlattenedFaces.Add(faceId))
                         flattenResult.FlattenedFaceCount++;
@@ -2563,7 +2693,9 @@ namespace EasyEDA_Loader
                     if (!hostBounds.HasValue)
                         continue;
 
-                    if (!LooksLikePotentialAutomaticHostFace(faceId, styledByTarget, options))
+                    bool allowProtectedHostLoopDetection = HasProtectedNonWatermarkColor(faceId, styledByTarget, options);
+                    if (!LooksLikePotentialAutomaticHostFace(faceId, styledByTarget, options) &&
+                        !allowProtectedHostLoopDetection)
                         continue;
 
                     var candidates = new List<WatermarkLoopCandidate>();
@@ -2584,7 +2716,8 @@ namespace EasyEDA_Loader
                             Bounds = boundBounds.Value,
                             PointCount = data.GetPointIds(boundId, includeSurface: true).Count,
                             HostBounds = hostBounds.Value,
-                            AllowStandaloneLoop = IsLightNeutralHostFace(faceId, styledByTarget, options)
+                            AllowStandaloneLoop = IsLightNeutralHostFace(faceId, styledByTarget, options),
+                            RequireCompactEngravedCluster = allowProtectedHostLoopDetection
                         });
                     }
 
@@ -3468,6 +3601,7 @@ namespace EasyEDA_Loader
                 cluster.Count >= 3 &&
                 pointCount >= 30 &&
                 LooksLikeCompactEngravedWordPattern(clusterBounds, hostBounds, axis);
+            bool requiresCompactEngravedCluster = cluster.Any(candidate => candidate.RequireCompactEngravedCluster);
             var componentBounds = cluster.Select(candidate => candidate.Bounds).ToList();
             int uAxis;
             int vAxis;
@@ -3497,6 +3631,9 @@ namespace EasyEDA_Loader
                 pointCount < options.AutomaticClusterMinPointCount * 2 &&
                 !compactEngravedCandidate)
                 return false;
+
+            if (requiresCompactEngravedCluster)
+                return compactEngravedCandidate;
 
             return !options.RequireKnownWatermarkPattern ||
                 compactEngravedCandidate ||
@@ -5347,6 +5484,17 @@ namespace EasyEDA_Loader
             }
         }
 
+        private static int ProjectionAxisIndex(string axisName)
+        {
+            switch (axisName?.Trim().ToUpperInvariant())
+            {
+                case "X": return 0;
+                case "Y": return 1;
+                case "Z": return 2;
+                default: return -1;
+            }
+        }
+
         private static List<StyledItemInfo> BuildStyledItems(StepData data)
         {
             var result = new List<StyledItemInfo>();
@@ -5689,6 +5837,7 @@ namespace EasyEDA_Loader
             public int PointCount { get; set; }
             public Bounds HostBounds { get; set; }
             public bool AllowStandaloneLoop { get; set; }
+            public bool RequireCompactEngravedCluster { get; set; }
         }
 
         private sealed class AutomaticWatermarkLoopResult

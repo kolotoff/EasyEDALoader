@@ -110,6 +110,14 @@ namespace EasyEDA_Loader
             Directory.CreateDirectory(verificationDirectory);
 
             var projectionOptions = CreateVerificationProjectionOptions();
+            var residualTopology = StepWatermarkCleaner.FindResidualCleanupTopology(
+                Encoding.Latin1.GetString(originalStep),
+                Encoding.Latin1.GetString(cleanStep),
+                detectionReport,
+                new StepWatermarkCleanerOptions());
+            foreach (string failure in residualTopology.Failures)
+                result.Failures.Add(failure);
+
             var detectionRegions = StepProjectionRenderer.ProjectDetectionRegions(
                     originalStep,
                     modelName,
@@ -123,7 +131,13 @@ namespace EasyEDA_Loader
                 .OrderBy(viewName => viewName, StringComparer.OrdinalIgnoreCase)
                 .ToArray();
 
-            if (detectedViewNames.Length > 0)
+            if (detectedViewNames.Length == 0)
+            {
+                result.Failures.Add(
+                    modelName +
+                    " has no detected watermark cleanup regions; post-clean verification cannot prove the watermark was removed.");
+            }
+            else
             {
                 var renderOptions = CreateProjectionOptionsForViews(detectedViewNames, projectionOptions);
                 var originalProjectionTask = Task.Run(() => StepProjectionRenderer.ProjectFileImages(originalStep, modelName + ".original", renderOptions));
@@ -160,7 +174,7 @@ namespace EasyEDA_Loader
                 }
             }
 
-            WriteFailedProjectionReport(result.ReportPath, result.ReportDirectory, result.VisualFailures);
+            WriteFailedProjectionReport(result.ReportPath, result.ReportDirectory, result.Failures, result.VisualFailures);
             return result;
         }
 
@@ -444,6 +458,7 @@ namespace EasyEDA_Loader
         private static void WriteFailedProjectionReport(
             string reportPath,
             string reportDirectory,
+            List<string> failures,
             List<ProjectionVisualFailure> visualFailures)
         {
             Directory.CreateDirectory(reportDirectory);
@@ -460,7 +475,18 @@ namespace EasyEDA_Loader
 
             if (visualFailures.Count == 0)
             {
-                lines.Add("No failed projections.");
+                if (failures.Count == 0)
+                {
+                    lines.Add("No failed projections.");
+                }
+                else
+                {
+                    lines.Add("Projection verification failures without comparison images: " + failures.Count.ToString(CultureInfo.InvariantCulture));
+                    lines.Add(string.Empty);
+                    foreach (string failure in failures)
+                        lines.Add("- " + failure);
+                }
+
                 File.WriteAllLines(reportPath, lines, Encoding.UTF8);
                 return;
             }

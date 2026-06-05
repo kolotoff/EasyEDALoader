@@ -236,6 +236,9 @@ namespace StepCleaner.Tests
             if (IsOption(args[0], "--clean-text"))
                 return RunCleanTextTests();
 
+            if (IsOption(args[0], "--xt60-lceda"))
+                return RunXt60LcedaWatermarkTests();
+
             if (IsOption(args[0], "--silhouette"))
                 return SaveSilhouetteProjectionImage(args);
 
@@ -260,6 +263,7 @@ namespace StepCleaner.Tests
             Console.Error.WriteLine("Usage: StepCleaner.Tests --f3d-buffer-smoke <input.step>");
             Console.Error.WriteLine("Usage: StepCleaner.Tests --f3d-preview-smoke <input.step> [output.png]");
             Console.Error.WriteLine("Usage: StepCleaner.Tests --clean-text");
+            Console.Error.WriteLine("Usage: StepCleaner.Tests --xt60-lceda");
             Console.Error.WriteLine("Usage: StepCleaner.Tests --silhouette <input.step> <output.png> [--rotx deg] [--roty deg] [--rotz deg] [--rotation2d deg] [--size pixels] [--padding pixels] [--no-grid] [--no-axes]");
             Console.Error.WriteLine("Usage: StepCleaner.Tests --silhouette-dump <input.step> <output.csv>");
             return 2;
@@ -1494,6 +1498,249 @@ namespace StepCleaner.Tests
 
             Console.WriteLine("Model cache regression test passed.");
             return 0;
+        }
+
+        private static int RunXt60LcedaWatermarkTests()
+        {
+            var failures = new List<string>();
+            string dataRoot = FindDataRoot();
+            string inputPath = Path.Combine(dataRoot, "Original", "CONN-TH_XT60PB-M.step");
+            if (!File.Exists(inputPath))
+            {
+                Console.Error.WriteLine("XT60 LCEDA regression test failed.");
+                Console.Error.WriteLine("  Missing original fixture: " + inputPath);
+                return 1;
+            }
+
+            byte[] originalStep = File.ReadAllBytes(inputPath);
+            var report = StepWatermarkCleaner.CleanWithReport(
+                Encoding.Latin1.GetString(originalStep),
+                new StepWatermarkCleanerOptions());
+            byte[] cleanedStep = Encoding.Latin1.GetBytes(report.CleanedStep);
+            string detectedViews = string.Join(
+                ",",
+                report.DetectionReport.Regions
+                    .Select(region => region.ViewName)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .OrderBy(viewName => viewName, StringComparer.OrdinalIgnoreCase));
+
+            AssertEqual(
+                "not equal",
+                cleanedStep.SequenceEqual(originalStep) ? "equal" : "not equal",
+                "XT60 bottom LCEDA cleanup should change the STEP output",
+                failures);
+            AssertContains(
+                detectedViews,
+                "z_minus",
+                "XT60 bottom LCEDA detection should report a z_minus cleanup region",
+                failures);
+            if (report.DetectionReport.HostLoopCount <= 0)
+                failures.Add("XT60 bottom LCEDA cleanup should detect host-face watermark loops.");
+            string cleanerDiagnostics = string.Join(Environment.NewLine, report.Diagnostics);
+            AssertContains(
+                cleanerDiagnostics,
+                "Automatic host-face watermark loops: 5",
+                "XT60 bottom LCEDA cleanup should use the automatic host-loop detector",
+                failures);
+            AssertContains(
+                cleanerDiagnostics,
+                "Removed host-face inner loops: 5",
+                "XT60 bottom LCEDA cleanup should remove only the five LCEDA inner loops",
+                failures);
+            var residualTopology = StepWatermarkCleaner.FindResidualCleanupTopology(
+                Encoding.Latin1.GetString(originalStep),
+                report.CleanedStep,
+                report.DetectionReport,
+                new StepWatermarkCleanerOptions());
+            if (residualTopology.Failures.Count > 0)
+            {
+                foreach (string failure in residualTopology.Failures)
+                    failures.Add("XT60 residual topology: " + failure);
+            }
+
+            string verifierDirectory = Path.Combine(dataRoot, "Clean", "XT60Verifier");
+            try
+            {
+                if (Directory.Exists(verifierDirectory))
+                    Directory.Delete(verifierDirectory, true);
+            }
+            catch
+            {
+            }
+
+            bool verifierThrew = false;
+            try
+            {
+                StepWatermarkCleanVerifier.CleanOrThrowWithReport(
+                    originalStep,
+                    "CONN-TH_XT60PB-M.step",
+                    verifierDirectory);
+            }
+            catch (StepWatermarkCleanFailedException)
+            {
+                verifierThrew = true;
+            }
+
+            if (report.DetectionReport.Regions.Count == 0 && !verifierThrew)
+                failures.Add("XT60 verifier silently passed even though automatic detection reported zero cleanup regions.");
+
+            if (report.DetectionReport.Regions.Count > 0 && verifierThrew)
+                failures.Add("XT60 verifier failed after automatic detection reported cleanup regions.");
+
+            VerifyXt60OriginalStillFailsResidualTopology(dataRoot, originalStep, report.DetectionReport, failures);
+            VerifyNoRegionCleanupFailsWithReport(dataRoot, failures);
+
+            if (failures.Count > 0)
+            {
+                Console.Error.WriteLine("XT60 LCEDA regression test failed.");
+                foreach (string failure in failures)
+                    Console.Error.WriteLine("  " + failure);
+                return 1;
+            }
+
+            Console.WriteLine("XT60 LCEDA regression test passed.");
+            return 0;
+        }
+
+        private static void VerifyXt60OriginalStillFailsResidualTopology(
+            string dataRoot,
+            byte[] originalStep,
+            StepWatermarkDetectionReport detectionReport,
+            List<string> failures)
+        {
+            string verifierDirectory = Path.Combine(dataRoot, "Clean", "XT60OriginalVerifier");
+            try
+            {
+                if (Directory.Exists(verifierDirectory))
+                    Directory.Delete(verifierDirectory, true);
+            }
+            catch
+            {
+            }
+
+            var verifyMethod = typeof(StepWatermarkCleanVerifier).GetMethod(
+                "VerifyPostCleanOutput",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static,
+                null,
+                new[]
+                {
+                    typeof(byte[]),
+                    typeof(byte[]),
+                    typeof(string),
+                    typeof(StepWatermarkDetectionReport),
+                    typeof(string)
+                },
+                null);
+            if (verifyMethod == null)
+            {
+                failures.Add("Could not find verifier post-clean method for XT60 residual-topology regression test.");
+                return;
+            }
+
+            object verification = verifyMethod.Invoke(
+                null,
+                new object[]
+                {
+                    originalStep,
+                    originalStep,
+                    "xt60-original",
+                    detectionReport,
+                    verifierDirectory
+                });
+            bool passed = (bool)verification.GetType().GetProperty("Passed").GetValue(verification);
+            string reportPath = (string)verification.GetType().GetProperty("ReportPath").GetValue(verification);
+            var verificationFailures = ((IEnumerable<string>)verification.GetType().GetProperty("Failures").GetValue(verification)).ToList();
+            if (passed)
+                failures.Add("Verifier should fail when XT60 LCEDA residual geometry remains in the cleaned output.");
+
+            if (!verificationFailures.Any(failure =>
+                failure.Contains("Residual cleanup face", StringComparison.OrdinalIgnoreCase) ||
+                failure.Contains("remains on host face", StringComparison.OrdinalIgnoreCase)))
+            {
+                failures.Add("XT60 residual-topology verifier did not report surviving LCEDA topology.");
+            }
+
+            if (!File.Exists(reportPath))
+            {
+                failures.Add("Verifier XT60 residual-topology failure report is missing: " + reportPath);
+                return;
+            }
+        }
+
+        private static void VerifyNoRegionCleanupFailsWithReport(string dataRoot, List<string> failures)
+        {
+            string verifierDirectory = Path.Combine(dataRoot, "Clean", "NoRegionVerifier");
+            try
+            {
+                if (Directory.Exists(verifierDirectory))
+                    Directory.Delete(verifierDirectory, true);
+            }
+            catch
+            {
+            }
+
+            string inputPath = Path.Combine(dataRoot, "Original", "CONN-TH_XT60PB-M.step");
+            byte[] originalStep = File.ReadAllBytes(inputPath);
+            var emptyDetectionReport = new StepWatermarkDetectionReport
+            {
+                RemovableSolidIds = Array.Empty<int>(),
+                EmbeddedFaceIds = Array.Empty<int>(),
+                CoplanarFaceIds = Array.Empty<int>(),
+                HostLoops = Array.Empty<StepWatermarkHostLoopDetection>(),
+                Regions = Array.Empty<StepWatermarkRegionDetection>(),
+                Diagnostics = Array.Empty<string>()
+            };
+            var verifyMethod = typeof(StepWatermarkCleanVerifier).GetMethod(
+                "VerifyPostCleanOutput",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static,
+                null,
+                new[]
+                {
+                    typeof(byte[]),
+                    typeof(byte[]),
+                    typeof(string),
+                    typeof(StepWatermarkDetectionReport),
+                    typeof(string)
+                },
+                null);
+            if (verifyMethod == null)
+            {
+                failures.Add("Could not find verifier post-clean method for no-region regression test.");
+                return;
+            }
+
+            object verification = verifyMethod.Invoke(
+                null,
+                new object[]
+                {
+                    originalStep,
+                    originalStep,
+                    "no-region",
+                    emptyDetectionReport,
+                    verifierDirectory
+                });
+            bool passed = (bool)verification.GetType().GetProperty("Passed").GetValue(verification);
+            string reportPath = (string)verification.GetType().GetProperty("ReportPath").GetValue(verification);
+            if (passed)
+                failures.Add("Verifier should fail when no detected cleanup regions are available.");
+
+            if (!File.Exists(reportPath))
+            {
+                failures.Add("Verifier no-region failure report is missing: " + reportPath);
+                return;
+            }
+
+            string reportText = File.ReadAllText(reportPath);
+            AssertContains(
+                reportText,
+                "Projection verification failures without comparison images",
+                "Verifier no-region failure report should describe non-visual failures",
+                failures);
+            AssertDoesNotContain(
+                reportText,
+                "No failed projections.",
+                "Verifier no-region failure report should not claim there were no failed projections",
+                failures);
         }
 
         private static int RunCleanTextTests()
@@ -3503,7 +3750,15 @@ namespace StepCleaner.Tests
                     .ToList();
                 detectionViewNamesByFileName[fileName] = detectedViewNames;
                 if (detectedViewNames.Count == 0)
+                {
+                    if (RequiresAutomaticWatermarkCleanup(fileName))
+                    {
+                        postCleanFaultFileNames.Add(fileName);
+                        failures.Add(fileName + " has no detected watermark cleanup views for a known watermark fixture.");
+                    }
+
                     continue;
+                }
 
                 var renderOptions = CreateProjectionOptionsForViews(detectedViewNames, projectionOptions);
                 projectionTimings.Measure(
@@ -4418,14 +4673,51 @@ namespace StepCleaner.Tests
             }
         }
 
-        private static IReadOnlyList<string> GetCleanupNotes()
+        private static IReadOnlyList<CleanupExpectation> GetCleanupExpectations()
         {
             return new[]
             {
-                "LED-SMD_XL-3838UV2SA06G3.step cleaned output should be reviewed as cleaned.",
-                "USB-A-TH_FUS264-FDSW3K.step cleaned output should be reviewed as cleaned.",
-                "SOT-89-3_L4.3-W2.5-H1.6-LS4.1-P1.50.step cleaned output should be reviewed as cleaned."
+                new CleanupExpectation
+                {
+                    FileName = "CONN-TH_XT60PB-M.step",
+                    Note = "CONN-TH_XT60PB-M.step bottom geometric LCEDA watermark should be removed from the z_minus view."
+                },
+                new CleanupExpectation
+                {
+                    FileName = "LED-SMD_XL-3838UV2SA06G3.step",
+                    Note = "LED-SMD_XL-3838UV2SA06G3.step cleaned output should be reviewed as cleaned."
+                },
+                new CleanupExpectation
+                {
+                    FileName = "USB-A-TH_FUS264-FDSW3K.step",
+                    Note = "USB-A-TH_FUS264-FDSW3K.step cleaned output should be reviewed as cleaned."
+                },
+                new CleanupExpectation
+                {
+                    FileName = "SOT-89-3_L4.3-W2.5-H1.6-LS4.1-P1.50.step",
+                    Note = "SOT-89-3_L4.3-W2.5-H1.6-LS4.1-P1.50.step cleaned output should be reviewed as cleaned."
+                }
             };
+        }
+
+        private static IReadOnlyList<string> GetCleanupNotes()
+        {
+            return GetCleanupExpectations()
+                .Select(expectation => expectation.Note)
+                .ToList();
+        }
+
+        private static bool RequiresAutomaticWatermarkCleanup(string fileName)
+        {
+            string actualFileName = Path.GetFileName(fileName);
+            return GetCleanupExpectations()
+                .Any(expectation => string.Equals(expectation.FileName, actualFileName, StringComparison.OrdinalIgnoreCase));
+        }
+
+        private sealed class CleanupExpectation
+        {
+            public string FileName { get; set; }
+            public string Note { get; set; }
         }
 
         private static string FindDataRoot()
