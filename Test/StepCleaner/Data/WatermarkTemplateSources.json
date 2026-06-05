@@ -1,0 +1,32 @@
+[
+  {
+    "TemplateName": "LCEDA",
+    "Kind": "text",
+    "Text": "LCEDA",
+    "ModelName": "CONN-TH_XT60PB-M",
+    "ViewName": "z_minus",
+    "MarkedFileName": "CONN-TH_XT60PB-M__z_minus.json",
+    "ProjectionFileName": "CONN-TH_XT60PB-M__z_minus__edge.png",
+    "RectangleIndex": 0
+  },
+  {
+    "TemplateName": "EasyEDA",
+    "Kind": "text",
+    "Text": "EasyEDA",
+    "ModelName": "USB-A-TH_FUS264-FDSW3K",
+    "ViewName": "x_plus",
+    "MarkedFileName": "USB-A-TH_FUS264-FDSW3K__x_plus.json",
+    "ProjectionFileName": "USB-A-TH_FUS264-FDSW3K__x_plus__edge.png",
+    "RectangleIndex": 0
+  },
+  {
+    "TemplateName": "easyeda-logo",
+    "Kind": "logo",
+    "Text": "",
+    "ModelName": "SOT-223-4P_L6.5-W3.5-H1.6-LS7.0-P2.30",
+    "ViewName": "z_plus",
+    "MarkedFileName": "SOT-223-4P_L6.5-W3.5-H1.6-LS7.0-P2.30__z_plus.json",
+    "ProjectionFileName": "SOT-223-4P_L6.5-W3.5-H1.6-LS7.0-P2.30__z_plus__edge.png",
+    "RectangleIndex": 0
+  }
+]

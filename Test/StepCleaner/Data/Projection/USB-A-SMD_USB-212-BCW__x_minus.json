@@ -1,0 +1,25 @@
+﻿{
+  "input": "D:\\Develop\\Altium\\Ai\\EasyEDALoader\\Test\\StepCleaner\\Data\\Original\\USB-A-SMD_USB-212-BCW.step",
+  "projection": "D:\\Develop\\Altium\\Ai\\EasyEDALoader\\Test\\StepCleaner\\Data\\Projection\\USB-A-SMD_USB-212-BCW__x_minus.png",
+  "view": "x_minus",
+  "image": {
+    "width": 1600,
+    "height": 1600,
+    "padding": 80
+  },
+  "model_axes": {
+    "u_axis": "Y",
+    "u_sign": -1,
+    "v_axis": "Z",
+    "v_sign": 1,
+    "depth_axis": "X",
+    "depth_sign": -1
+  },
+  "mapping": {
+    "scale_pixels_per_model_unit": 115.01662871402745,
+    "u_min": -6.259999999999998,
+    "u_max": 6.2599287798667458,
+    "v_min": -4.7099643899333721,
+    "v_max": 7.8099643899333717
+  }
+}

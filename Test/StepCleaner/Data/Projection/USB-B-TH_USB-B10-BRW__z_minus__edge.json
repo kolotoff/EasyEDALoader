@@ -1,0 +1,25 @@
+﻿{
+  "input": "D:\\Develop\\Altium\\Ai\\EasyEDALoader\\Test\\StepCleaner\\Data\\Original\\USB-B-TH_USB-B10-BRW.step",
+  "projection": "D:\\Develop\\Altium\\Ai\\EasyEDALoader\\Test\\StepCleaner\\Data\\Projection\\USB-B-TH_USB-B10-BRW__z_minus__edge.png",
+  "view": "z_minus",
+  "image": {
+    "width": 1600,
+    "height": 1600,
+    "padding": 80
+  },
+  "model_axes": {
+    "u_axis": "X",
+    "u_sign": -1,
+    "v_axis": "Y",
+    "v_sign": 1,
+    "depth_axis": "Z",
+    "depth_sign": -1
+  },
+  "mapping": {
+    "scale_pixels_per_model_unit": 88.073394495412842,
+    "u_min": -8.1750000000000007,
+    "u_max": 8.1750000000000007,
+    "v_min": -8.1500000000000004,
+    "v_max": 8.2000000000000011
+  }
+}

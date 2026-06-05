@@ -1,0 +1,14 @@
+{
+  "Version": 1,
+  "ImageFile": "SOT-223-4P_L6.5-W3.5-H1.6-LS7.0-P2.30__z_minus.png",
+  "ImageWidth": 1600,
+  "ImageHeight": 1600,
+  "Rectangles": [
+    {
+      "X": 736,
+      "Y": 625,
+      "Width": 126,
+      "Height": 341
+    }
+  ]
+}

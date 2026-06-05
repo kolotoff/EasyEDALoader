@@ -22,7 +22,14 @@ namespace EasyEDA_Loader
         public bool WriteMetadata { get; set; } = true;
         public bool SkipGeometryModelForExternalRender { get; set; }
         public int MaxParallelFiles { get; set; } = 1;
+        public StepProjectionRenderMode RenderMode { get; set; } = StepProjectionRenderMode.Color;
         public List<string> ViewNames { get; } = new List<string>();
+    }
+
+    public enum StepProjectionRenderMode
+    {
+        Color,
+        Edge
     }
 
     public sealed class StepProjectionReport
@@ -158,7 +165,7 @@ namespace EasyEDA_Loader
                 var imageOutputFiles = new List<string>();
                 foreach (StepProjectionImage image in images)
                 {
-                    string outputPath = Path.Combine(outputDirectory, modelNameForImages + "__" + image.ViewName + ".png");
+                    string outputPath = Path.Combine(outputDirectory, BuildProjectionOutputFileName(modelNameForImages, image.ViewName, options, ".png"));
                     image.SavePng(outputPath);
                     imageOutputFiles.Add(outputPath);
                 }
@@ -177,7 +184,7 @@ namespace EasyEDA_Loader
             IReadOnlyList<ViewSpec> selectedViews = GetSelectedViews(options);
             Dictionary<string, string> outputPathsByView = selectedViews.ToDictionary(
                 view => view.Name,
-                view => Path.Combine(outputDirectory, modelName + "__" + view.Name + ".png"),
+                view => Path.Combine(outputDirectory, BuildProjectionOutputFileName(modelName, view.Name, options, ".png")),
                 StringComparer.OrdinalIgnoreCase);
 
             bool skipF3DLibraryBatchAfterEarlyFailure = false;
@@ -211,6 +218,7 @@ namespace EasyEDA_Loader
                 view => ProjectionTransform.Create(drawingModel.Bounds, view, options),
                 StringComparer.OrdinalIgnoreCase);
             bool renderedWithOpenCascadeBatch =
+                options.RenderMode == StepProjectionRenderMode.Color &&
                 IsOpenCascadeVerificationRendererEnabled() &&
                 TryRenderWithOpenCascadeBatch(
                     inputPath,
@@ -220,6 +228,7 @@ namespace EasyEDA_Loader
                     options,
                     null);
             bool renderedWithF3DLibraryBatch =
+                options.RenderMode == StepProjectionRenderMode.Color &&
                 !renderedWithOpenCascadeBatch &&
                 !skipF3DLibraryBatchAfterEarlyFailure &&
                 TryRenderWithF3DLibraryBatch(
@@ -238,7 +247,7 @@ namespace EasyEDA_Loader
 
                 if (options.WriteMetadata)
                 {
-                    string metadataPath = Path.Combine(outputDirectory, modelName + "__" + view.Name + ".json");
+                    string metadataPath = Path.Combine(outputDirectory, BuildProjectionOutputFileName(modelName, view.Name, options, ".json"));
                     File.WriteAllText(metadataPath, WriteMetadata(inputPath, outputPath, view, transform, options), Encoding.UTF8);
                     outputFiles.Add(metadataPath);
                 }
@@ -265,8 +274,11 @@ namespace EasyEDA_Loader
 
             options = NormalizeOptions(options);
             IReadOnlyList<ViewSpec> selectedViews = GetSelectedViews(options);
-            if (TryRenderWithF3DLibraryBatchToRawImages(stepData, modelName, selectedViews, options, out IReadOnlyList<StepProjectionImage> f3dImages))
+            if (options.RenderMode == StepProjectionRenderMode.Color &&
+                TryRenderWithF3DLibraryBatchToRawImages(stepData, modelName, selectedViews, options, out IReadOnlyList<StepProjectionImage> f3dImages))
+            {
                 return f3dImages;
+            }
 
             string stepText = Encoding.Latin1.GetString(stepData);
             StepModel model = StepModel.Parse(stepText);
@@ -277,7 +289,9 @@ namespace EasyEDA_Loader
             foreach (ViewSpec view in selectedViews)
             {
                 ProjectionTransform transform = ProjectionTransform.Create(drawingModel.Bounds, view, options);
-                RgbaImage image = RenderProjectionImage(drawingModel, view, transform, options);
+                RgbaImage image = options.RenderMode == StepProjectionRenderMode.Edge
+                    ? RenderEdgeProjectionImage(drawingModel, view, transform, options)
+                    : RenderProjectionImage(drawingModel, view, transform, options);
                 result.Add(image.ToProjectionImage(view.Name));
             }
 
@@ -611,6 +625,13 @@ namespace EasyEDA_Loader
             StepProjectionOptions options,
             IReadOnlyList<ProjectionHighlight> highlights = null)
         {
+            if (options.RenderMode == StepProjectionRenderMode.Edge)
+            {
+                var edgeImage = RenderEdgeProjectionImage(model, view, transform, options, highlights);
+                edgeImage.SavePng(outputPath);
+                return;
+            }
+
             if (IsOpenCascadeVerificationRendererEnabled() &&
                 TryRenderWithOpenCascade(inputPath, outputPath, view, transform, options, highlights))
                 return;
@@ -848,7 +869,8 @@ namespace EasyEDA_Loader
                     PaddingPixels = options.PaddingPixels * scale,
                     WriteMetadata = options.WriteMetadata,
                     SkipGeometryModelForExternalRender = options.SkipGeometryModelForExternalRender,
-                    MaxParallelFiles = options.MaxParallelFiles
+                    MaxParallelFiles = options.MaxParallelFiles,
+                    RenderMode = options.RenderMode
                 };
             ProjectionTransform renderTransform = scale == 1
                 ? transform
@@ -887,6 +909,27 @@ namespace EasyEDA_Loader
 
             if (scale > 1)
                 image = image.Downsample(GetImageWidthPixels(options), GetImageHeightPixels(options));
+
+            DrawDetectionHighlights(image, view, transform, highlights);
+            return image;
+        }
+
+        private static RgbaImage RenderEdgeProjectionImage(
+            ProjectionModel model,
+            ViewSpec view,
+            ProjectionTransform transform,
+            StepProjectionOptions options,
+            IReadOnlyList<ProjectionHighlight> highlights = null)
+        {
+            var image = new RgbaImage(GetImageWidthPixels(options), GetImageHeightPixels(options));
+            image.Clear(new Rgba(255, 255, 255, 255));
+            var edgeColor = new Rgba(0, 0, 0, 255);
+
+            foreach (ProjectionFace face in model.Faces.OrderBy(face => face.Id))
+            {
+                foreach (ProjectionLoop loop in face.Loops)
+                    DrawLoop(image, loop.Points, transform, edgeColor);
+            }
 
             DrawDetectionHighlights(image, view, transform, highlights);
             return image;
@@ -1951,6 +1994,18 @@ namespace EasyEDA_Loader
             return false;
         }
 
+        private static string BuildProjectionOutputFileName(
+            string modelName,
+            string viewName,
+            StepProjectionOptions options,
+            string extension)
+        {
+            string modeSuffix = options != null && options.RenderMode == StepProjectionRenderMode.Edge
+                ? "__edge"
+                : string.Empty;
+            return modelName + "__" + viewName + modeSuffix + extension;
+        }
+
         private static StepProjectionOptions NormalizeOptions(StepProjectionOptions options)
         {
             options = options ?? new StepProjectionOptions();
@@ -1966,6 +2021,9 @@ namespace EasyEDA_Loader
 
             if (options.PaddingPixels < 0 || options.PaddingPixels * 2 >= Math.Min(imageWidthPixels, imageHeightPixels))
                 throw new ArgumentOutOfRangeException(nameof(options.PaddingPixels), "Projection padding must fit inside the image.");
+
+            if (!Enum.IsDefined(typeof(StepProjectionRenderMode), options.RenderMode))
+                throw new ArgumentOutOfRangeException(nameof(options.RenderMode), "Unknown projection render mode.");
 
             GetSelectedViews(options);
             return options;
@@ -1995,7 +2053,8 @@ namespace EasyEDA_Loader
                 PaddingPixels = options?.PaddingPixels ?? 80,
                 WriteMetadata = false,
                 SkipGeometryModelForExternalRender = options?.SkipGeometryModelForExternalRender ?? false,
-                MaxParallelFiles = options?.MaxParallelFiles ?? 1
+                MaxParallelFiles = options?.MaxParallelFiles ?? 1,
+                RenderMode = options?.RenderMode ?? StepProjectionRenderMode.Color
             };
             clone.ViewNames.Add(viewName);
             return NormalizeOptions(clone);

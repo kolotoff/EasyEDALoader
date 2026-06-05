@@ -1,0 +1,14 @@
+{
+  "Version": 1,
+  "ImageFile": "CONN-TH_XT60PB-M__z_minus.png",
+  "ImageWidth": 1600,
+  "ImageHeight": 1600,
+  "Rectangles": [
+    {
+      "X": 698,
+      "Y": 591,
+      "Width": 144,
+      "Height": 433
+    }
+  ]
+}

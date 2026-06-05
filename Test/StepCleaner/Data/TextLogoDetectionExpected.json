@@ -1,0 +1,72 @@
+[
+  {
+    "FileName": "CONN-TH_XT60PB-M.step",
+    "ViewName": "z_minus",
+    "RequiredTemplate": "LCEDA",
+    "ExpectedTemplates": [ "LCEDA" ],
+    "ExpectedX": 473,
+    "ExpectedY": 645,
+    "ExpectedWidth": 57,
+    "ExpectedHeight": 12,
+    "BoundsTolerance": 24,
+    "MinScore": 20.0,
+    "MaxChamferDistance": 6.0,
+    "MaxUnexpectedHighScore": 40.0
+  },
+  {
+    "FileName": "CONN-TH_MR30PW-M30-G-Y.step",
+    "ViewName": "z_plus",
+    "RequiredTemplate": "LCEDA",
+    "ExpectedTemplates": [ "LCEDA", "EasyEDA", "easyeda-logo" ],
+    "ExpectedX": 813,
+    "ExpectedY": 778,
+    "ExpectedWidth": 11,
+    "ExpectedHeight": 52,
+    "BoundsTolerance": 24,
+    "MinScore": 60.0,
+    "MaxChamferDistance": 2.0,
+    "MaxUnexpectedHighScore": 20.0
+  },
+  {
+    "FileName": "USB-A-TH_FUS264-FDSW3K.step",
+    "ViewName": "x_plus",
+    "RequiredTemplate": "EasyEDA",
+    "ExpectedTemplates": [ "LCEDA", "EasyEDA", "easyeda-logo" ],
+    "ExpectedX": 658,
+    "ExpectedY": 1373,
+    "ExpectedWidth": 60,
+    "ExpectedHeight": 20,
+    "BoundsTolerance": 24,
+    "MinScore": 45.0,
+    "MaxChamferDistance": 4.0,
+    "MaxUnexpectedHighScore": 20.0
+  },
+  {
+    "FileName": "USB-B-TH_USB-B10-BRW.step",
+    "ViewName": "x_plus",
+    "RequiredTemplate": "EasyEDA",
+    "ExpectedTemplates": [ "LCEDA", "EasyEDA", "easyeda-logo" ],
+    "ExpectedX": 511,
+    "ExpectedY": 318,
+    "ExpectedWidth": 78,
+    "ExpectedHeight": 26,
+    "BoundsTolerance": 24,
+    "MinScore": 60.0,
+    "MaxChamferDistance": 3.0,
+    "MaxUnexpectedHighScore": 20.0
+  },
+  {
+    "FileName": "SOT-223-4P_L6.5-W3.5-H1.6-LS7.0-P2.30.step",
+    "ViewName": "z_plus",
+    "RequiredTemplate": "EasyEDA",
+    "ExpectedTemplates": [ "LCEDA", "EasyEDA", "easyeda-logo" ],
+    "ExpectedX": 984,
+    "ExpectedY": 1247,
+    "ExpectedWidth": 23,
+    "ExpectedHeight": 68,
+    "BoundsTolerance": 24,
+    "MinScore": 60.0,
+    "MaxChamferDistance": 2.0,
+    "MaxUnexpectedHighScore": 20.0
+  }
+]

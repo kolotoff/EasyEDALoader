@@ -9,6 +9,7 @@ using System.Net.Http;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using SkiaSharp;
@@ -240,6 +241,24 @@ namespace StepCleaner.Tests
             if (IsOption(args[0], "--xt60-lceda"))
                 return RunXt60LcedaWatermarkTests();
 
+            if (IsOption(args[0], "--projection-edge-mode"))
+                return RunProjectionEdgeModeTests();
+
+            if (IsOption(args[0], "--watermark-template-library"))
+                return RunWatermarkTemplateLibraryTests();
+
+            if (IsOption(args[0], "--text-logo-detection"))
+                return RunTextLogoDetectionTests();
+
+            if (IsOption(args[0], "--text-logo-cleanup-promotion"))
+                return RunTextLogoCleanupPromotionTests();
+
+            if (IsOption(args[0], "--text-logo-negative-classifier"))
+                return RunTextLogoNegativeClassifierTests();
+
+            if (IsOption(args[0], "--text-logo-verifier"))
+                return RunTextLogoVerifierTests();
+
             if (IsOption(args[0], "--removed-geometry"))
                 return RunRemovedGeometryExportTests();
 
@@ -268,6 +287,12 @@ namespace StepCleaner.Tests
             Console.Error.WriteLine("Usage: StepCleaner.Tests --f3d-preview-smoke <input.step> [output.png]");
             Console.Error.WriteLine("Usage: StepCleaner.Tests --clean-text");
             Console.Error.WriteLine("Usage: StepCleaner.Tests --xt60-lceda");
+            Console.Error.WriteLine("Usage: StepCleaner.Tests --projection-edge-mode");
+            Console.Error.WriteLine("Usage: StepCleaner.Tests --watermark-template-library");
+            Console.Error.WriteLine("Usage: StepCleaner.Tests --text-logo-detection");
+            Console.Error.WriteLine("Usage: StepCleaner.Tests --text-logo-cleanup-promotion");
+            Console.Error.WriteLine("Usage: StepCleaner.Tests --text-logo-negative-classifier");
+            Console.Error.WriteLine("Usage: StepCleaner.Tests --text-logo-verifier");
             Console.Error.WriteLine("Usage: StepCleaner.Tests --removed-geometry");
             Console.Error.WriteLine("Usage: StepCleaner.Tests --silhouette <input.step> <output.png> [--rotx deg] [--roty deg] [--rotz deg] [--rotation2d deg] [--size pixels] [--padding pixels] [--no-grid] [--no-axes]");
             Console.Error.WriteLine("Usage: StepCleaner.Tests --silhouette-dump <input.step> <output.csv>");
@@ -1552,6 +1577,20 @@ namespace StepCleaner.Tests
                 "Removed host-face inner loops: 5",
                 "XT60 bottom LCEDA cleanup should remove only the five LCEDA inner loops",
                 failures);
+            int automaticCleanupVolumeCount = GetDiagnosticInt(report.Diagnostics, "Automatic cleanup volumes");
+            if (automaticCleanupVolumeCount <= 0)
+            {
+                failures.Add(
+                    "XT60 bottom LCEDA cleanup should use at least one bounded cleanup volume, got " +
+                    automaticCleanupVolumeCount.ToString(CultureInfo.InvariantCulture) +
+                    ". Diagnostics: " +
+                    cleanerDiagnostics);
+            }
+            AssertContains(
+                cleanerDiagnostics,
+                "Edited geometry outside cleanup volumes: 0",
+                "XT60 bottom LCEDA cleanup must not edit geometry outside its bounded cleanup volume",
+                failures);
             var residualTopology = StepWatermarkCleaner.FindResidualCleanupTopology(
                 Encoding.Latin1.GetString(originalStep),
                 report.CleanedStep,
@@ -1562,6 +1601,16 @@ namespace StepCleaner.Tests
                 foreach (string failure in residualTopology.Failures)
                     failures.Add("XT60 residual topology: " + failure);
             }
+            AssertDoesNotContain(
+                report.CleanedStep,
+                "#1469 = ADVANCED_FACE",
+                "XT60 cleanup should remove coplanar standalone LCEDA residue face #1469",
+                failures);
+            AssertDoesNotContain(
+                report.CleanedStep,
+                "#7432 = ADVANCED_FACE",
+                "XT60 cleanup should remove coplanar standalone LCEDA residue face #7432",
+                failures);
 
             string verifierDirectory = Path.Combine(dataRoot, "Clean", "XT60Verifier");
             try
@@ -1594,6 +1643,7 @@ namespace StepCleaner.Tests
 
             VerifyXt60OriginalStillFailsResidualTopology(dataRoot, originalStep, report.DetectionReport, failures);
             VerifyNoRegionCleanupFailsWithReport(dataRoot, failures);
+            VerifyCandidateOnlyCleanupFailsWithReport(dataRoot, failures);
 
             if (failures.Count > 0)
             {
@@ -1748,6 +1798,80 @@ namespace StepCleaner.Tests
                 failures);
         }
 
+        private static void VerifyCandidateOnlyCleanupFailsWithReport(string dataRoot, List<string> failures)
+        {
+            string inputPath = Path.Combine(dataRoot, "Original", "CONN-TH_XT60PB-M.step");
+            byte[] originalStep = File.ReadAllBytes(inputPath);
+            var candidateOnlyDetectionReport = new StepWatermarkDetectionReport
+            {
+                RemovableSolidIds = Array.Empty<int>(),
+                EmbeddedFaceIds = Array.Empty<int>(),
+                CoplanarFaceIds = Array.Empty<int>(),
+                HostLoops = Array.Empty<StepWatermarkHostLoopDetection>(),
+                Regions = new[]
+                {
+                    new StepWatermarkRegionDetection
+                    {
+                        EntityId = 1,
+                        Kind = "solid-candidate",
+                        ViewName = "z_plus"
+                    }
+                },
+                Diagnostics = Array.Empty<string>()
+            };
+
+            string verifierDirectory = Path.Combine(dataRoot, "Clean", "CandidateOnlyVerifier");
+            try
+            {
+                if (Directory.Exists(verifierDirectory))
+                    Directory.Delete(verifierDirectory, true);
+            }
+            catch
+            {
+            }
+
+            var verifyMethod = typeof(StepWatermarkCleanVerifier).GetMethod(
+                "VerifyPostCleanOutput",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static,
+                null,
+                new[]
+                {
+                    typeof(byte[]),
+                    typeof(byte[]),
+                    typeof(string),
+                    typeof(StepWatermarkDetectionReport),
+                    typeof(string)
+                },
+                null);
+            if (verifyMethod == null)
+            {
+                failures.Add("Could not find verifier post-clean method for candidate-only regression test.");
+                return;
+            }
+
+            object verification = verifyMethod.Invoke(
+                null,
+                new object[]
+                {
+                    originalStep,
+                    originalStep,
+                    "candidate-only",
+                    candidateOnlyDetectionReport,
+                    verifierDirectory
+                });
+            bool passed = (bool)verification.GetType().GetProperty("Passed").GetValue(verification);
+            var verificationFailures = ((IEnumerable<string>)verification.GetType().GetProperty("Failures").GetValue(verification)).ToList();
+            if (passed)
+                failures.Add("Verifier should fail when only candidate detection overlays exist and no cleanup geometry was edited.");
+
+            if (!verificationFailures.Any(failure =>
+                failure.Contains("no verified cleanup regions", StringComparison.OrdinalIgnoreCase) ||
+                failure.Contains("cannot prove", StringComparison.OrdinalIgnoreCase)))
+            {
+                failures.Add("Candidate-only verifier failure should explain that no verified cleanup regions were available.");
+            }
+        }
+
         private static int RunRemovedGeometryExportTests()
         {
             var failures = new List<string>();
@@ -1852,6 +1976,9 @@ namespace StepCleaner.Tests
                 failures.Add("BUZ side logo cleanup should pass post-clean verification, but failed: " + string.Join("; ", ex.Failures));
             }
 
+            VerifyRemovedGeometryDoesNotExportLargeNonWatermarkModels(dataRoot, failures);
+            VerifyTextLogoPromotedRemovedGeometryIsNotEmpty(dataRoot, failures);
+
             if (failures.Count > 0)
             {
                 Console.Error.WriteLine("Removed-geometry export test failed.");
@@ -1863,6 +1990,392 @@ namespace StepCleaner.Tests
             Console.WriteLine("Removed-geometry export test passed.");
             Console.WriteLine("Removed geometry: " + outputPath);
             return 0;
+        }
+
+        private static int RunTextLogoCleanupPromotionTests()
+        {
+            var failures = new List<string>();
+            string dataRoot = FindDataRoot();
+            string originalDirectory = Path.Combine(dataRoot, "Original");
+            var fixtureNames = new[]
+            {
+                "CONN-TH_MR30PW-M30-G-Y.step",
+                "USB-A-TH_FUS264-FDSW3K.step",
+                "USB-B-TH_USB-B10-BRW.step",
+                "SOT-223-4P_L6.5-W3.5-H1.6-LS7.0-P2.30.step",
+                "CONN-TH_XT60PB-M.step"
+            };
+
+            foreach (string fixtureName in fixtureNames)
+            {
+                string inputPath = Path.Combine(originalDirectory, fixtureName);
+                if (!File.Exists(inputPath))
+                {
+                    failures.Add("Missing text/logo cleanup promotion fixture: " + inputPath);
+                    continue;
+                }
+
+                byte[] originalStep = File.ReadAllBytes(inputPath);
+                var report = StepWatermarkCleaner.CleanWithReport(
+                    Encoding.Latin1.GetString(originalStep),
+                    new StepWatermarkCleanerOptions());
+                var verifiedReport = StepWatermarkCleaner.CreateVerifiedCleanupDetectionReport(report.DetectionReport);
+                int templateTextLogoDetectionCount = GetDiagnosticInt(report.Diagnostics, "Template text/logo detections");
+                int templateTextLogoCandidateCount = GetDiagnosticInt(report.Diagnostics, "Template text/logo cleanup candidates");
+                int templateTextLogoCleanupRegionCount = GetDiagnosticInt(report.Diagnostics, "Template text/logo cleanup regions");
+
+                if (verifiedReport.Regions.Count <= 0)
+                {
+                    failures.Add(
+                        fixtureName +
+                        " should promote topology-confirmed text/logo projection detections to verified cleanup regions. Diagnostics: " +
+                        string.Join(" | ", report.Diagnostics ?? Array.Empty<string>()));
+                }
+
+                if (templateTextLogoDetectionCount <= 0)
+                {
+                    failures.Add(
+                        fixtureName +
+                        " should run runtime template text/logo projection detection during normal cleanup. Diagnostics: " +
+                        string.Join(" | ", report.Diagnostics ?? Array.Empty<string>()));
+                }
+
+                if (templateTextLogoCandidateCount <= 0)
+                {
+                    failures.Add(
+                        fixtureName +
+                        " should find topology-confirmed text/logo cleanup candidates. Diagnostics: " +
+                        string.Join(" | ", report.Diagnostics ?? Array.Empty<string>()));
+                }
+
+                if (templateTextLogoCleanupRegionCount <= 0)
+                {
+                    failures.Add(
+                        fixtureName +
+                        " should promote template text/logo detections to cleanup regions, got " +
+                        templateTextLogoCleanupRegionCount.ToString(CultureInfo.InvariantCulture) +
+                        ". Diagnostics: " +
+                        string.Join(" | ", report.Diagnostics ?? Array.Empty<string>()));
+                }
+
+                if (BytesEqual(originalStep, Encoding.Latin1.GetBytes(report.CleanedStep)))
+                {
+                    failures.Add(
+                        fixtureName +
+                        " should not silently pass cleanup as a no-op after text/logo promotion. Diagnostics: " +
+                        string.Join(" | ", report.Diagnostics ?? Array.Empty<string>()));
+                }
+
+                if (report.FlattenedFaceCount <= 0 && report.FlattenedPointCount <= 0 && report.RemovedSolidCount <= 0)
+                {
+                    failures.Add(
+                        fixtureName +
+                        " should report actual cleanup edits after text/logo promotion. Diagnostics: " +
+                        string.Join(" | ", report.Diagnostics ?? Array.Empty<string>()));
+                }
+            }
+
+            if (failures.Count > 0)
+            {
+                Console.Error.WriteLine("Text/logo cleanup promotion test failed.");
+                foreach (string failure in failures)
+                    Console.Error.WriteLine("  " + failure);
+                return 1;
+            }
+
+            Console.WriteLine("Text/logo cleanup promotion test passed.");
+            return 0;
+        }
+
+        private static int RunTextLogoNegativeClassifierTests()
+        {
+            var failures = new List<string>();
+            string dataRoot = FindDataRoot();
+            string fixtureName = "CONN-SMD_30P-P0.60_DF56C-30S-0.3V-51.step";
+            string inputPath = Path.Combine(dataRoot, "Original", fixtureName);
+            if (!File.Exists(inputPath))
+            {
+                failures.Add("Missing text/logo negative classifier fixture: " + inputPath);
+            }
+            else
+            {
+                string originalStep = Encoding.Latin1.GetString(File.ReadAllBytes(inputPath));
+                var report = StepWatermarkCleaner.CleanWithReport(
+                    originalStep,
+                    new StepWatermarkCleanerOptions());
+                string diagnostics = string.Join(" | ", report.Diagnostics ?? Array.Empty<string>());
+                var originalEntities = ParseStepEntityDefinitions(originalStep);
+                var cleanedEntities = ParseStepEntityDefinitions(report.CleanedStep);
+                var removedEntities = ParseStepEntityDefinitions(report.RemovedGeometryStep ?? string.Empty);
+                int[] protectedFaceIds = { 14214, 26383, 34754 };
+
+                foreach (int protectedFaceId in protectedFaceIds)
+                {
+                    string protectedFace = "#" + protectedFaceId.ToString(CultureInfo.InvariantCulture) + " = ADVANCED_FACE";
+                    AssertContains(
+                        report.CleanedStep,
+                        protectedFace,
+                        "CONN-SMD text/logo negative classifier should preserve protected contact face " + protectedFace,
+                        failures);
+                    AssertDoesNotContain(
+                        report.RemovedGeometryStep ?? string.Empty,
+                        protectedFace,
+                        "CONN-SMD text/logo negative classifier should not export protected contact face " + protectedFace + " as removed geometry",
+                        failures);
+                    VerifyProtectedFaceEntityClosurePreserved(
+                        protectedFaceId,
+                        originalEntities,
+                        cleanedEntities,
+                        removedEntities,
+                        failures);
+                }
+
+                int templateTextLogoFaceCount = GetDiagnosticInt(report.Diagnostics, "Template text/logo faces");
+                int templateTextLogoProtectedRejectCount = GetDiagnosticInt(report.Diagnostics, "Template text/logo protected rejects");
+                if (templateTextLogoProtectedRejectCount <= 0)
+                {
+                    failures.Add(
+                        fixtureName +
+                        " should explicitly reject protected contact geometry during template text/logo promotion. Diagnostics: " +
+                        diagnostics);
+                }
+
+                if (templateTextLogoFaceCount != 0)
+                {
+                    failures.Add(
+                        fixtureName +
+                        " should not classify protected contact faces as template text/logo faces, got " +
+                        templateTextLogoFaceCount.ToString(CultureInfo.InvariantCulture) +
+                        " face(s). Diagnostics: " +
+                        diagnostics);
+                }
+
+                if (report.DetectionReport.Regions.Any(region =>
+                    region.EntityId == 14214 ||
+                    region.EntityId == 26383 ||
+                    region.EntityId == 34754))
+                {
+                    failures.Add(
+                        fixtureName +
+                        " detection regions should not reference protected contact faces #14214, #26383, or #34754. Diagnostics: " +
+                        diagnostics);
+                }
+            }
+
+            if (failures.Count > 0)
+            {
+                Console.Error.WriteLine("Text/logo negative classifier test failed.");
+                foreach (string failure in failures)
+                    Console.Error.WriteLine("  " + failure);
+                return 1;
+            }
+
+            Console.WriteLine("Text/logo negative classifier test passed.");
+            return 0;
+        }
+
+        private static int RunTextLogoVerifierTests()
+        {
+            var failures = new List<string>();
+            string dataRoot = FindDataRoot();
+            string fixtureName = "USB-B-TH_USB-B10-BRW.step";
+            string inputPath = Path.Combine(dataRoot, "Original", fixtureName);
+            if (!File.Exists(inputPath))
+            {
+                failures.Add("Missing text/logo verifier fixture: " + inputPath);
+            }
+            else
+            {
+                byte[] originalStep = File.ReadAllBytes(inputPath);
+                var report = StepWatermarkCleaner.CleanWithReport(
+                    Encoding.Latin1.GetString(originalStep),
+                    new StepWatermarkCleanerOptions());
+
+                string verifierDirectory = Path.Combine(dataRoot, "Clean", "TextLogoVerifierNoOp");
+                try
+                {
+                    if (Directory.Exists(verifierDirectory))
+                        Directory.Delete(verifierDirectory, true);
+                }
+                catch
+                {
+                }
+
+                var verifyMethod = typeof(StepWatermarkCleanVerifier).GetMethod(
+                    "VerifyPostCleanOutput",
+                    System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static,
+                    null,
+                    new[]
+                    {
+                        typeof(byte[]),
+                        typeof(byte[]),
+                        typeof(string),
+                        typeof(StepWatermarkDetectionReport),
+                        typeof(string)
+                    },
+                    null);
+                if (verifyMethod == null)
+                {
+                    failures.Add("Could not find verifier post-clean method for text/logo verifier regression test.");
+                }
+                else
+                {
+                    object verification = verifyMethod.Invoke(
+                        null,
+                        new object[]
+                        {
+                            originalStep,
+                            originalStep,
+                            "usb-b-noop",
+                            report.DetectionReport,
+                            verifierDirectory
+                        });
+                    bool passed = (bool)verification.GetType().GetProperty("Passed").GetValue(verification);
+                    string reportPath = (string)verification.GetType().GetProperty("ReportPath").GetValue(verification);
+                    var verificationFailures = ((IEnumerable<string>)verification.GetType().GetProperty("Failures").GetValue(verification)).ToList();
+
+                    if (passed)
+                        failures.Add("Verifier should fail when original STEP is supplied as clean output for a detected text/logo watermark.");
+
+                    if (!verificationFailures.Any(failure =>
+                        failure.Contains("retains text/logo edge detail", StringComparison.OrdinalIgnoreCase)))
+                    {
+                        failures.Add("Text/logo verifier failure should report retained edge detail inside the detected cleanup region.");
+                    }
+
+                    if (!File.Exists(reportPath))
+                    {
+                        failures.Add("Text/logo verifier failure report is missing: " + reportPath);
+                    }
+                    else
+                    {
+                        string reportText = File.ReadAllText(reportPath);
+                        AssertContains(
+                            reportText,
+                            "Projection verification failures without comparison images",
+                            "Text/logo verifier report should include non-visual failures.",
+                            failures);
+                    }
+                }
+            }
+
+            if (failures.Count > 0)
+            {
+                Console.Error.WriteLine("Text/logo verifier test failed.");
+                foreach (string failure in failures)
+                    Console.Error.WriteLine("  " + failure);
+                return 1;
+            }
+
+            Console.WriteLine("Text/logo verifier test passed.");
+            return 0;
+        }
+
+        private static void VerifyRemovedGeometryDoesNotExportLargeNonWatermarkModels(string dataRoot, List<string> failures)
+        {
+            var fixtureNames = new[]
+            {
+                "CONN-SMD_30P-P0.60_DF56C-30S-0.3V-51.step",
+                "HDMI-SMD_HDMI-001S.step",
+                "SOT-223-4P_L6.5-W3.5-H1.6-LS7.0-P2.30.step",
+                "TYPE-C-TH_TYPEC-215-ARP14.step",
+                "USB-A-SMD_USB-212-BCW.step"
+            };
+
+            const int maxRemovedGeometryBytes = 1700000;
+            foreach (string fixtureName in fixtureNames)
+            {
+                string inputPath = Path.Combine(dataRoot, "Original", fixtureName);
+                if (!File.Exists(inputPath))
+                {
+                    failures.Add("Missing removed-geometry over-removal fixture: " + inputPath);
+                    continue;
+                }
+
+                byte[] originalStep = File.ReadAllBytes(inputPath);
+                var report = StepWatermarkCleaner.CleanWithReport(
+                    Encoding.Latin1.GetString(originalStep),
+                    new StepWatermarkCleanerOptions());
+                if (report.DetectionReport.RemovableSolidCount != 0)
+                {
+                    failures.Add(
+                        Path.GetFileNameWithoutExtension(fixtureName) +
+                        " should not classify component solids as removable watermark solids; detected " +
+                        report.DetectionReport.RemovableSolidCount.ToString(CultureInfo.InvariantCulture) +
+                        ".");
+                }
+
+                int removedByteCount = string.IsNullOrEmpty(report.RemovedGeometryStep)
+                    ? 0
+                    : Encoding.Latin1.GetByteCount(report.RemovedGeometryStep);
+
+                if (string.Equals(fixtureName, "CONN-SMD_30P-P0.60_DF56C-30S-0.3V-51.step", StringComparison.OrdinalIgnoreCase))
+                {
+                    AssertContains(
+                        report.CleanedStep,
+                        "#14214 = ADVANCED_FACE",
+                        "CONN-SMD cleanup should preserve original gold contact face #14214",
+                        failures);
+                    AssertContains(
+                        report.CleanedStep,
+                        "#26383 = ADVANCED_FACE",
+                        "CONN-SMD cleanup should preserve original gold contact face #26383",
+                        failures);
+                    AssertContains(
+                        report.CleanedStep,
+                        "#34754 = ADVANCED_FACE",
+                        "CONN-SMD cleanup should preserve original gold contact face #34754",
+                        failures);
+                    AssertDoesNotContain(
+                        report.RemovedGeometryStep ?? string.Empty,
+                        "#14214 = ADVANCED_FACE",
+                        "CONN-SMD removed geometry should not contain original gold contact face #14214",
+                        failures);
+                    AssertDoesNotContain(
+                        report.RemovedGeometryStep ?? string.Empty,
+                        "#26383 = ADVANCED_FACE",
+                        "CONN-SMD removed geometry should not contain original gold contact face #26383",
+                        failures);
+                    AssertDoesNotContain(
+                        report.RemovedGeometryStep ?? string.Empty,
+                        "#34754 = ADVANCED_FACE",
+                        "CONN-SMD removed geometry should not contain original gold contact face #34754",
+                        failures);
+                }
+
+                if (removedByteCount > maxRemovedGeometryBytes)
+                {
+                    failures.Add(
+                        Path.GetFileNameWithoutExtension(fixtureName) +
+                        " removed-geometry export is too large for a watermark-only diagnostic: " +
+                        removedByteCount.ToString(CultureInfo.InvariantCulture) +
+                        " bytes.");
+                }
+            }
+        }
+
+        private static void VerifyTextLogoPromotedRemovedGeometryIsNotEmpty(string dataRoot, List<string> failures)
+        {
+            string fixtureName = "CONN-TH_MR30PW-M30-G-Y.step";
+            string inputPath = Path.Combine(dataRoot, "Original", fixtureName);
+            if (!File.Exists(inputPath))
+            {
+                failures.Add("Missing text/logo removed-geometry fixture: " + inputPath);
+                return;
+            }
+
+            byte[] originalStep = File.ReadAllBytes(inputPath);
+            var report = StepWatermarkCleaner.CleanWithReport(
+                Encoding.Latin1.GetString(originalStep),
+                new StepWatermarkCleanerOptions());
+            if (report.FlattenedFaceCount <= 0 && report.FlattenedPointCount <= 0 && report.RemovedSolidCount <= 0)
+            {
+                failures.Add(fixtureName + " should perform text/logo cleanup before removed-geometry export.");
+                return;
+            }
+
+            if (string.IsNullOrEmpty(report.RemovedGeometryStep))
+                failures.Add(fixtureName + " should export non-empty removed geometry for promoted text/logo cleanup.");
         }
 
         private static int CountBrightPixels(SKBitmap image, StepProjectionDetectionRegion region, byte threshold)
@@ -1942,7 +2455,11 @@ namespace StepCleaner.Tests
             string cleanTextDirectory = Path.Combine(dataRoot, "CleanText");
             string cleanTextProjectionDirectory = Path.Combine(dataRoot, "CleanTextProjection");
             var originalFiles = GetStepFiles(originalDirectory);
-            string expectedTextCleanFileName = "SOT-223-4P_L6.5-W3.5-H1.6-LS7.0-P2.30.step";
+            var expectedTextCleanFileNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            {
+                "SOT-223-4P_L6.5-W3.5-H1.6-LS7.0-P2.30.step",
+                "USB-B-TH_USB-B10-BRW.step"
+            };
 
             if (originalFiles.Count == 0)
                 failures.Add("No STEP files were found in Original.");
@@ -1962,10 +2479,7 @@ namespace StepCleaner.Tests
                 byte[] textCleaned = Encoding.Latin1.GetBytes(textCleanReport.CleanedStep);
 
                 bool changedByTextCleaning = !BytesEqual(watermarkOnly, textCleaned);
-                bool shouldChange = string.Equals(
-                    Path.GetFileName(originalFile),
-                    expectedTextCleanFileName,
-                    StringComparison.OrdinalIgnoreCase);
+                bool shouldChange = expectedTextCleanFileNames.Contains(Path.GetFileName(originalFile));
 
                 if (changedByTextCleaning != shouldChange)
                 {
@@ -1973,11 +2487,38 @@ namespace StepCleaner.Tests
                         Path.GetFileName(originalFile) +
                         (shouldChange
                             ? " should be additionally cleaned by CleanText."
-                            : " should not be changed by CleanText."));
+                            : " should not be changed by CleanText.") +
+                        " Diagnostics: " +
+                        string.Join(" | ", textCleanReport.Diagnostics ?? Array.Empty<string>()));
                 }
 
                 if (shouldChange && changedByTextCleaning)
                 {
+                    int templateTextDetectionCount = GetDiagnosticInt(textCleanReport.Diagnostics, "Template text detections");
+                    int templateTextCandidateCount = GetDiagnosticInt(textCleanReport.Diagnostics, "Template text cleanup candidates");
+                    int templateTextFaceCount = GetDiagnosticInt(textCleanReport.Diagnostics, "Template text faces");
+                    if (templateTextDetectionCount <= 0 || templateTextCandidateCount <= 0)
+                    {
+                        failures.Add(
+                            Path.GetFileName(originalFile) +
+                            " CleanText should report template-backed detections and cleanup candidates, got detections=" +
+                            templateTextDetectionCount.ToString(CultureInfo.InvariantCulture) +
+                            ", candidates=" +
+                            templateTextCandidateCount.ToString(CultureInfo.InvariantCulture) +
+                            ". Diagnostics: " +
+                            string.Join(" | ", textCleanReport.Diagnostics ?? Array.Empty<string>()));
+                    }
+
+                    if (templateTextFaceCount <= 0)
+                    {
+                        failures.Add(
+                            Path.GetFileName(originalFile) +
+                            " CleanText should report accepted template-backed text faces, got " +
+                            templateTextFaceCount.ToString(CultureInfo.InvariantCulture) +
+                            ". Diagnostics: " +
+                            string.Join(" | ", textCleanReport.Diagnostics ?? Array.Empty<string>()));
+                    }
+
                     Directory.CreateDirectory(cleanTextDirectory);
                     string textCleanOutputPath = Path.Combine(cleanTextDirectory, Path.GetFileName(originalFile));
                     File.WriteAllBytes(textCleanOutputPath, textCleaned);
@@ -2001,6 +2542,26 @@ namespace StepCleaner.Tests
             }
 
             Console.WriteLine("Clean text regression test passed.");
+            return 0;
+        }
+
+        private static int GetDiagnosticInt(IReadOnlyList<string> diagnostics, string label)
+        {
+            if (diagnostics == null)
+                return 0;
+
+            string prefix = label + ":";
+            foreach (string diagnostic in diagnostics)
+            {
+                if (string.IsNullOrWhiteSpace(diagnostic) ||
+                    !diagnostic.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                string value = diagnostic.Substring(prefix.Length).Trim();
+                if (int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out int result))
+                    return result;
+            }
+
             return 0;
         }
 
@@ -2166,6 +2727,508 @@ namespace StepCleaner.Tests
             }
         }
 
+        private static int RunProjectionEdgeModeTests()
+        {
+            var failures = new List<string>();
+            string dataRoot = FindDataRoot();
+            string inputPath = Path.Combine(dataRoot, "Original", "CONN-TH_XT60PB-M.step");
+            byte[] stepData = File.ReadAllBytes(inputPath);
+
+            var colorOptions = new StepProjectionOptions
+            {
+                ImageSizePixels = 512,
+                PaddingPixels = 32,
+                RenderMode = StepProjectionRenderMode.Color
+            };
+            colorOptions.ViewNames.Add("z_minus");
+
+            var edgeOptions = new StepProjectionOptions
+            {
+                ImageSizePixels = colorOptions.ImageSizePixels,
+                PaddingPixels = colorOptions.PaddingPixels,
+                RenderMode = StepProjectionRenderMode.Edge
+            };
+            edgeOptions.ViewNames.Add("z_minus");
+
+            StepProjectionImage colorImage = StepProjectionRenderer.ProjectFileImages(
+                stepData,
+                Path.GetFileNameWithoutExtension(inputPath),
+                colorOptions)[0];
+            StepProjectionImage edgeImage = StepProjectionRenderer.ProjectFileImages(
+                stepData,
+                Path.GetFileNameWithoutExtension(inputPath),
+                edgeOptions)[0];
+
+            if (colorImage.Width != edgeImage.Width || colorImage.Height != edgeImage.Height)
+            {
+                failures.Add(
+                    "Edge projection should use the same dimensions as color projection: color=" +
+                    colorImage.Width.ToString(CultureInfo.InvariantCulture) +
+                    "x" +
+                    colorImage.Height.ToString(CultureInfo.InvariantCulture) +
+                    ", edge=" +
+                    edgeImage.Width.ToString(CultureInfo.InvariantCulture) +
+                    "x" +
+                    edgeImage.Height.ToString(CultureInfo.InvariantCulture) +
+                    ".");
+            }
+
+            const int minDarkPixels = 32;
+            int darkPixels = CountDarkPixels(edgeImage.RgbaBytes, threshold: 48);
+            if (darkPixels < minDarkPixels)
+            {
+                failures.Add(
+                    "Edge projection should contain dark edge pixels in the z_minus view: expected at least " +
+                    minDarkPixels.ToString(CultureInfo.InvariantCulture) +
+                    ", got " +
+                    darkPixels.ToString(CultureInfo.InvariantCulture) +
+                    ".");
+            }
+
+            if (failures.Count > 0)
+            {
+                Console.Error.WriteLine("Projection edge-mode test failed.");
+                foreach (string failure in failures)
+                    Console.Error.WriteLine("  " + failure);
+
+                return 1;
+            }
+
+            Console.WriteLine("Projection edge-mode test passed.");
+            Console.WriteLine("edge_dark_pixels=" + darkPixels.ToString(CultureInfo.InvariantCulture));
+            Console.WriteLine("projection_size=" + edgeImage.Width.ToString(CultureInfo.InvariantCulture) + "x" + edgeImage.Height.ToString(CultureInfo.InvariantCulture));
+            return 0;
+        }
+
+        private static int RunWatermarkTemplateLibraryTests()
+        {
+            var failures = new List<string>();
+            string dataRoot = FindDataRoot();
+            string projectionDirectory = Path.Combine(dataRoot, "Projection");
+            string markedDirectory = Path.Combine(dataRoot, "Marked");
+            string sourcesPath = Path.Combine(dataRoot, "WatermarkTemplateSources.json");
+
+            List<StepWatermarkTemplateSource> sources = ReadJsonList<StepWatermarkTemplateSource>(sourcesPath);
+            IReadOnlyList<StepWatermarkTemplate> templates = StepWatermarkTemplateExtractor.ExtractFromMarkedData(
+                projectionDirectory,
+                markedDirectory,
+                sources);
+            var templatesByName = templates.ToDictionary(template => template.Name, StringComparer.OrdinalIgnoreCase);
+
+            foreach (string requiredName in new[] { "LCEDA", "EasyEDA", "easyeda-logo" })
+            {
+                if (!templatesByName.TryGetValue(requiredName, out StepWatermarkTemplate template))
+                {
+                    failures.Add("Extracted watermark template is missing: " + requiredName);
+                    continue;
+                }
+
+                if (template.Width <= 8 || template.Height <= 8)
+                {
+                    failures.Add(
+                        "Extracted watermark template " +
+                        requiredName +
+                        " should be larger than 8x8, got " +
+                        template.Width.ToString(CultureInfo.InvariantCulture) +
+                        "x" +
+                        template.Height.ToString(CultureInfo.InvariantCulture) +
+                        ".");
+                }
+
+                int edgePointCount = template.EdgePoints == null ? 0 : template.EdgePoints.Count;
+                if (edgePointCount < 24)
+                {
+                    failures.Add(
+                        "Extracted watermark template " +
+                        requiredName +
+                        " should contain enough edge points, got " +
+                        edgePointCount.ToString(CultureInfo.InvariantCulture) +
+                        ".");
+                }
+            }
+
+            VerifyKnownRuntimeTemplatesMatchExtractedTemplates(templatesByName, failures);
+
+            if (failures.Count > 0)
+            {
+                Console.Error.WriteLine("Watermark template library test failed.");
+                foreach (string failure in failures)
+                    Console.Error.WriteLine("  " + failure);
+
+                return 1;
+            }
+
+            Console.WriteLine("Watermark template library test passed.");
+            foreach (StepWatermarkTemplate template in templates.OrderBy(template => template.Name, StringComparer.OrdinalIgnoreCase))
+            {
+                Console.WriteLine(
+                    "template=" +
+                    template.Name +
+                    ", size=" +
+                    template.Width.ToString(CultureInfo.InvariantCulture) +
+                    "x" +
+                    template.Height.ToString(CultureInfo.InvariantCulture) +
+                    ", edge_points=" +
+                    template.EdgePoints.Count.ToString(CultureInfo.InvariantCulture));
+            }
+
+            return 0;
+        }
+
+        private static int RunTextLogoDetectionTests()
+        {
+            var failures = new List<string>();
+            string dataRoot = FindDataRoot();
+            string originalDirectory = Path.Combine(dataRoot, "Original");
+            string expectedPath = Path.Combine(dataRoot, "TextLogoDetectionExpected.json");
+            List<TextLogoDetectionExpectation> expectations = ReadJsonList<TextLogoDetectionExpectation>(expectedPath);
+
+            foreach (TextLogoDetectionExpectation expectation in expectations)
+            {
+                string inputPath = Path.Combine(originalDirectory, expectation.FileName);
+                if (!File.Exists(inputPath))
+                {
+                    failures.Add("Missing original fixture for text/logo detection: " + inputPath);
+                    continue;
+                }
+
+                byte[] stepData = File.ReadAllBytes(inputPath);
+                StepProjectionImage colorImage = ProjectSingleTestView(
+                    stepData,
+                    Path.GetFileNameWithoutExtension(inputPath),
+                    expectation.ViewName,
+                    StepProjectionRenderMode.Color);
+                StepProjectionImage edgeImage = ProjectSingleTestView(
+                    stepData,
+                    Path.GetFileNameWithoutExtension(inputPath),
+                    expectation.ViewName,
+                    StepProjectionRenderMode.Edge);
+                IReadOnlyList<StepTextLogoDetectionRegion> detections = StepTextLogoProjectionDetector.Detect(colorImage, edgeImage);
+                StepTextLogoDetectionRegion requiredDetection = detections
+                    .OrderByDescending(detection => detection.Score)
+                    .FirstOrDefault(detection => string.Equals(detection.TemplateName, expectation.RequiredTemplate, StringComparison.OrdinalIgnoreCase));
+
+                if (requiredDetection == null)
+                {
+                    failures.Add(
+                        expectation.FileName +
+                        " " +
+                        expectation.ViewName +
+                        " should detect known template " +
+                        expectation.RequiredTemplate +
+                        ", got [" +
+                        string.Join(",", detections.Select(detection => detection.TemplateName).Distinct(StringComparer.OrdinalIgnoreCase)) +
+                        "].");
+                    continue;
+                }
+
+                Console.WriteLine(
+                    "detected=" +
+                    expectation.FileName +
+                    " " +
+                    expectation.ViewName +
+                    " template=" +
+                    requiredDetection.TemplateName +
+                    " bounds=" +
+                    requiredDetection.X.ToString(CultureInfo.InvariantCulture) +
+                    "," +
+                    requiredDetection.Y.ToString(CultureInfo.InvariantCulture) +
+                    "," +
+                    requiredDetection.Width.ToString(CultureInfo.InvariantCulture) +
+                    "," +
+                    requiredDetection.Height.ToString(CultureInfo.InvariantCulture) +
+                    " score=" +
+                    requiredDetection.Score.ToString("0.000", CultureInfo.InvariantCulture) +
+                    " chamfer=" +
+                    requiredDetection.ChamferDistance.ToString("0.000", CultureInfo.InvariantCulture) +
+                    " edges=" +
+                    requiredDetection.EdgePixelCount.ToString(CultureInfo.InvariantCulture));
+
+                if (requiredDetection.Width <= 8 || requiredDetection.Height <= 8)
+                {
+                    failures.Add(
+                        expectation.FileName +
+                        " " +
+                        expectation.ViewName +
+                        " detection bounds are too small: " +
+                        requiredDetection.Width.ToString(CultureInfo.InvariantCulture) +
+                        "x" +
+                        requiredDetection.Height.ToString(CultureInfo.InvariantCulture) +
+                        ".");
+                }
+
+                if (requiredDetection.EdgePixelCount < 24)
+                {
+                    failures.Add(
+                        expectation.FileName +
+                        " " +
+                        expectation.ViewName +
+                        " detection should have enough edge pixels, got " +
+                        requiredDetection.EdgePixelCount.ToString(CultureInfo.InvariantCulture) +
+                        ".");
+                }
+
+                VerifyTextLogoDetectionExpectation(expectation, requiredDetection, detections, failures);
+            }
+
+            if (failures.Count > 0)
+            {
+                Console.Error.WriteLine("Text/logo detection test failed.");
+                foreach (string failure in failures)
+                    Console.Error.WriteLine("  " + failure);
+
+                return 1;
+            }
+
+            Console.WriteLine("Text/logo detection test passed.");
+            return 0;
+        }
+
+        private static StepProjectionImage ProjectSingleTestView(
+            byte[] stepData,
+            string modelName,
+            string viewName,
+            StepProjectionRenderMode renderMode)
+        {
+            var options = new StepProjectionOptions
+            {
+                ImageSizePixels = 1600,
+                PaddingPixels = 80,
+                WriteMetadata = false,
+                RenderMode = renderMode
+            };
+            options.ViewNames.Add(viewName);
+            return StepProjectionRenderer.ProjectFileImages(stepData, modelName, options)[0];
+        }
+
+        private static void VerifyKnownRuntimeTemplatesMatchExtractedTemplates(
+            Dictionary<string, StepWatermarkTemplate> extractedTemplatesByName,
+            List<string> failures)
+        {
+            var knownTemplatesByName = StepWatermarkTemplateLibrary.GetKnownTemplates()
+                .ToDictionary(template => template.Name, StringComparer.OrdinalIgnoreCase);
+
+            foreach (string requiredName in new[] { "LCEDA", "EasyEDA", "easyeda-logo" })
+            {
+                if (!knownTemplatesByName.TryGetValue(requiredName, out StepWatermarkTemplate knownTemplate))
+                {
+                    failures.Add("Committed runtime watermark template is missing: " + requiredName);
+                    continue;
+                }
+
+                if (!extractedTemplatesByName.TryGetValue(requiredName, out StepWatermarkTemplate extractedTemplate))
+                    continue;
+
+                if (knownTemplate.Width <= 8 || knownTemplate.Height <= 8)
+                {
+                    failures.Add(
+                        "Committed runtime watermark template " +
+                        requiredName +
+                        " should be larger than 8x8, got " +
+                        knownTemplate.Width.ToString(CultureInfo.InvariantCulture) +
+                        "x" +
+                        knownTemplate.Height.ToString(CultureInfo.InvariantCulture) +
+                        ".");
+                }
+
+                int knownEdgePointCount = knownTemplate.EdgePoints == null ? 0 : knownTemplate.EdgePoints.Count;
+                if (knownEdgePointCount < 24)
+                {
+                    failures.Add(
+                        "Committed runtime watermark template " +
+                        requiredName +
+                        " should contain enough edge points, got " +
+                        knownEdgePointCount.ToString(CultureInfo.InvariantCulture) +
+                        ".");
+                    continue;
+                }
+
+                double extractedAspect = extractedTemplate.Width / (double)Math.Max(1, extractedTemplate.Height);
+                double knownAspect = knownTemplate.Width / (double)Math.Max(1, knownTemplate.Height);
+                double aspectDelta = Math.Abs(extractedAspect - knownAspect) / Math.Max(0.001, extractedAspect);
+                if (aspectDelta > 0.08)
+                {
+                    failures.Add(
+                        "Committed runtime watermark template " +
+                        requiredName +
+                        " dimensions are not close to the extracted source aspect: extracted=" +
+                        extractedTemplate.Width.ToString(CultureInfo.InvariantCulture) +
+                        "x" +
+                        extractedTemplate.Height.ToString(CultureInfo.InvariantCulture) +
+                        ", known=" +
+                        knownTemplate.Width.ToString(CultureInfo.InvariantCulture) +
+                        "x" +
+                        knownTemplate.Height.ToString(CultureInfo.InvariantCulture) +
+                        ".");
+                }
+
+                int overlapCount = CountNormalizedTemplateOverlap(extractedTemplate, knownTemplate);
+                int minimumOverlap = Math.Max(24, (int)Math.Round(knownEdgePointCount * 0.80, MidpointRounding.AwayFromZero));
+                if (overlapCount < minimumOverlap)
+                {
+                    failures.Add(
+                        "Committed runtime watermark template " +
+                        requiredName +
+                        " does not overlap enough normalized extracted edge points: overlap=" +
+                        overlapCount.ToString(CultureInfo.InvariantCulture) +
+                        ", required=" +
+                        minimumOverlap.ToString(CultureInfo.InvariantCulture) +
+                        ", known_points=" +
+                        knownEdgePointCount.ToString(CultureInfo.InvariantCulture) +
+                        ".");
+                }
+            }
+        }
+
+        private static int CountNormalizedTemplateOverlap(
+            StepWatermarkTemplate extractedTemplate,
+            StepWatermarkTemplate knownTemplate)
+        {
+            if (extractedTemplate.EdgePoints == null || knownTemplate.EdgePoints == null)
+                return 0;
+
+            var extractedNormalized = new HashSet<int>();
+            foreach (StepWatermarkTemplatePoint point in extractedTemplate.EdgePoints)
+            {
+                int x = extractedTemplate.Width <= 1
+                    ? 0
+                    : (int)Math.Round(point.X * (knownTemplate.Width - 1) / (double)(extractedTemplate.Width - 1), MidpointRounding.AwayFromZero);
+                int y = extractedTemplate.Height <= 1
+                    ? 0
+                    : (int)Math.Round(point.Y * (knownTemplate.Height - 1) / (double)(extractedTemplate.Height - 1), MidpointRounding.AwayFromZero);
+                x = Math.Max(0, Math.Min(knownTemplate.Width - 1, x));
+                y = Math.Max(0, Math.Min(knownTemplate.Height - 1, y));
+                extractedNormalized.Add(y * knownTemplate.Width + x);
+            }
+
+            int overlapCount = 0;
+            foreach (StepWatermarkTemplatePoint point in knownTemplate.EdgePoints)
+            {
+                if (extractedNormalized.Contains(point.Y * knownTemplate.Width + point.X))
+                    overlapCount++;
+            }
+
+            return overlapCount;
+        }
+
+        private static void VerifyTextLogoDetectionExpectation(
+            TextLogoDetectionExpectation expectation,
+            StepTextLogoDetectionRegion requiredDetection,
+            IReadOnlyList<StepTextLogoDetectionRegion> detections,
+            List<string> failures)
+        {
+            int boundsTolerance = expectation.BoundsTolerance <= 0 ? 24 : expectation.BoundsTolerance;
+            if (expectation.ExpectedWidth > 0 && expectation.ExpectedHeight > 0)
+            {
+                int expectedCenterX = expectation.ExpectedX + expectation.ExpectedWidth / 2;
+                int expectedCenterY = expectation.ExpectedY + expectation.ExpectedHeight / 2;
+                int actualCenterX = requiredDetection.X + requiredDetection.Width / 2;
+                int actualCenterY = requiredDetection.Y + requiredDetection.Height / 2;
+                if (Math.Abs(actualCenterX - expectedCenterX) > boundsTolerance ||
+                    Math.Abs(actualCenterY - expectedCenterY) > boundsTolerance ||
+                    Math.Abs(requiredDetection.Width - expectation.ExpectedWidth) > boundsTolerance ||
+                    Math.Abs(requiredDetection.Height - expectation.ExpectedHeight) > boundsTolerance)
+                {
+                    failures.Add(
+                        expectation.FileName +
+                        " " +
+                        expectation.ViewName +
+                        " " +
+                        expectation.RequiredTemplate +
+                        " detection bounds drifted: expected approximately " +
+                        FormatBounds(expectation.ExpectedX, expectation.ExpectedY, expectation.ExpectedWidth, expectation.ExpectedHeight) +
+                        ", got " +
+                        FormatBounds(requiredDetection.X, requiredDetection.Y, requiredDetection.Width, requiredDetection.Height) +
+                        ", tolerance=" +
+                        boundsTolerance.ToString(CultureInfo.InvariantCulture) +
+                        ".");
+                }
+            }
+
+            if (expectation.MinScore > 0.0 && requiredDetection.Score < expectation.MinScore)
+            {
+                failures.Add(
+                    expectation.FileName +
+                    " " +
+                    expectation.ViewName +
+                    " " +
+                    expectation.RequiredTemplate +
+                    " detection score is too low: expected at least " +
+                    expectation.MinScore.ToString("0.000", CultureInfo.InvariantCulture) +
+                    ", got " +
+                    requiredDetection.Score.ToString("0.000", CultureInfo.InvariantCulture) +
+                    ".");
+            }
+
+            if (expectation.MaxChamferDistance > 0.0 && requiredDetection.ChamferDistance > expectation.MaxChamferDistance)
+            {
+                failures.Add(
+                    expectation.FileName +
+                    " " +
+                    expectation.ViewName +
+                    " " +
+                    expectation.RequiredTemplate +
+                    " chamfer distance is too high: expected at most " +
+                    expectation.MaxChamferDistance.ToString("0.000", CultureInfo.InvariantCulture) +
+                    ", got " +
+                    requiredDetection.ChamferDistance.ToString("0.000", CultureInfo.InvariantCulture) +
+                    ".");
+            }
+
+            double maxUnexpectedHighScore = expectation.MaxUnexpectedHighScore <= 0.0
+                ? Math.Max(10.0, requiredDetection.Score * 0.50)
+                : expectation.MaxUnexpectedHighScore;
+            IEnumerable<string> expectedTemplateNames = expectation.ExpectedTemplates == null || expectation.ExpectedTemplates.Count == 0
+                ? new[] { expectation.RequiredTemplate }
+                : expectation.ExpectedTemplates;
+            var expectedTemplates = new HashSet<string>(
+                expectedTemplateNames.Where(template => !string.IsNullOrWhiteSpace(template)),
+                StringComparer.OrdinalIgnoreCase);
+
+            foreach (StepTextLogoDetectionRegion detection in detections)
+            {
+                if (expectedTemplates.Contains(detection.TemplateName))
+                    continue;
+                if (detection.Score < maxUnexpectedHighScore)
+                    continue;
+
+                failures.Add(
+                    expectation.FileName +
+                    " " +
+                    expectation.ViewName +
+                    " returned unexpected high-score template " +
+                    detection.TemplateName +
+                    " score=" +
+                    detection.Score.ToString("0.000", CultureInfo.InvariantCulture) +
+                    ", threshold=" +
+                    maxUnexpectedHighScore.ToString("0.000", CultureInfo.InvariantCulture) +
+                    ".");
+            }
+        }
+
+        private static string FormatBounds(int x, int y, int width, int height)
+        {
+            return x.ToString(CultureInfo.InvariantCulture) +
+                "," +
+                y.ToString(CultureInfo.InvariantCulture) +
+                "," +
+                width.ToString(CultureInfo.InvariantCulture) +
+                "," +
+                height.ToString(CultureInfo.InvariantCulture);
+        }
+
+        private static List<T> ReadJsonList<T>(string path)
+        {
+            if (!File.Exists(path))
+                throw new FileNotFoundException("Required test fixture was not found.", path);
+
+            List<T> result = JsonSerializer.Deserialize<List<T>>(File.ReadAllText(path));
+            if (result == null)
+                throw new InvalidDataException("Could not read JSON fixture: " + path);
+
+            return result;
+        }
+
         private static F3DRenderedImage RenderPreviewSmokeSameThread(byte[] stepData)
         {
             using (F3DProjectionRenderer.F3DPreviewSession session =
@@ -2252,6 +3315,18 @@ namespace StepCleaner.Tests
             for (int i = 0; i + 3 < rgba.Length; i += 4)
             {
                 if (rgba[i] < 245 || rgba[i + 1] < 245 || rgba[i + 2] < 245)
+                    count++;
+            }
+
+            return count;
+        }
+
+        private static int CountDarkPixels(byte[] rgba, byte threshold)
+        {
+            int count = 0;
+            for (int i = 0; i + 3 < rgba.Length; i += 4)
+            {
+                if (rgba[i + 3] > 0 && rgba[i] <= threshold && rgba[i + 1] <= threshold && rgba[i + 2] <= threshold)
                     count++;
             }
 
@@ -2672,22 +3747,40 @@ namespace StepCleaner.Tests
                 return;
             }
 
+            string originalModelName = Path.GetFileNameWithoutExtension(originalFile);
+            string generatedOriginalProjectionDirectory = Path.Combine(
+                Path.GetDirectoryName(Path.GetFullPath(cleanTextProjectionDirectory)) ?? string.Empty,
+                "CleanTextOriginalProjection");
+            bool needsGeneratedOriginalProjection = detectedViewNames.Any(viewName =>
+                !File.Exists(Path.Combine(cachedOriginalProjectionDirectory, originalModelName + "__" + viewName + ".png")));
+            if (needsGeneratedOriginalProjection)
+            {
+                ClearProjectionFiles(generatedOriginalProjectionDirectory, new[] { Path.GetFileName(originalFile) });
+                StepProjectionRenderer.ProjectFile(
+                    originalFile,
+                    generatedOriginalProjectionDirectory,
+                    CreateProjectionOptionsForViews(detectedViewNames, projectionOptions));
+            }
+
             ClearProjectionFiles(cleanTextProjectionDirectory, new[] { Path.GetFileName(cleanTextFile) });
             StepProjectionRenderer.ProjectFile(
                 cleanTextFile,
                 cleanTextProjectionDirectory,
                 CreateProjectionOptionsForViews(detectedViewNames, projectionOptions));
 
-            string originalModelName = Path.GetFileNameWithoutExtension(originalFile);
             string cleanTextModelName = Path.GetFileNameWithoutExtension(cleanTextFile);
             foreach (string viewName in detectedViewNames)
             {
                 string cachedOriginalProjectionPath = Path.Combine(cachedOriginalProjectionDirectory, originalModelName + "__" + viewName + ".png");
+                string generatedOriginalProjectionPath = Path.Combine(generatedOriginalProjectionDirectory, originalModelName + "__" + viewName + ".png");
+                string originalProjectionPath = File.Exists(cachedOriginalProjectionPath)
+                    ? cachedOriginalProjectionPath
+                    : generatedOriginalProjectionPath;
                 string cleanTextProjectionPath = Path.Combine(cleanTextProjectionDirectory, cleanTextModelName + "__" + viewName + ".png");
 
-                if (!File.Exists(cachedOriginalProjectionPath))
+                if (!File.Exists(originalProjectionPath))
                 {
-                    failures.Add("Cached original projection is missing for CleanText verification: " + cachedOriginalProjectionPath);
+                    failures.Add("Original projection is missing for CleanText verification: " + originalProjectionPath);
                     continue;
                 }
 
@@ -2703,7 +3796,7 @@ namespace StepCleaner.Tests
                 VerifyPostCleanProjectionImage(
                     Path.GetFileName(originalFile),
                     viewName,
-                    cachedOriginalProjectionPath,
+                    originalProjectionPath,
                     cleanTextProjectionPath,
                     viewRegions,
                     new HashSet<string>(StringComparer.OrdinalIgnoreCase),
@@ -2720,7 +3813,7 @@ namespace StepCleaner.Tests
                         Path.GetFileName(originalFile),
                         viewName,
                         "pin-one marker",
-                        cachedOriginalProjectionPath,
+                        originalProjectionPath,
                         cleanTextProjectionPath,
                         x: 318,
                         y: 128,
@@ -4023,7 +5116,8 @@ namespace StepCleaner.Tests
                 PaddingPixels = template.PaddingPixels,
                 WriteMetadata = template.WriteMetadata,
                 SkipGeometryModelForExternalRender = template.SkipGeometryModelForExternalRender,
-                MaxParallelFiles = template.MaxParallelFiles
+                MaxParallelFiles = template.MaxParallelFiles,
+                RenderMode = template.RenderMode
             };
 
             foreach (string viewName in viewNames)
@@ -4558,7 +5652,6 @@ namespace StepCleaner.Tests
                 () => StepProjectionRenderer.ProjectDirectory(validatedDirectory, validatedProjectionDirectory, projectionOptions));
 
             int comparedImages = 0;
-            int ignoredValidatedDifferences = 0;
             foreach (string fileName in matchedFileNames)
             {
                 string modelName = Path.GetFileNameWithoutExtension(fileName);
@@ -4588,12 +5681,7 @@ namespace StepCleaner.Tests
                         () => ProjectionPixelsEqual(cleanProjectionPath, validatedProjectionPath));
                     if (!projectionsEqual)
                     {
-                        if (!postCleanFaultFileNames.Contains(fileName))
-                        {
-                            ignoredValidatedDifferences++;
-                            continue;
-                        }
-
+                        postCleanFaultFileNames.Add(fileName);
                         string message =
                             fileName +
                             " differs from Validated projection on " +
@@ -4624,9 +5712,7 @@ namespace StepCleaner.Tests
                 "Projection comparison: models=" +
                 matchedFileNames.Count.ToString(CultureInfo.InvariantCulture) +
                 ", images=" +
-                comparedImages.ToString(CultureInfo.InvariantCulture) +
-                ", ignored non-post-clean diffs=" +
-                ignoredValidatedDifferences.ToString(CultureInfo.InvariantCulture));
+                comparedImages.ToString(CultureInfo.InvariantCulture));
         }
 
         private static bool ProjectionPixelsEqual(string cleanProjectionPath, string validatedProjectionPath)
@@ -4886,6 +5972,21 @@ namespace StepCleaner.Tests
                 },
                 new CleanupExpectation
                 {
+                    FileName = "CONN-TH_MR30PW-M30-G-Y.step",
+                    Note = "CONN-TH_MR30PW-M30-G-Y.step cleaned output should be reviewed as cleaned."
+                },
+                new CleanupExpectation
+                {
+                    FileName = "USB-B-TH_USB-B10-BRW.step",
+                    Note = "USB-B-TH_USB-B10-BRW.step cleaned output should be reviewed as cleaned."
+                },
+                new CleanupExpectation
+                {
+                    FileName = "SOT-223-4P_L6.5-W3.5-H1.6-LS7.0-P2.30.step",
+                    Note = "SOT-223-4P_L6.5-W3.5-H1.6-LS7.0-P2.30.step cleaned output should be reviewed as cleaned."
+                },
+                new CleanupExpectation
+                {
                     FileName = "SOT-89-3_L4.3-W2.5-H1.6-LS4.1-P1.50.step",
                     Note = "SOT-89-3_L4.3-W2.5-H1.6-LS4.1-P1.50.step cleaned output should be reviewed as cleaned."
                 }
@@ -4910,6 +6011,22 @@ namespace StepCleaner.Tests
         {
             public string FileName { get; set; }
             public string Note { get; set; }
+        }
+
+        private sealed class TextLogoDetectionExpectation
+        {
+            public string FileName { get; set; }
+            public string ViewName { get; set; }
+            public string RequiredTemplate { get; set; }
+            public List<string> ExpectedTemplates { get; set; }
+            public int ExpectedX { get; set; }
+            public int ExpectedY { get; set; }
+            public int ExpectedWidth { get; set; }
+            public int ExpectedHeight { get; set; }
+            public int BoundsTolerance { get; set; }
+            public double MinScore { get; set; }
+            public double MaxChamferDistance { get; set; }
+            public double MaxUnexpectedHighScore { get; set; }
         }
 
         private static string FindDataRoot()
@@ -4998,9 +6115,10 @@ namespace StepCleaner.Tests
 
                 if (!_regionsByKey.TryGetValue(key, out IReadOnlyList<StepProjectionDetectionRegion> regions))
                 {
+                    var verifiedReport = StepWatermarkCleaner.CreateVerifiedCleanupDetectionReport(GetReport(originalFile));
                     regions = StepProjectionRenderer.ProjectDetectionRegions(
                             originalFile,
-                            GetReport(originalFile),
+                            verifiedReport,
                             projectionOptions)
                         .ToList();
                     _regionsByKey[key] = regions;
@@ -5067,6 +6185,135 @@ namespace StepCleaner.Tests
 
                 _elapsedByStage[stageName] += elapsedMilliseconds;
             }
+        }
+
+        private static Dictionary<int, string> ParseStepEntityDefinitions(string stepText)
+        {
+            var result = new Dictionary<int, string>();
+            if (string.IsNullOrEmpty(stepText))
+                return result;
+
+            foreach (Match match in Regex.Matches(
+                stepText,
+                @"#(\d+)\s*=\s*(.*?);",
+                RegexOptions.Singleline | RegexOptions.CultureInvariant))
+            {
+                int id = int.Parse(match.Groups[1].Value, CultureInfo.InvariantCulture);
+                result[id] = NormalizeStepEntityDefinition(match.Groups[2].Value);
+            }
+
+            return result;
+        }
+
+        private static void VerifyProtectedFaceEntityClosurePreserved(
+            int faceId,
+            IReadOnlyDictionary<int, string> originalEntities,
+            IReadOnlyDictionary<int, string> cleanedEntities,
+            IReadOnlyDictionary<int, string> removedEntities,
+            List<string> failures)
+        {
+            HashSet<int> closure = BuildStepReferenceClosure(faceId, originalEntities);
+            if (closure.Count == 0)
+            {
+                failures.Add("Could not build protected face closure for #" + faceId.ToString(CultureInfo.InvariantCulture) + ".");
+                return;
+            }
+
+            foreach (int entityId in closure.OrderBy(id => id))
+            {
+                if (!originalEntities.TryGetValue(entityId, out string originalDefinition))
+                    continue;
+
+                if (!cleanedEntities.TryGetValue(entityId, out string cleanedDefinition))
+                {
+                    failures.Add(
+                        "Protected contact face #" +
+                        faceId.ToString(CultureInfo.InvariantCulture) +
+                        " lost referenced entity #" +
+                        entityId.ToString(CultureInfo.InvariantCulture) +
+                        " in cleaned STEP.");
+                    continue;
+                }
+
+                if (!string.Equals(originalDefinition, cleanedDefinition, StringComparison.Ordinal))
+                {
+                    failures.Add(
+                        "Protected contact face #" +
+                        faceId.ToString(CultureInfo.InvariantCulture) +
+                        " referenced entity #" +
+                        entityId.ToString(CultureInfo.InvariantCulture) +
+                        " changed in cleaned STEP.");
+                }
+
+                if (removedEntities.ContainsKey(entityId))
+                {
+                    failures.Add(
+                        "Protected contact face #" +
+                        faceId.ToString(CultureInfo.InvariantCulture) +
+                        " referenced entity #" +
+                        entityId.ToString(CultureInfo.InvariantCulture) +
+                        " was exported as removed geometry.");
+                }
+            }
+        }
+
+        private static HashSet<int> BuildStepReferenceClosure(
+            int rootId,
+            IReadOnlyDictionary<int, string> entities)
+        {
+            var result = new HashSet<int>();
+            var pending = new Stack<int>();
+            pending.Push(rootId);
+
+            while (pending.Count > 0)
+            {
+                int entityId = pending.Pop();
+                if (!result.Add(entityId))
+                    continue;
+
+                if (!entities.TryGetValue(entityId, out string definition))
+                    continue;
+
+                foreach (Match match in Regex.Matches(
+                    definition,
+                    @"#(\d+)",
+                    RegexOptions.CultureInvariant))
+                {
+                    int referencedId = int.Parse(match.Groups[1].Value, CultureInfo.InvariantCulture);
+                    if (!result.Contains(referencedId))
+                        pending.Push(referencedId);
+                }
+            }
+
+            foreach (KeyValuePair<int, string> entity in entities)
+            {
+                if (entity.Key == rootId || result.Contains(entity.Key))
+                    continue;
+
+                if (Regex.IsMatch(
+                    entity.Value,
+                    @"^STYLED_ITEM\s*\(",
+                    RegexOptions.IgnoreCase | RegexOptions.CultureInvariant) &&
+                    Regex.IsMatch(
+                        entity.Value,
+                        @"#" + rootId.ToString(CultureInfo.InvariantCulture) + @"(?!\d)",
+                        RegexOptions.CultureInvariant))
+                {
+                    result.Add(entity.Key);
+                }
+            }
+
+            return result;
+        }
+
+        private static string NormalizeStepEntityDefinition(string definition)
+        {
+            return Regex.Replace(
+                    definition ?? string.Empty,
+                    @"\s+",
+                    " ",
+                    RegexOptions.CultureInvariant)
+                .Trim();
         }
 
         private static List<string> GetStepFiles(string directory)

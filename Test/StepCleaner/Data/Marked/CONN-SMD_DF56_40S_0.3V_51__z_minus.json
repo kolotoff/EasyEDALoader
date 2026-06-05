@@ -1,0 +1,14 @@
+{
+  "Version": 1,
+  "ImageFile": "CONN-SMD_DF56_40S_0.3V_51__z_minus.png",
+  "ImageWidth": 1600,
+  "ImageHeight": 1600,
+  "Rectangles": [
+    {
+      "X": 714,
+      "Y": 767,
+      "Width": 202,
+      "Height": 64
+    }
+  ]
+}

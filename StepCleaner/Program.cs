@@ -21,6 +21,8 @@ namespace StepCleaner
         private const double MinOriginalRegionEdgeRatioForFlatness = 0.08;
         private const double MaxCleanedRegionEdgeRatio = 0.035;
         private const double MaxRetainedRegionEdgeRatio = 0.45;
+        private const double MaxRetainedTextLogoEdgePixelRatio = 0.35;
+        private const int MinOriginalTextLogoEdgePixels = 8;
 
         private static int Main(string[] args)
         {
@@ -236,6 +238,10 @@ namespace StepCleaner
 
         private static int Project(string[] args)
         {
+            var arguments = new List<string>(args);
+            bool edgeMode = RemoveProjectionEdgeFlag(arguments);
+            args = arguments.ToArray();
+
             if (args.Length < 2 || args.Length > 3 || IsHelp(args[1]))
             {
                 PrintUsage();
@@ -253,9 +259,14 @@ namespace StepCleaner
 
             try
             {
+                var projectionOptions = new StepProjectionOptions
+                {
+                    RenderMode = edgeMode ? StepProjectionRenderMode.Edge : StepProjectionRenderMode.Color
+                };
+
                 if (Directory.Exists(inputPath))
                 {
-                    var reports = StepProjectionRenderer.ProjectDirectory(inputPath, outputDirectory);
+                    var reports = StepProjectionRenderer.ProjectDirectory(inputPath, outputDirectory, projectionOptions);
                     if (reports.Count == 0)
                     {
                         Console.Error.WriteLine("No STEP files were found in: " + inputPath);
@@ -278,7 +289,7 @@ namespace StepCleaner
                     return 0;
                 }
 
-                var singleReport = StepProjectionRenderer.ProjectFile(inputPath, outputDirectory);
+                var singleReport = StepProjectionRenderer.ProjectFile(inputPath, outputDirectory, projectionOptions);
                 Console.WriteLine("STEP six-side projection complete");
                 Console.WriteLine("Input:                " + Path.GetFullPath(inputPath));
                 Console.WriteLine("Projection directory: " + Path.GetFullPath(outputDirectory));
@@ -406,10 +417,12 @@ namespace StepCleaner
                 new StepWatermarkCleanerOptions());
             foreach (string failure in residualTopology.Failures)
                 result.Failures.Add(failure);
+            bool verifyRetainedEdgeDetail = residualTopology.Failures.Count > 0;
 
+            var verifiedDetectionReport = StepWatermarkCleaner.CreateVerifiedCleanupDetectionReport(detectionReport);
             var detectionRegions = StepProjectionRenderer.ProjectDetectionRegions(
                     inputPath,
-                    detectionReport,
+                    verifiedDetectionReport,
                     projectionOptions)
                 .ToList();
 
@@ -428,8 +441,12 @@ namespace StepCleaner
             }
 
             var renderOptions = CreateProjectionOptionsForViews(detectedViewNames, projectionOptions);
+            var edgeRenderOptions = CreateProjectionOptionsForViews(detectedViewNames, projectionOptions);
+            edgeRenderOptions.RenderMode = StepProjectionRenderMode.Edge;
             StepProjectionRenderer.ProjectFile(inputPath, originalProjectionDirectory, renderOptions);
             StepProjectionRenderer.ProjectFile(outputPath, cleanProjectionDirectory, renderOptions);
+            StepProjectionRenderer.ProjectFile(inputPath, originalProjectionDirectory, edgeRenderOptions);
+            StepProjectionRenderer.ProjectFile(outputPath, cleanProjectionDirectory, edgeRenderOptions);
 
             string inputModelName = Path.GetFileNameWithoutExtension(inputPath);
             string outputModelName = Path.GetFileNameWithoutExtension(outputPath);
@@ -448,6 +465,19 @@ namespace StepCleaner
                     cleanProjectionPath,
                     viewRegions,
                     result);
+
+                if (verifyRetainedEdgeDetail)
+                {
+                    string originalEdgeProjectionPath = Path.Combine(originalProjectionDirectory, inputModelName + "__" + viewName + "__edge.png");
+                    string cleanEdgeProjectionPath = Path.Combine(cleanProjectionDirectory, outputModelName + "__" + viewName + "__edge.png");
+                    VerifyPostCleanEdgeProjectionImage(
+                        Path.GetFileName(inputPath),
+                        viewName,
+                        originalEdgeProjectionPath,
+                        cleanEdgeProjectionPath,
+                        viewRegions,
+                        result);
+                }
             }
 
             WriteFailedProjectionReport(result.ReportPath, result.ReportDirectory, result.Failures, result.VisualFailures);
@@ -549,6 +579,41 @@ namespace StepCleaner
             }
         }
 
+        private static void VerifyPostCleanEdgeProjectionImage(
+            string fileName,
+            string viewName,
+            string originalProjectionPath,
+            string cleanProjectionPath,
+            IReadOnlyList<StepProjectionDetectionRegion> detectionRegions,
+            PostCleanVerificationResult result)
+        {
+            using (var originalImage = SKBitmap.Decode(originalProjectionPath))
+            using (var cleanImage = SKBitmap.Decode(cleanProjectionPath))
+            {
+                if (originalImage == null || cleanImage == null)
+                {
+                    result.Failures.Add(fileName + " has an unreadable original or clean edge projection on " + viewName + ".");
+                    return;
+                }
+
+                if (originalImage.Width != cleanImage.Width || originalImage.Height != cleanImage.Height)
+                {
+                    result.Failures.Add(fileName + " original and clean edge projections have different sizes on " + viewName + ".");
+                    return;
+                }
+
+                VerifyTextLogoEdgeRegions(
+                    fileName,
+                    viewName,
+                    originalImage,
+                    cleanImage,
+                    detectionRegions,
+                    result,
+                    originalProjectionPath,
+                    cleanProjectionPath);
+            }
+        }
+
         private static void VerifyCleanedRegionFlatness(
             string fileName,
             string viewName,
@@ -606,6 +671,72 @@ namespace StepCleaner
                 RightLabel = "Clean",
                 RightImagePath = cleanProjectionPath
             });
+        }
+
+        private static void VerifyTextLogoEdgeRegions(
+            string fileName,
+            string viewName,
+            SKBitmap originalImage,
+            SKBitmap cleanImage,
+            IReadOnlyList<StepProjectionDetectionRegion> detectionRegions,
+            PostCleanVerificationResult result,
+            string originalProjectionPath,
+            string cleanProjectionPath)
+        {
+            foreach (StepProjectionDetectionRegion region in detectionRegions)
+            {
+                int left = Math.Max(0, region.RectangleX);
+                int top = Math.Max(0, region.RectangleY);
+                int right = Math.Min(cleanImage.Width - 1, region.RectangleX + region.RectangleWidth - 1);
+                int bottom = Math.Min(cleanImage.Height - 1, region.RectangleY + region.RectangleHeight - 1);
+                if (right < left || bottom < top)
+                    continue;
+
+                int originalEdgePixels = CountForegroundPixels(originalImage, left, top, right, bottom);
+                if (originalEdgePixels < MinOriginalTextLogoEdgePixels)
+                    continue;
+
+                int cleanEdgePixels = CountForegroundPixels(cleanImage, left, top, right, bottom);
+                if (cleanEdgePixels <= originalEdgePixels * MaxRetainedTextLogoEdgePixelRatio)
+                    continue;
+
+                string message =
+                    fileName +
+                    " retains text/logo edge detail on " +
+                    viewName +
+                    ": cleanEdgePixels=" +
+                    cleanEdgePixels.ToString(CultureInfo.InvariantCulture) +
+                    ", originalEdgePixels=" +
+                    originalEdgePixels.ToString(CultureInfo.InvariantCulture) +
+                    ".";
+                result.Failures.Add(message);
+                result.VisualFailures.Add(new ProjectionVisualFailure
+                {
+                    Category = "Original vs Clean: retained text/logo edge detail",
+                    FileName = fileName,
+                    ViewName = viewName,
+                    Message = message,
+                    LeftLabel = "Original edge",
+                    LeftImagePath = originalProjectionPath,
+                    RightLabel = "Clean edge",
+                    RightImagePath = cleanProjectionPath
+                });
+            }
+        }
+
+        private static int CountForegroundPixels(SKBitmap image, int left, int top, int right, int bottom)
+        {
+            int count = 0;
+            for (int y = top; y <= bottom; y++)
+            {
+                for (int x = left; x <= right; x++)
+                {
+                    if (!IsBackgroundLike(image.GetPixel(x, y)))
+                        count++;
+                }
+            }
+
+            return count;
         }
 
         private static double MeasureRegionEdgeRatio(SKBitmap image, int left, int top, int right, int bottom)
@@ -674,7 +805,8 @@ namespace StepCleaner
             {
                 ImageSizePixels = template.ImageSizePixels,
                 PaddingPixels = template.PaddingPixels,
-                WriteMetadata = template.WriteMetadata
+                WriteMetadata = template.WriteMetadata,
+                RenderMode = template.RenderMode
             };
 
             foreach (string viewName in viewNames)
@@ -761,19 +893,19 @@ namespace StepCleaner
                 string.Empty
             };
 
+            if (failures.Count > 0)
+            {
+                lines.Add("Projection verification failures without comparison images: " + failures.Count.ToString(CultureInfo.InvariantCulture));
+                lines.Add(string.Empty);
+                foreach (string failure in failures)
+                    lines.Add("- " + failure);
+                lines.Add(string.Empty);
+            }
+
             if (visualFailures.Count == 0)
             {
                 if (failures.Count == 0)
-                {
                     lines.Add("No failed projections.");
-                }
-                else
-                {
-                    lines.Add("Projection verification failures without comparison images: " + failures.Count.ToString(CultureInfo.InvariantCulture));
-                    lines.Add(string.Empty);
-                    foreach (string failure in failures)
-                        lines.Add("- " + failure);
-                }
 
                 File.WriteAllLines(reportPath, lines, Encoding.UTF8);
                 return;
@@ -1229,6 +1361,21 @@ namespace StepCleaner
             return found;
         }
 
+        private static bool RemoveProjectionEdgeFlag(List<string> args)
+        {
+            bool found = false;
+            for (int i = args.Count - 1; i >= 0; i--)
+            {
+                if (!IsProjectionEdgeFlag(args[i]))
+                    continue;
+
+                args.RemoveAt(i);
+                found = true;
+            }
+
+            return found;
+        }
+
         private static bool IsDetectionDebugFlag(string arg)
         {
             return string.Equals(arg, "--debug", StringComparison.OrdinalIgnoreCase)
@@ -1241,6 +1388,11 @@ namespace StepCleaner
         {
             return string.Equals(arg, "--clean-text", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(arg, "--text", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool IsProjectionEdgeFlag(string arg)
+        {
+            return string.Equals(arg, "--edge", StringComparison.OrdinalIgnoreCase);
         }
 
         private sealed class PostCleanVerificationResult
@@ -1271,7 +1423,7 @@ namespace StepCleaner
             Console.WriteLine("  StepCleaner <input-directory> [output-directory] [--debug] [--clean-text]");
             Console.WriteLine("  StepCleaner detect <input.step|input-directory> [--debug]");
             Console.WriteLine("  StepCleaner removed-geometry <input.step|input-directory> [output.step|output-directory] [--clean-text]");
-            Console.WriteLine("  StepCleaner project <input.step|input-directory> [projection-directory]");
+            Console.WriteLine("  StepCleaner project <input.step|input-directory> [projection-directory] [--edge]");
             Console.WriteLine();
             Console.WriteLine("When output.step is omitted, the cleaner writes <input>.clean.step next to the input file.");
             Console.WriteLine("When input-directory is named Original and output-directory is omitted, the cleaner writes to sibling Clean.");
@@ -1280,7 +1432,7 @@ namespace StepCleaner
             Console.WriteLine("The --debug option writes detected watermark region projection PNG files to Clean\\Detection.");
             Console.WriteLine("The --clean-text option additionally removes detected raised or cut text-string geometry.");
             Console.WriteLine("Cleanup returns " + PostCleanVerificationFailedExitCode.ToString(CultureInfo.InvariantCulture) + " when post-clean projection verification fails; failed comparison images are written to PostCleanVerification.");
-            Console.WriteLine("The project command writes six PNG side projections and JSON mapping files; when the input directory is named Original, the projection directory defaults to sibling Projection.");
+            Console.WriteLine("The project command writes six PNG side projections and JSON mapping files; --edge writes aligned edge-only projections with __edge file suffixes.");
         }
     }
 }

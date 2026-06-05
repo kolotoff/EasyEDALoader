@@ -39,6 +39,8 @@ namespace EasyEDA_Loader
         private const double MinOriginalRegionEdgeRatioForFlatness = 0.08;
         private const double MaxCleanedRegionEdgeRatio = 0.035;
         private const double MaxRetainedRegionEdgeRatio = 0.45;
+        private const double MaxRetainedTextLogoEdgePixelRatio = 0.35;
+        private const int MinOriginalTextLogoEdgePixels = 8;
 
         public static byte[] CleanOrThrow(byte[] originalStep, string modelName, string verificationDirectory, bool cleanText = false)
         {
@@ -118,11 +120,13 @@ namespace EasyEDA_Loader
                 new StepWatermarkCleanerOptions());
             foreach (string failure in residualTopology.Failures)
                 result.Failures.Add(failure);
+            bool verifyRetainedEdgeDetail = residualTopology.Failures.Count > 0;
 
+            var verifiedDetectionReport = StepWatermarkCleaner.CreateVerifiedCleanupDetectionReport(detectionReport);
             var detectionRegions = StepProjectionRenderer.ProjectDetectionRegions(
                     originalStep,
                     modelName,
-                    detectionReport,
+                    verifiedDetectionReport,
                     projectionOptions)
                 .ToList();
 
@@ -141,12 +145,18 @@ namespace EasyEDA_Loader
             else
             {
                 var renderOptions = CreateProjectionOptionsForViews(detectedViewNames, projectionOptions);
+                var edgeRenderOptions = CreateProjectionOptionsForViews(detectedViewNames, projectionOptions);
+                edgeRenderOptions.RenderMode = StepProjectionRenderMode.Edge;
                 var originalProjectionTask = Task.Run(() => StepProjectionRenderer.ProjectFileImages(originalStep, modelName + ".original", renderOptions));
                 var cleanProjectionTask = Task.Run(() => StepProjectionRenderer.ProjectFileImages(cleanStep, modelName + ".clean", renderOptions));
-                Task.WaitAll(originalProjectionTask, cleanProjectionTask);
+                var originalEdgeProjectionTask = Task.Run(() => StepProjectionRenderer.ProjectFileImages(originalStep, modelName + ".original.edge", edgeRenderOptions));
+                var cleanEdgeProjectionTask = Task.Run(() => StepProjectionRenderer.ProjectFileImages(cleanStep, modelName + ".clean.edge", edgeRenderOptions));
+                Task.WaitAll(originalProjectionTask, cleanProjectionTask, originalEdgeProjectionTask, cleanEdgeProjectionTask);
 
                 var originalImagesByView = originalProjectionTask.Result.ToDictionary(image => image.ViewName, StringComparer.OrdinalIgnoreCase);
                 var cleanImagesByView = cleanProjectionTask.Result.ToDictionary(image => image.ViewName, StringComparer.OrdinalIgnoreCase);
+                var originalEdgeImagesByView = originalEdgeProjectionTask.Result.ToDictionary(image => image.ViewName, StringComparer.OrdinalIgnoreCase);
+                var cleanEdgeImagesByView = cleanEdgeProjectionTask.Result.ToDictionary(image => image.ViewName, StringComparer.OrdinalIgnoreCase);
                 foreach (string viewName in detectedViewNames)
                 {
                     if (!originalImagesByView.TryGetValue(viewName, out StepProjectionImage originalProjection))
@@ -172,6 +182,29 @@ namespace EasyEDA_Loader
                         cleanProjection,
                         viewRegions,
                         result);
+
+                    if (!originalEdgeImagesByView.TryGetValue(viewName, out StepProjectionImage originalEdgeProjection))
+                    {
+                        result.Failures.Add(modelName + " original edge projection is missing on " + viewName + ".");
+                        continue;
+                    }
+
+                    if (!cleanEdgeImagesByView.TryGetValue(viewName, out StepProjectionImage cleanEdgeProjection))
+                    {
+                        result.Failures.Add(modelName + " clean edge projection is missing on " + viewName + ".");
+                        continue;
+                    }
+
+                    if (verifyRetainedEdgeDetail)
+                    {
+                        VerifyPostCleanEdgeProjectionImage(
+                            modelName,
+                            viewName,
+                            originalEdgeProjection,
+                            cleanEdgeProjection,
+                            viewRegions,
+                            result);
+                    }
                 }
             }
 
@@ -275,6 +308,43 @@ namespace EasyEDA_Loader
             }
         }
 
+        private static void VerifyPostCleanEdgeProjectionImage(
+            string fileName,
+            string viewName,
+            StepProjectionImage originalProjection,
+            StepProjectionImage cleanProjection,
+            IReadOnlyList<StepProjectionDetectionRegion> detectionRegions,
+            PostCleanVerificationResult result)
+        {
+            using (var originalImage = originalProjection.ToBitmap())
+            using (var cleanImage = cleanProjection.ToBitmap())
+            {
+                if (originalImage == null || cleanImage == null)
+                {
+                    result.Failures.Add(fileName + " has an unreadable original or clean edge projection on " + viewName + ".");
+                    return;
+                }
+
+                if (originalImage.Width != cleanImage.Width || originalImage.Height != cleanImage.Height)
+                {
+                    result.Failures.Add(fileName + " original and clean edge projections have different sizes on " + viewName + ".");
+                    return;
+                }
+
+                VerifyTextLogoEdgeRegions(
+                    fileName,
+                    viewName,
+                    originalImage,
+                    cleanImage,
+                    detectionRegions,
+                    result,
+                    originalProjection,
+                    cleanProjection,
+                    null,
+                    null);
+            }
+        }
+
         private static void VerifyCleanedRegionFlatness(
             string fileName,
             string viewName,
@@ -332,6 +402,76 @@ namespace EasyEDA_Loader
                 RightLabel = "Clean",
                 RightImage = cleanProjection
             });
+        }
+
+        private static void VerifyTextLogoEdgeRegions(
+            string fileName,
+            string viewName,
+            SKBitmap originalImage,
+            SKBitmap cleanImage,
+            IReadOnlyList<StepProjectionDetectionRegion> detectionRegions,
+            PostCleanVerificationResult result,
+            StepProjectionImage originalProjection,
+            StepProjectionImage cleanProjection,
+            string originalProjectionPath,
+            string cleanProjectionPath)
+        {
+            foreach (StepProjectionDetectionRegion region in detectionRegions)
+            {
+                int left = Math.Max(0, region.RectangleX);
+                int top = Math.Max(0, region.RectangleY);
+                int right = Math.Min(cleanImage.Width - 1, region.RectangleX + region.RectangleWidth - 1);
+                int bottom = Math.Min(cleanImage.Height - 1, region.RectangleY + region.RectangleHeight - 1);
+                if (right < left || bottom < top)
+                    continue;
+
+                int originalEdgePixels = CountForegroundPixels(originalImage, left, top, right, bottom);
+                if (originalEdgePixels < MinOriginalTextLogoEdgePixels)
+                    continue;
+
+                int cleanEdgePixels = CountForegroundPixels(cleanImage, left, top, right, bottom);
+                if (cleanEdgePixels <= originalEdgePixels * MaxRetainedTextLogoEdgePixelRatio)
+                    continue;
+
+                string message =
+                    fileName +
+                    " retains text/logo edge detail on " +
+                    viewName +
+                    ": cleanEdgePixels=" +
+                    cleanEdgePixels.ToString(CultureInfo.InvariantCulture) +
+                    ", originalEdgePixels=" +
+                    originalEdgePixels.ToString(CultureInfo.InvariantCulture) +
+                    ".";
+                result.Failures.Add(message);
+                result.VisualFailures.Add(new ProjectionVisualFailure
+                {
+                    Category = "Original vs Clean: retained text/logo edge detail",
+                    FileName = fileName,
+                    ViewName = viewName,
+                    Message = message,
+                    LeftLabel = "Original edge",
+                    LeftImage = originalProjection,
+                    LeftImagePath = originalProjectionPath,
+                    RightLabel = "Clean edge",
+                    RightImage = cleanProjection,
+                    RightImagePath = cleanProjectionPath
+                });
+            }
+        }
+
+        private static int CountForegroundPixels(SKBitmap image, int left, int top, int right, int bottom)
+        {
+            int count = 0;
+            for (int y = top; y <= bottom; y++)
+            {
+                for (int x = left; x <= right; x++)
+                {
+                    if (!IsBackgroundLike(image.GetPixel(x, y)))
+                        count++;
+                }
+            }
+
+            return count;
         }
 
         private static double MeasureRegionEdgeRatio(SKBitmap image, int left, int top, int right, int bottom)
@@ -400,7 +540,8 @@ namespace EasyEDA_Loader
             {
                 ImageSizePixels = template.ImageSizePixels,
                 PaddingPixels = template.PaddingPixels,
-                WriteMetadata = template.WriteMetadata
+                WriteMetadata = template.WriteMetadata,
+                RenderMode = template.RenderMode
             };
 
             foreach (string viewName in viewNames)
@@ -477,19 +618,19 @@ namespace EasyEDA_Loader
                 string.Empty
             };
 
+            if (failures.Count > 0)
+            {
+                lines.Add("Projection verification failures without comparison images: " + failures.Count.ToString(CultureInfo.InvariantCulture));
+                lines.Add(string.Empty);
+                foreach (string failure in failures)
+                    lines.Add("- " + failure);
+                lines.Add(string.Empty);
+            }
+
             if (visualFailures.Count == 0)
             {
                 if (failures.Count == 0)
-                {
                     lines.Add("No failed projections.");
-                }
-                else
-                {
-                    lines.Add("Projection verification failures without comparison images: " + failures.Count.ToString(CultureInfo.InvariantCulture));
-                    lines.Add(string.Empty);
-                    foreach (string failure in failures)
-                        lines.Add("- " + failure);
-                }
 
                 File.WriteAllLines(reportPath, lines, Encoding.UTF8);
                 return;

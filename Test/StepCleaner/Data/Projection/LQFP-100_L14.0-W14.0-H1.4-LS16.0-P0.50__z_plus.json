@@ -1,0 +1,25 @@
+﻿{
+  "input": "D:\\Develop\\Altium\\Ai\\EasyEDALoader\\Test\\StepCleaner\\Data\\Original\\LQFP-100_L14.0-W14.0-H1.4-LS16.0-P0.50.step",
+  "projection": "D:\\Develop\\Altium\\Ai\\EasyEDALoader\\Test\\StepCleaner\\Data\\Projection\\LQFP-100_L14.0-W14.0-H1.4-LS16.0-P0.50__z_plus.png",
+  "view": "z_plus",
+  "image": {
+    "width": 1600,
+    "height": 1600,
+    "padding": 80
+  },
+  "model_axes": {
+    "u_axis": "X",
+    "u_sign": 1,
+    "v_axis": "Y",
+    "v_sign": 1,
+    "depth_axis": "Z",
+    "depth_sign": 1
+  },
+  "mapping": {
+    "scale_pixels_per_model_unit": 89.999999999999517,
+    "u_min": -8.0000000000000426,
+    "u_max": 8.0000000000000426,
+    "v_min": -8.0000000000000213,
+    "v_max": 8.0000000000000622
+  }
+}

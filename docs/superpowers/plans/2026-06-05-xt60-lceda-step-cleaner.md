@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Make the STEP cleaner report silent no-op watermark misses and clean the bottom geometric `LCEDA` watermark in `CONN-TH_XT60PB-M.step`.
+**Goal:** Make the STEP cleaner report silent no-op watermark misses, clean the bottom geometric `LCEDA` watermark in `CONN-TH_XT60PB-M.step`, and avoid exporting real component geometry as removed watermark geometry.
 
-**Architecture:** Keep the reusable cleanup logic in `EasyEDA-Loader\StepWatermarkCleaner.cs` and keep CLI/app verification behavior aligned between `StepCleaner\Program.cs` and `EasyEDA-Loader\StepWatermarkCleanVerifier.cs`. Add focused regression coverage in the existing console test harness before changing production code.
+**Architecture:** Keep reusable cleanup logic in `EasyEDA-Loader\StepWatermarkCleaner.cs` and keep CLI/app verification behavior aligned between `StepCleaner\Program.cs` and `EasyEDA-Loader\StepWatermarkCleanVerifier.cs`. Detection may report multiple visual boxes, but editing must merge clustered watermark regions into a 3D cleanup volume, derive host/top/bottom coordinates on the watermark axis, and refuse to touch geometry outside that volume. Add focused regression coverage in the existing console test harness before changing production code.
 
 **Tech Stack:** C#/.NET 8 test harness, .NET Framework-linked loader source, SkiaSharp/F3D projection verification.
 
@@ -142,7 +142,110 @@ dotnet run --project Test\StepCleaner\StepCleaner.Tests.csproj
 
 Expected: focused and CLI checks pass. Full suite may require existing golden/validated data review if XT60 is intentionally not yet accepted; report exact status.
 
-### Task 5: Review And No Commit
+### Task 5: Box-Limited Cleanup Volume And Removed-Geometry Guardrails
+
+**Files:**
+- Modify: `EasyEDA-Loader\StepWatermarkCleaner.cs`
+- Modify: `Test\StepCleaner\Program.cs`
+
+- [x] **Step 1: Add red tests for user-reported over-removal**
+
+Extend `RunRemovedGeometryExportTests()` with the five user-reported fixtures:
+
+```csharp
+var overRemovalFixtures = new[]
+{
+    "CONN-SMD_30P-P0.60_DF56C-30S-0.3V-51.step",
+    "HDMI-SMD_HDMI-001S.step",
+    "SOT-223-4P_L6.5-W3.5-H1.6-LS7.0-P2.30.step",
+    "TYPE-C-TH_TYPEC-215-ARP14.step",
+    "USB-A-SMD_USB-212-BCW.step"
+};
+```
+
+For each, clean and assert removed geometry is absent or small enough to be only watermark topology. The current multi-megabyte `.removed.step` outputs should fail this test before the cleaner guard is added.
+
+- [x] **Step 2: Add red XT60 volume test**
+
+Strengthen `RunXt60LcedaWatermarkTests()` to assert the cleaner creates one merged cleanup volume for the bottom `LCEDA` cluster and that flattened/removed faces stay inside that volume. The test can use diagnostics until a public report field is added:
+
+```csharp
+AssertContains(cleanerDiagnostics, "Automatic cleanup volumes: 1", "XT60 LCEDA should be edited as one merged bounded volume", failures);
+AssertContains(cleanerDiagnostics, "Edited geometry outside cleanup volumes: 0", "XT60 LCEDA cleanup must not edit outside its bounded volume", failures);
+```
+
+- [x] **Step 3: Add cleanup-volume data model**
+
+In `EasyEDA-Loader\StepWatermarkCleaner.cs`, add an internal `AutomaticCleanupVolume` with:
+
+```csharp
+public int OwnerId;
+public int HostFaceId;
+public int Axis;
+public double HostCoordinate;
+public double MinCoordinate;
+public double MaxCoordinate;
+public Bounds Bounds;
+public Bounds HostBounds;
+```
+
+Build it from merged `AutomaticWatermarkRegion` clusters. The projected bounds are the union of all detected boxes in the cluster plus existing projection padding. The depth bounds are the nearest host coordinate plus the nearest opposite shallow/top/bottom watermark coordinate discovered from candidate face bounds. Support both cut and bump watermarks by allowing the second coordinate to be on either side of the host coordinate.
+
+- [x] **Step 4: Use volumes for editing**
+
+Replace broad `FlattenAllGeometryInsideAutomaticRegions(...)` selection with volume-limited selection:
+
+```csharp
+if (!ProjectedBoundsInside(faceBounds.Value, volume.Bounds, volume.Axis, options.HostPlaneProjectionPadding))
+    continue;
+
+if (!BoundsWithinCleanupDepth(faceBounds.Value, volume, options))
+    continue;
+```
+
+Only flatten points whose projected X/Y are inside the volume and whose depth coordinate is between `MinCoordinate` and `MaxCoordinate`. Do not edit host/body geometry outside the box. Continue removing only matching host inner bounds inside the projected volume.
+
+- [x] **Step 5: Keep reporting and diagnostics**
+
+Keep `StepWatermarkDetectionReport.Regions` compatible with the current projection overlay, but add diagnostics for volume count and outside-volume edit count. Removed geometry should contain only solids/faces/host loops that are selected by those volumes.
+
+- [x] **Step 6: Run red/green checks**
+
+Run:
+
+```powershell
+dotnet run --project Test\StepCleaner\StepCleaner.Tests.csproj -- --xt60-lceda
+dotnet run --project Test\StepCleaner\StepCleaner.Tests.csproj -- --removed-geometry
+```
+
+Expected after implementation: both pass; before implementation, at least the strengthened assertions fail.
+
+### Task 6: Verification Projection Upgrade
+
+**Files:**
+- Modify: `EasyEDA-Loader\StepWatermarkCleanVerifier.cs`
+- Modify: `StepCleaner\Program.cs`
+- Modify: `Test\StepCleaner\Program.cs`
+
+- [ ] **Step 1: Add six-side residual scan**
+
+After detection-region verification, generate six cleaned projections for known-watermark fixtures and scan for residual watermark-like line detail inside the merged cleanup volume. This catches oblique/wireframe-visible same-color seams that ordinary color projection can miss.
+
+- [ ] **Step 2: Prefer stronger wire/edge signal**
+
+If the existing renderer cannot show residual seams reliably, add a wireframe/edge projection option or reuse the hidden-line/OCCT projection path for post-clean residual checks. Keep this as a verifier-only signal; it must not drive cleanup selection.
+
+- [ ] **Step 3: Run focused check**
+
+Run:
+
+```powershell
+dotnet run --project Test\StepCleaner\StepCleaner.Tests.csproj -- --xt60-lceda
+```
+
+Expected: XT60 fails on residual edge detail before the geometry box fix and passes after it.
+
+### Task 7: Review And No Commit
 
 **Files:**
 - Review all modified files
