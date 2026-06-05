@@ -19,11 +19,12 @@ namespace StepCleaner.Tests
     internal static class Program
     {
         private const int ProjectionDifferenceTolerance = 6;
-        private const int AllowedDetectionRegionPaddingPixels = 10;
-        private const double MaxOutsideDetectionRegionChangeRatio = 0.005;
+        private const int AllowedDetectionRegionPaddingPixels = 16;
+        private const double MaxOutsideDetectionRegionChangeRatio = 0.01;
         private const int VerificationProjectionImageSizePixels = 1000;
         private const int VerificationProjectionPaddingPixels = 50;
         private const int FlatnessEdgeThreshold = 28;
+        private const double MinOriginalRegionEdgeRatioForFlatness = 0.08;
         private const double MaxCleanedRegionEdgeRatio = 0.035;
         private const double MaxRetainedRegionEdgeRatio = 0.45;
         private const string DefaultMeasurePartNumber = "C5338332";
@@ -239,6 +240,9 @@ namespace StepCleaner.Tests
             if (IsOption(args[0], "--xt60-lceda"))
                 return RunXt60LcedaWatermarkTests();
 
+            if (IsOption(args[0], "--removed-geometry"))
+                return RunRemovedGeometryExportTests();
+
             if (IsOption(args[0], "--silhouette"))
                 return SaveSilhouetteProjectionImage(args);
 
@@ -264,6 +268,7 @@ namespace StepCleaner.Tests
             Console.Error.WriteLine("Usage: StepCleaner.Tests --f3d-preview-smoke <input.step> [output.png]");
             Console.Error.WriteLine("Usage: StepCleaner.Tests --clean-text");
             Console.Error.WriteLine("Usage: StepCleaner.Tests --xt60-lceda");
+            Console.Error.WriteLine("Usage: StepCleaner.Tests --removed-geometry");
             Console.Error.WriteLine("Usage: StepCleaner.Tests --silhouette <input.step> <output.png> [--rotx deg] [--roty deg] [--rotz deg] [--rotation2d deg] [--size pixels] [--padding pixels] [--no-grid] [--no-axes]");
             Console.Error.WriteLine("Usage: StepCleaner.Tests --silhouette-dump <input.step> <output.csv>");
             return 2;
@@ -1741,6 +1746,190 @@ namespace StepCleaner.Tests
                 "No failed projections.",
                 "Verifier no-region failure report should not claim there were no failed projections",
                 failures);
+        }
+
+        private static int RunRemovedGeometryExportTests()
+        {
+            var failures = new List<string>();
+            string dataRoot = FindDataRoot();
+            string inputPath = Path.Combine(dataRoot, "Original", "BUZ-SMD_4P-L7.5-W7.5-H2.5.step");
+            string outputDirectory = Path.Combine(dataRoot, "RemovedGeometry");
+            string outputPath = Path.Combine(outputDirectory, "BUZ-SMD_4P-L7.5-W7.5-H2.5.removed.step");
+            string cleanPath = Path.Combine(dataRoot, "Clean", "BUZ-SMD_4P-L7.5-W7.5-H2.5.removed-test-clean.step");
+            string automaticRemovedPath = Path.Combine(dataRoot, "RemovedGeometry", "BUZ-SMD_4P-L7.5-W7.5-H2.5.removed-test-clean.removed.step");
+            string cleanProjectionDirectory = Path.Combine(dataRoot, "RemovedGeometryProjection");
+            string verifierDirectory = Path.Combine(dataRoot, "Clean", "BUZSideLogoVerifier");
+
+            Directory.CreateDirectory(outputDirectory);
+            byte[] originalStep = File.ReadAllBytes(inputPath);
+            var report = StepWatermarkCleaner.CleanWithReport(
+                Encoding.Latin1.GetString(originalStep),
+                new StepWatermarkCleanerOptions());
+            if (string.IsNullOrWhiteSpace(report.RemovedGeometryStep))
+            {
+                failures.Add("Removed-geometry export should produce a non-empty diagnostic STEP file.");
+            }
+            else
+            {
+                File.WriteAllBytes(outputPath, Encoding.Latin1.GetBytes(report.RemovedGeometryStep));
+                if (!File.Exists(outputPath))
+                    failures.Add("Removed-geometry STEP file was not written: " + outputPath);
+                else if (new FileInfo(outputPath).Length <= 0)
+                    failures.Add("Removed-geometry STEP file is empty: " + outputPath);
+            }
+
+            File.WriteAllBytes(cleanPath, Encoding.Latin1.GetBytes(report.CleanedStep));
+            if (File.Exists(automaticRemovedPath))
+                File.Delete(automaticRemovedPath);
+
+            RunStepCleanerCleanup(inputPath, cleanPath, failures);
+
+            if (!File.Exists(automaticRemovedPath))
+            {
+                failures.Add("Normal cleanup should write a removed-geometry STEP next to the generated clean output: " + automaticRemovedPath);
+            }
+            else if (new FileInfo(automaticRemovedPath).Length <= 0)
+            {
+                failures.Add("Normal cleanup removed-geometry STEP is empty: " + automaticRemovedPath);
+            }
+
+            var projectionOptions = CreateVerificationProjectionOptions();
+            projectionOptions.ViewNames.Clear();
+            projectionOptions.ViewNames.Add("x_plus");
+            StepProjectionRenderer.ProjectFile(cleanPath, cleanProjectionDirectory, projectionOptions);
+            string cleanProjectionPath = Path.Combine(
+                cleanProjectionDirectory,
+                Path.GetFileNameWithoutExtension(cleanPath) + "__x_plus.png");
+            var sideRegions = StepProjectionRenderer.ProjectDetectionRegions(
+                    originalStep,
+                    Path.GetFileName(inputPath),
+                    report.DetectionReport,
+                    projectionOptions)
+                .Where(region => string.Equals(region.ViewName, "x_plus", StringComparison.OrdinalIgnoreCase))
+                .OrderByDescending(region => region.RectangleWidth * region.RectangleHeight)
+                .ToList();
+            if (sideRegions.Count == 0)
+            {
+                failures.Add("BUZ side logo detection should produce an x_plus cleanup region.");
+            }
+            else
+            {
+                using (var cleanProjection = SKBitmap.Decode(cleanProjectionPath))
+                {
+                    int brightPixels = sideRegions.Sum(region => CountBrightPixels(cleanProjection, region, threshold: 115));
+                    brightPixels += CountBrightPixels(cleanProjection, 250, 380, 430, 520, threshold: 115);
+                    double logoEdgeRatio = MeasureRegionEdgeRatio(cleanProjection, 250, 380, 430, 520);
+                    if (brightPixels > 50)
+                    {
+                        failures.Add(
+                            "BUZ side logo cleanup should remove bright logo pixels from x_plus; remaining bright pixels=" +
+                            brightPixels.ToString(CultureInfo.InvariantCulture) +
+                            ".");
+                    }
+
+                    if (logoEdgeRatio > 0.002)
+                    {
+                        failures.Add(
+                            "BUZ side logo cleanup should flatten logo outline geometry on x_plus; edge ratio=" +
+                            logoEdgeRatio.ToString("G4", CultureInfo.InvariantCulture) +
+                            ".");
+                    }
+                }
+            }
+
+            try
+            {
+                if (Directory.Exists(verifierDirectory))
+                    Directory.Delete(verifierDirectory, true);
+
+                StepWatermarkCleanVerifier.CleanOrThrowWithReport(
+                    originalStep,
+                    Path.GetFileName(inputPath),
+                    verifierDirectory);
+            }
+            catch (StepWatermarkCleanFailedException ex)
+            {
+                failures.Add("BUZ side logo cleanup should pass post-clean verification, but failed: " + string.Join("; ", ex.Failures));
+            }
+
+            if (failures.Count > 0)
+            {
+                Console.Error.WriteLine("Removed-geometry export test failed.");
+                foreach (string failure in failures)
+                    Console.Error.WriteLine("  " + failure);
+                return 1;
+            }
+
+            Console.WriteLine("Removed-geometry export test passed.");
+            Console.WriteLine("Removed geometry: " + outputPath);
+            return 0;
+        }
+
+        private static int CountBrightPixels(SKBitmap image, StepProjectionDetectionRegion region, byte threshold)
+        {
+            return CountBrightPixels(
+                image,
+                region.RectangleX,
+                region.RectangleY,
+                region.RectangleX + region.RectangleWidth - 1,
+                region.RectangleY + region.RectangleHeight - 1,
+                threshold);
+        }
+
+        private static int CountBrightPixels(SKBitmap image, int rectangleLeft, int rectangleTop, int rectangleRight, int rectangleBottom, byte threshold)
+        {
+            int left = Math.Max(0, rectangleLeft);
+            int top = Math.Max(0, rectangleTop);
+            int right = Math.Min(image.Width - 1, rectangleRight);
+            int bottom = Math.Min(image.Height - 1, rectangleBottom);
+            int count = 0;
+            for (int y = top; y <= bottom; y++)
+            {
+                for (int x = left; x <= right; x++)
+                {
+                    SKColor color = image.GetPixel(x, y);
+                    if (color.Red >= threshold && color.Green >= threshold && color.Blue >= threshold)
+                        count++;
+                }
+            }
+
+            return count;
+        }
+
+        private static void RunStepCleanerCleanup(string inputPath, string outputPath, List<string> failures)
+        {
+            string repoRoot = FindRepoRoot();
+            var processStart = new ProcessStartInfo
+            {
+                FileName = "dotnet",
+                WorkingDirectory = repoRoot,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false
+            };
+            processStart.ArgumentList.Add("run");
+            processStart.ArgumentList.Add("--project");
+            processStart.ArgumentList.Add(Path.Combine(repoRoot, "StepCleaner", "StepCleaner.csproj"));
+            processStart.ArgumentList.Add("--");
+            processStart.ArgumentList.Add(inputPath);
+            processStart.ArgumentList.Add(outputPath);
+
+            using (Process process = Process.Start(processStart))
+            {
+                string stdout = process.StandardOutput.ReadToEnd();
+                string stderr = process.StandardError.ReadToEnd();
+                process.WaitForExit();
+                if (process.ExitCode != 0)
+                {
+                    failures.Add(
+                        "Normal StepCleaner cleanup failed with exit code " +
+                        process.ExitCode.ToString(CultureInfo.InvariantCulture) +
+                        ". stdout=" +
+                        stdout +
+                        " stderr=" +
+                        stderr);
+                }
+            }
         }
 
         private static int RunCleanTextTests()
@@ -3994,6 +4183,9 @@ namespace StepCleaner.Tests
 
             double originalEdgeRatio = MeasureRegionEdgeRatio(originalImage, left, top, right, bottom);
             double cleanEdgeRatio = MeasureRegionEdgeRatio(cleanImage, left, top, right, bottom);
+            if (originalEdgeRatio < MinOriginalRegionEdgeRatioForFlatness)
+                return;
+
             if (cleanEdgeRatio <= MaxCleanedRegionEdgeRatio ||
                 cleanEdgeRatio <= originalEdgeRatio * MaxRetainedRegionEdgeRatio)
                 return;

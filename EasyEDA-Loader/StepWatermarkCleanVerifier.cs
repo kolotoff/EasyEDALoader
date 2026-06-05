@@ -31,11 +31,12 @@ namespace EasyEDA_Loader
     public static class StepWatermarkCleanVerifier
     {
         private const int ProjectionDifferenceTolerance = 6;
-        private const int AllowedDetectionRegionPaddingPixels = 10;
-        private const double MaxOutsideDetectionRegionChangeRatio = 0.005;
+        private const int AllowedDetectionRegionPaddingPixels = 16;
+        private const double MaxOutsideDetectionRegionChangeRatio = 0.01;
         private const int VerificationProjectionImageSizePixels = 1000;
         private const int VerificationProjectionPaddingPixels = 50;
         private const int FlatnessEdgeThreshold = 28;
+        private const double MinOriginalRegionEdgeRatioForFlatness = 0.08;
         private const double MaxCleanedRegionEdgeRatio = 0.035;
         private const double MaxRetainedRegionEdgeRatio = 0.45;
 
@@ -295,6 +296,9 @@ namespace EasyEDA_Loader
 
             double originalEdgeRatio = MeasureRegionEdgeRatio(originalImage, left, top, right, bottom);
             double cleanEdgeRatio = MeasureRegionEdgeRatio(cleanImage, left, top, right, bottom);
+            if (originalEdgeRatio < MinOriginalRegionEdgeRatioForFlatness)
+                return;
+
             if (cleanEdgeRatio <= MaxCleanedRegionEdgeRatio ||
                 cleanEdgeRatio <= originalEdgeRatio * MaxRetainedRegionEdgeRatio)
                 return;

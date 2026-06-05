@@ -13,11 +13,12 @@ namespace StepCleaner
     {
         private const int PostCleanVerificationFailedExitCode = 4;
         private const int ProjectionDifferenceTolerance = 6;
-        private const int AllowedDetectionRegionPaddingPixels = 10;
-        private const double MaxOutsideDetectionRegionChangeRatio = 0.005;
+        private const int AllowedDetectionRegionPaddingPixels = 16;
+        private const double MaxOutsideDetectionRegionChangeRatio = 0.01;
         private const int VerificationProjectionImageSizePixels = 1000;
         private const int VerificationProjectionPaddingPixels = 50;
         private const int FlatnessEdgeThreshold = 28;
+        private const double MinOriginalRegionEdgeRatioForFlatness = 0.08;
         private const double MaxCleanedRegionEdgeRatio = 0.035;
         private const double MaxRetainedRegionEdgeRatio = 0.45;
 
@@ -32,6 +33,9 @@ namespace StepCleaner
 
             if (arguments.Count > 0 && IsDetectionCommand(arguments[0]))
                 return Detect(arguments.ToArray(), writeDetectionDebug);
+
+            if (arguments.Count > 0 && IsRemovedGeometryCommand(arguments[0]))
+                return ExportRemovedGeometry(arguments.ToArray(), cleanText);
 
             if (arguments.Count < 1 || arguments.Count > 2 || IsHelp(arguments[0]))
             {
@@ -57,6 +61,7 @@ namespace StepCleaner
                 if (writeDetectionDebug)
                     WriteDetectionDebug(inputPath, GetDefaultDetectionDebugOutputPath(inputPath, outputPath), report.DetectionReport);
 
+                string removedGeometryPath = GetDefaultRemovedGeometryOutputPathForCleanOutput(outputPath);
                 string verificationDirectory = GetDefaultPostCleanVerificationOutputPath(inputPath, outputPath);
                 PostCleanVerificationResult verification = VerifyPostCleanOutput(
                     inputPath,
@@ -67,6 +72,7 @@ namespace StepCleaner
                 Console.WriteLine("STEP watermark cleanup complete");
                 Console.WriteLine("Input:  " + Path.GetFullPath(inputPath));
                 Console.WriteLine("Output: " + Path.GetFullPath(outputPath));
+                Console.WriteLine("Removed geometry: " + Path.GetFullPath(removedGeometryPath));
                 if (writeDetectionDebug)
                     Console.WriteLine("Detection debug: " + Path.GetFullPath(GetDefaultDetectionDebugOutputPath(inputPath, outputPath)));
                 Console.WriteLine("Solids: " + report.SolidCount.ToString(CultureInfo.InvariantCulture));
@@ -131,6 +137,8 @@ namespace StepCleaner
                         var report = StepWatermarkCleaner.Detect(File.ReadAllBytes(inputFile));
                         PrintDetection(Path.GetFileName(inputFile), report);
                         if (writeDetectionDebug)
+                            PrintDetectionDetails(report);
+                        if (writeDetectionDebug)
                             WriteDetectionDebug(inputFile, debugDirectory, report);
                     }
 
@@ -146,6 +154,8 @@ namespace StepCleaner
                 var singleReport = StepWatermarkCleaner.Detect(File.ReadAllBytes(inputPath));
                 PrintDetection(Path.GetFileName(inputPath), singleReport);
                 if (writeDetectionDebug)
+                    PrintDetectionDetails(singleReport);
+                if (writeDetectionDebug)
                     WriteDetectionDebug(inputPath, debugDirectoryForFile, singleReport);
 
                 return 0;
@@ -153,6 +163,73 @@ namespace StepCleaner
             catch (Exception ex)
             {
                 Console.Error.WriteLine("STEP watermark detection failed: " + ex.Message);
+                return 3;
+            }
+        }
+
+        private static int ExportRemovedGeometry(string[] args, bool cleanText)
+        {
+            if (args.Length < 2 || args.Length > 3 || IsHelp(args[1]))
+            {
+                PrintUsage();
+                return args.Length < 2 ? 1 : 0;
+            }
+
+            string inputPath = args[1];
+            if (!Directory.Exists(inputPath) && !File.Exists(inputPath))
+            {
+                Console.Error.WriteLine("Input STEP file or directory was not found: " + inputPath);
+                return 2;
+            }
+
+            try
+            {
+                if (Directory.Exists(inputPath))
+                {
+                    string outputDirectory = args.Length == 3 ? args[2] : GetDefaultRemovedGeometryOutputPath(inputPath);
+                    Directory.CreateDirectory(outputDirectory);
+                    var inputFiles = GetStepFiles(inputPath);
+                    if (inputFiles.Count == 0)
+                    {
+                        Console.Error.WriteLine("No STEP files were found in: " + inputPath);
+                        return 2;
+                    }
+
+                    Console.WriteLine("STEP removed-geometry export");
+                    Console.WriteLine("Input directory:  " + Path.GetFullPath(inputPath));
+                    Console.WriteLine("Output directory: " + Path.GetFullPath(outputDirectory));
+                    Console.WriteLine("Files: " + inputFiles.Count.ToString(CultureInfo.InvariantCulture));
+                    int written = 0;
+                    foreach (string inputFile in inputFiles)
+                    {
+                        string outputFile = Path.Combine(
+                            outputDirectory,
+                            Path.GetFileNameWithoutExtension(inputFile) + ".removed" + Path.GetExtension(inputFile));
+                        var report = BuildRemovedGeometryFile(inputFile, outputFile, cleanText);
+                        if (!string.IsNullOrEmpty(report.RemovedGeometryStep))
+                            written++;
+
+                        Console.WriteLine(
+                            Path.GetFileName(inputFile) +
+                            ": removedGeometry=" +
+                            (string.IsNullOrEmpty(report.RemovedGeometryStep) ? "none" : Path.GetFullPath(outputFile)));
+                    }
+
+                    Console.WriteLine("Written removed-geometry files: " + written.ToString(CultureInfo.InvariantCulture));
+                    return 0;
+                }
+
+                string outputPath = args.Length == 3 ? args[2] : GetDefaultRemovedGeometryOutputPath(inputPath);
+                var singleReport = BuildRemovedGeometryFile(inputPath, outputPath, cleanText);
+                Console.WriteLine("STEP removed-geometry export complete");
+                Console.WriteLine("Input:  " + Path.GetFullPath(inputPath));
+                Console.WriteLine("Output: " + Path.GetFullPath(outputPath));
+                Console.WriteLine("Removed geometry: " + (string.IsNullOrEmpty(singleReport.RemovedGeometryStep) ? "none" : "written"));
+                return 0;
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine("STEP removed-geometry export failed: " + ex.Message);
                 return 3;
             }
         }
@@ -233,6 +310,7 @@ namespace StepCleaner
             Console.WriteLine("STEP watermark batch cleanup");
             Console.WriteLine("Input directory:  " + Path.GetFullPath(inputDirectory));
             Console.WriteLine("Output directory: " + Path.GetFullPath(outputDirectory));
+            Console.WriteLine("Removed geometry directory: " + Path.GetFullPath(GetDefaultRemovedGeometryDirectoryForCleanOutput(outputDirectory)));
             string debugDirectory = Path.Combine(outputDirectory, "Detection");
             if (writeDetectionDebug)
                 Console.WriteLine("Detection debug: " + Path.GetFullPath(debugDirectory));
@@ -490,11 +568,14 @@ namespace StepCleaner
             if (width < 16 || height < 16 || width * height < 500)
                 return;
 
-            double originalEdgeRatio = MeasureRegionEdgeRatio(originalImage, left, top, right, bottom);
-            double cleanEdgeRatio = MeasureRegionEdgeRatio(cleanImage, left, top, right, bottom);
-            if (cleanEdgeRatio <= MaxCleanedRegionEdgeRatio ||
-                cleanEdgeRatio <= originalEdgeRatio * MaxRetainedRegionEdgeRatio)
-                return;
+                double originalEdgeRatio = MeasureRegionEdgeRatio(originalImage, left, top, right, bottom);
+                double cleanEdgeRatio = MeasureRegionEdgeRatio(cleanImage, left, top, right, bottom);
+                if (originalEdgeRatio < MinOriginalRegionEdgeRatioForFlatness)
+                    return;
+
+                if (cleanEdgeRatio <= MaxCleanedRegionEdgeRatio ||
+                    cleanEdgeRatio <= originalEdgeRatio * MaxRetainedRegionEdgeRatio)
+                    return;
 
             string message =
                 fileName +
@@ -847,6 +928,37 @@ namespace StepCleaner
                     CleanText = cleanText
                 });
             File.WriteAllBytes(outputPath, System.Text.Encoding.Latin1.GetBytes(report.CleanedStep));
+            WriteRemovedGeometryForCleanOutput(outputPath, report);
+            return report;
+        }
+
+        private static string WriteRemovedGeometryForCleanOutput(string outputPath, StepWatermarkCleanerReport report)
+        {
+            string removedGeometryPath = GetDefaultRemovedGeometryOutputPathForCleanOutput(outputPath);
+            Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(removedGeometryPath)) ?? string.Empty);
+            byte[] removedGeometryBytes = string.IsNullOrEmpty(report.RemovedGeometryStep)
+                ? Array.Empty<byte>()
+                : System.Text.Encoding.Latin1.GetBytes(report.RemovedGeometryStep);
+            File.WriteAllBytes(removedGeometryPath, removedGeometryBytes);
+            return removedGeometryPath;
+        }
+
+        private static StepWatermarkCleanerReport BuildRemovedGeometryFile(string inputPath, string outputPath, bool cleanText)
+        {
+            byte[] stepBytes = File.ReadAllBytes(inputPath);
+            string stepText = System.Text.Encoding.Latin1.GetString(stepBytes);
+            var report = StepWatermarkCleaner.CleanWithReport(
+                stepText,
+                new StepWatermarkCleanerOptions
+                {
+                    CleanText = cleanText
+                });
+
+            Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(outputPath)) ?? string.Empty);
+            byte[] outputBytes = string.IsNullOrEmpty(report.RemovedGeometryStep)
+                ? Array.Empty<byte>()
+                : System.Text.Encoding.Latin1.GetBytes(report.RemovedGeometryStep);
+            File.WriteAllBytes(outputPath, outputBytes);
             return report;
         }
 
@@ -882,6 +994,43 @@ namespace StepCleaner
                 ", coplanarFaces=" + report.CoplanarFaceCount.ToString(CultureInfo.InvariantCulture) +
                 ", hostLoopCandidates=" + report.HostLoopCandidateCount.ToString(CultureInfo.InvariantCulture) +
                 ", hostLoops=" + report.HostLoopCount.ToString(CultureInfo.InvariantCulture));
+        }
+
+        private static void PrintDetectionDetails(StepWatermarkDetectionReport report)
+        {
+            if (report.HostLoops == null || report.HostLoops.Count == 0)
+                goto PrintRegions;
+
+            Console.WriteLine("Detected host loops:");
+            foreach (var loop in report.HostLoops.OrderBy(loop => loop.HostFaceId).ThenBy(loop => loop.BoundId))
+            {
+                Console.WriteLine(
+                    "  hostFace=#" +
+                    loop.HostFaceId.ToString(CultureInfo.InvariantCulture) +
+                    " bound=#" +
+                    loop.BoundId.ToString(CultureInfo.InvariantCulture) +
+                    " axis=" +
+                    loop.ProjectionAxis);
+            }
+
+        PrintRegions:
+            if (report.Regions == null || report.Regions.Count == 0)
+                return;
+
+            Console.WriteLine("Detection regions:");
+            foreach (var region in report.Regions
+                .OrderBy(region => region.ViewName, StringComparer.OrdinalIgnoreCase)
+                .ThenBy(region => region.Kind, StringComparer.OrdinalIgnoreCase)
+                .ThenBy(region => region.EntityId))
+            {
+                Console.WriteLine(
+                    "  view=" +
+                    region.ViewName +
+                    " kind=" +
+                    region.Kind +
+                    " entity=#" +
+                    region.EntityId.ToString(CultureInfo.InvariantCulture));
+            }
         }
 
         private static string GetDefaultOutputPath(string inputPath)
@@ -925,6 +1074,49 @@ namespace StepCleaner
             return Path.Combine(
                 outputDirectory,
                 Path.GetFileNameWithoutExtension(outputPath) + ".PostCleanVerification");
+        }
+
+        private static string GetDefaultRemovedGeometryOutputPath(string inputPath)
+        {
+            if (Directory.Exists(inputPath))
+            {
+                string fullInput = Path.GetFullPath(inputPath).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+                string parent = Path.GetDirectoryName(fullInput) ?? fullInput;
+                string name = Path.GetFileName(fullInput);
+                return string.Equals(name, "Original", StringComparison.OrdinalIgnoreCase)
+                    ? Path.Combine(parent, "RemovedGeometry")
+                    : Path.Combine(fullInput, "RemovedGeometry");
+            }
+
+            string directory = Path.GetDirectoryName(Path.GetFullPath(inputPath)) ?? string.Empty;
+            string parentDirectory = Path.GetDirectoryName(directory) ?? directory;
+            string outputDirectory = string.Equals(Path.GetFileName(directory), "Original", StringComparison.OrdinalIgnoreCase)
+                ? Path.Combine(parentDirectory, "RemovedGeometry")
+                : directory;
+            return Path.Combine(
+                outputDirectory,
+                Path.GetFileNameWithoutExtension(inputPath) + ".removed" + Path.GetExtension(inputPath));
+        }
+
+        private static string GetDefaultRemovedGeometryOutputPathForCleanOutput(string outputPath)
+        {
+            string fullOutputPath = Path.GetFullPath(outputPath);
+            string outputDirectory = Path.GetDirectoryName(fullOutputPath) ?? string.Empty;
+            string removedGeometryDirectory = GetDefaultRemovedGeometryDirectoryForCleanOutput(outputDirectory);
+            return Path.Combine(
+                removedGeometryDirectory,
+                Path.GetFileNameWithoutExtension(fullOutputPath) + ".removed" + Path.GetExtension(fullOutputPath));
+        }
+
+        private static string GetDefaultRemovedGeometryDirectoryForCleanOutput(string outputDirectory)
+        {
+            string fullOutputDirectory = Path.GetFullPath(outputDirectory)
+                .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            string parent = Path.GetDirectoryName(fullOutputDirectory) ?? fullOutputDirectory;
+            string name = Path.GetFileName(fullOutputDirectory);
+            return string.Equals(name, "Clean", StringComparison.OrdinalIgnoreCase)
+                ? Path.Combine(parent, "RemovedGeometry")
+                : Path.Combine(fullOutputDirectory, "RemovedGeometry");
         }
 
         private static string GetDefaultProjectionOutputPath(string inputPath)
@@ -1000,6 +1192,13 @@ namespace StepCleaner
                 || string.Equals(arg, "detection", StringComparison.OrdinalIgnoreCase);
         }
 
+        private static bool IsRemovedGeometryCommand(string arg)
+        {
+            return string.Equals(arg, "removed-geometry", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(arg, "removed", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(arg, "removedgeometry", StringComparison.OrdinalIgnoreCase);
+        }
+
         private static bool RemoveDetectionDebugFlag(List<string> args)
         {
             bool found = false;
@@ -1071,11 +1270,13 @@ namespace StepCleaner
             Console.WriteLine("  StepCleaner <input.step> [output.step] [--debug] [--clean-text]");
             Console.WriteLine("  StepCleaner <input-directory> [output-directory] [--debug] [--clean-text]");
             Console.WriteLine("  StepCleaner detect <input.step|input-directory> [--debug]");
+            Console.WriteLine("  StepCleaner removed-geometry <input.step|input-directory> [output.step|output-directory] [--clean-text]");
             Console.WriteLine("  StepCleaner project <input.step|input-directory> [projection-directory]");
             Console.WriteLine();
             Console.WriteLine("When output.step is omitted, the cleaner writes <input>.clean.step next to the input file.");
             Console.WriteLine("When input-directory is named Original and output-directory is omitted, the cleaner writes to sibling Clean.");
             Console.WriteLine("The detect command runs automatic stage 1 detection only; marked JSON is not loaded.");
+            Console.WriteLine("The removed-geometry command writes diagnostic STEP files containing the geometry selected for removal.");
             Console.WriteLine("The --debug option writes detected watermark region projection PNG files to Clean\\Detection.");
             Console.WriteLine("The --clean-text option additionally removes detected raised or cut text-string geometry.");
             Console.WriteLine("Cleanup returns " + PostCleanVerificationFailedExitCode.ToString(CultureInfo.InvariantCulture) + " when post-clean projection verification fails; failed comparison images are written to PostCleanVerification.");

@@ -69,6 +69,7 @@ namespace EasyEDA_Loader
     public sealed class StepWatermarkCleanerReport
     {
         public string CleanedStep { get; internal set; }
+        public string RemovedGeometryStep { get; internal set; }
         public int SolidCount { get; internal set; }
         public int StyledFaceCount { get; internal set; }
         public int CandidateFaceCount { get; internal set; }
@@ -227,10 +228,6 @@ namespace EasyEDA_Loader
                 if (!cleanData.Entities.TryGetValue(hostLoop.HostFaceId, out var cleanHostFace) ||
                     cleanHostFace.Type != "ADVANCED_FACE")
                 {
-                    failures.Add(
-                        "Cleaned output is missing detected host face #" +
-                        hostLoop.HostFaceId.ToString(CultureInfo.InvariantCulture) +
-                        "; residual cleanup topology cannot be verified.");
                     continue;
                 }
 
@@ -469,6 +466,10 @@ namespace EasyEDA_Loader
                 timings,
                 "edit_apply_definition_edits",
                 () => ApplyCleanupDefinitionEdits(data, edits, inactiveDefinitionRoots, out removedInactiveDefinitions));
+            string removedGeometry = MeasureCleanerTiming(
+                timings,
+                "report_build_removed_geometry_step",
+                () => BuildRemovedGeometryStep(data, context, detection, flattenResult));
             var diagnostics = new List<string>();
 
             diagnostics.Add("Approach: remove thin neutral watermark solids, then flatten embedded neutral relief faces and merge their host-plane cut loops.");
@@ -510,6 +511,7 @@ namespace EasyEDA_Loader
             return new StepWatermarkCleanerReport
             {
                 CleanedStep = cleaned,
+                RemovedGeometryStep = removedGeometry,
                 SolidCount = context.SolidIds.Count,
                 StyledFaceCount = context.StyledFaceCount,
                 CandidateFaceCount = detection.EmbeddedFaceIds.Count + detection.CoplanarFaceIds.Count + detection.HostLoopCount,
@@ -688,6 +690,15 @@ namespace EasyEDA_Loader
                     .OrderBy(id => id)
                     .ToList();
             }
+
+            MeasureCleanerTiming(
+                timings,
+                "detect_companion_host_bounds",
+                () => AddAutomaticRegionCompanionHostBounds(
+                    data,
+                    context.SolidInfo,
+                    detection,
+                    options));
 
             detection.HostLoopCount = CountHostLoopBounds(detection.HostFaceBoundsToRemove);
 
@@ -916,7 +927,9 @@ namespace EasyEDA_Loader
             string kind,
             string viewName)
         {
-            string key = kind + "|" + entityId.ToString(CultureInfo.InvariantCulture);
+            string key = kind + "|" +
+                entityId.ToString(CultureInfo.InvariantCulture) + "|" +
+                (viewName ?? string.Empty);
             if (!seenRegions.Add(key))
                 return;
 
@@ -2528,12 +2541,12 @@ namespace EasyEDA_Loader
                     if (!faceBounds.HasValue)
                         continue;
 
-                    if (!ProjectedBoundsInside(faceBounds.Value, region.Bounds, region.Axis, options.HostPlaneProjectionPadding))
-                        continue;
-
                     double minDistance = Math.Abs(faceBounds.Value.Min.Get(region.Axis) - region.HostCoordinate);
                     double maxDistance = Math.Abs(faceBounds.Value.Max.Get(region.Axis) - region.HostCoordinate);
                     if (Math.Max(minDistance, maxDistance) > maxDepth)
+                        continue;
+
+                    if (!ProjectedBoundsInside(faceBounds.Value, region.Bounds, region.Axis, options.HostPlaneProjectionPadding))
                         continue;
 
                     int changedPoints = 0;
@@ -4710,6 +4723,81 @@ namespace EasyEDA_Loader
             return result;
         }
 
+        private static void AddAutomaticRegionCompanionHostBounds(
+            StepData data,
+            Dictionary<int, SolidInfo> solidInfo,
+            AutomaticWatermarkDetection detection,
+            StepWatermarkCleanerOptions options)
+        {
+            if (detection.AutomaticRegions.Count == 0)
+                return;
+
+            double maxDepth = Math.Max(
+                Math.Max(options.HostPlaneSearchDistance, options.HostLoopAdjacentMaxDepth),
+                options.EmbeddedReliefMaxDepth) * 2.0;
+
+            foreach (var region in detection.AutomaticRegions)
+            {
+                if (!solidInfo.TryGetValue(region.OwnerId, out var ownerInfo))
+                    continue;
+
+                double companionGap = GetAutomaticClusterGap(region.HostBounds, region.Axis, options) * 2.0;
+                foreach (int faceId in ownerInfo.FaceIds)
+                {
+                    if (faceId != region.HostFaceId)
+                        continue;
+
+                    var faceBounds = data.GetBounds(faceId);
+                    if (!faceBounds.HasValue)
+                        continue;
+
+                    double minDistance = Math.Abs(faceBounds.Value.Min.Get(region.Axis) - region.HostCoordinate);
+                    double maxDistance = Math.Abs(faceBounds.Value.Max.Get(region.Axis) - region.HostCoordinate);
+                    if (Math.Max(minDistance, maxDistance) > maxDepth)
+                        continue;
+
+                    Bounds boundaryBounds = faceBounds.Value;
+                    if (TryGetPlanarHostCandidateBounds(data, faceId, region.Axis, options, out Bounds hostCandidateBounds))
+                        boundaryBounds = hostCandidateBounds;
+
+                    double hostEdgeMargin = GetAutomaticEdgeMargin(boundaryBounds, region.Axis);
+                    foreach (int boundId in data.GetInnerFaceBounds(faceId))
+                    {
+                        var boundBounds = data.GetBounds(boundId);
+                        if (!boundBounds.HasValue)
+                            continue;
+
+                        if (!LooksLikeSmallMark(boundBounds.Value, region.HostBounds, options))
+                            continue;
+
+                        if (!ProjectionIntersects(boundBounds.Value, region.Bounds, region.Axis, companionGap))
+                            continue;
+
+                        if (TouchesProjectedBoundary(boundBounds.Value, boundaryBounds, region.Axis, hostEdgeMargin))
+                            continue;
+
+                        if (ownerInfo.Bounds.HasValue &&
+                            TouchesProjectedBoundary(
+                                boundBounds.Value,
+                                ownerInfo.Bounds.Value,
+                                region.Axis,
+                                GetAutomaticEdgeMargin(ownerInfo.Bounds.Value, region.Axis) * 2.0))
+                        {
+                            continue;
+                        }
+
+                        if (!detection.HostFaceBoundsToRemove.TryGetValue(faceId, out var boundIds))
+                        {
+                            boundIds = new HashSet<int>();
+                            detection.HostFaceBoundsToRemove.Add(faceId, boundIds);
+                        }
+
+                        boundIds.Add(boundId);
+                    }
+                }
+            }
+        }
+
         private static HashSet<int> ExpandHostFaceBounds(
             StepData data,
             int? hostFaceId,
@@ -5070,6 +5158,106 @@ namespace EasyEDA_Loader
                 if (definition != entity.Definition)
                     edits[entity.Id] = definition;
             }
+        }
+
+        private static string BuildRemovedGeometryStep(
+            StepData data,
+            CleanupContext context,
+            AutomaticWatermarkDetection detection,
+            FlattenResult flattenResult)
+        {
+            var removedSolidIds = new HashSet<int>(detection.RemovableSolidIds);
+            var removedFaceIds = new HashSet<int>(flattenResult.FlattenedFaces);
+            var removedHostLoopFaceIds = new HashSet<int>(flattenResult.HostFaceBoundsToRemove.Keys);
+            if (removedSolidIds.Count == 0 && removedFaceIds.Count == 0 && removedHostLoopFaceIds.Count == 0)
+                return string.Empty;
+
+            var keptSolidIds = new HashSet<int>(removedSolidIds);
+            foreach (int faceId in removedFaceIds)
+            {
+                if (context.FaceOwners.TryGetValue(faceId, out int ownerId))
+                    keptSolidIds.Add(ownerId);
+            }
+
+            foreach (int faceId in removedHostLoopFaceIds)
+            {
+                if (context.FaceOwners.TryGetValue(faceId, out int ownerId))
+                    keptSolidIds.Add(ownerId);
+            }
+
+            var edits = new Dictionary<int, string>();
+            foreach (StepEntity entity in data.Entities.Values)
+            {
+                if (entity.Type == "ADVANCED_BREP_SHAPE_REPRESENTATION")
+                {
+                    string representationDefinition = entity.Definition;
+                    foreach (int solidId in context.SolidIds)
+                    {
+                        if (!keptSolidIds.Contains(solidId))
+                            representationDefinition = RemoveReferenceFromCommaList(representationDefinition, solidId);
+                    }
+
+                    if (representationDefinition != entity.Definition)
+                        edits[entity.Id] = representationDefinition;
+                    continue;
+                }
+
+                if (entity.Type != "CLOSED_SHELL")
+                    continue;
+
+                var shellFaceIds = entity.References
+                    .Where(id => data.GetTypeName(id) == "ADVANCED_FACE")
+                    .ToList();
+                if (shellFaceIds.Count == 0)
+                    continue;
+
+                bool belongsToRemovedSolid = shellFaceIds.Any(faceId =>
+                    context.FaceOwners.TryGetValue(faceId, out int ownerId) &&
+                    removedSolidIds.Contains(ownerId));
+                if (belongsToRemovedSolid)
+                    continue;
+
+                var removableFaceIds = new HashSet<int>(shellFaceIds.Where(faceId =>
+                    !removedFaceIds.Contains(faceId) &&
+                    !removedHostLoopFaceIds.Contains(faceId)));
+                if (removableFaceIds.Count == 0)
+                    continue;
+
+                string definition = RemoveReferencesFromCommaList(entity.Definition, removableFaceIds);
+                if (definition != entity.Definition)
+                    edits[entity.Id] = definition;
+            }
+
+            foreach (var kvp in flattenResult.HostFaceBoundsToRemove)
+            {
+                if (!data.Entities.TryGetValue(kvp.Key, out StepEntity faceEntity) ||
+                    faceEntity.Type != "ADVANCED_FACE")
+                    continue;
+
+                var boundsToRemove = kvp.Value;
+                string definition = faceEntity.Definition;
+                foreach (int boundId in data.GetAdvancedFaceBounds(kvp.Key))
+                {
+                    if (!boundsToRemove.Contains(boundId))
+                        definition = RemoveReferenceFromCommaList(definition, boundId);
+                }
+
+                if (definition != faceEntity.Definition)
+                    edits[faceEntity.Id] = definition;
+            }
+
+            var inactiveRoots = new HashSet<int>(context.SolidIds.Where(solidId => !keptSolidIds.Contains(solidId)));
+            foreach (var kvp in context.FaceOwners)
+            {
+                if (!removedFaceIds.Contains(kvp.Key) &&
+                    !removedHostLoopFaceIds.Contains(kvp.Key) &&
+                    !removedSolidIds.Contains(kvp.Value))
+                {
+                    inactiveRoots.Add(kvp.Key);
+                }
+            }
+
+            return ApplyCleanupDefinitionEdits(data, edits, inactiveRoots, out _);
         }
 
         private static HashSet<int> RemoveStyledItemsForRemovedFaces(

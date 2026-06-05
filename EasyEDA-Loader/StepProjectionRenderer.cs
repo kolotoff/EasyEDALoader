@@ -1212,7 +1212,9 @@ namespace EasyEDA_Loader
             string viewName,
             Bounds modelBounds)
         {
-            string key = kind + "|" + entityId.ToString(CultureInfo.InvariantCulture);
+            string key = kind + "|" +
+                entityId.ToString(CultureInfo.InvariantCulture) + "|" +
+                (viewName ?? string.Empty);
             if (!seen.Add(key))
                 return;
 
