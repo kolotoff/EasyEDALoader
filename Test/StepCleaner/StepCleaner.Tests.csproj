@@ -18,6 +18,7 @@
     <Compile Include="..\..\EasyEDA-Loader\StepWatermarkTemplateLibrary.cs" Link="StepWatermarkTemplateLibrary.cs" />
     <Compile Include="..\..\EasyEDA-Loader\StepWatermarkTemplateExtractor.cs" Link="StepWatermarkTemplateExtractor.cs" />
     <Compile Include="..\..\EasyEDA-Loader\StepTextLogoProjectionDetector.cs" Link="StepTextLogoProjectionDetector.cs" />
+    <Compile Include="..\..\EasyEDA-Loader\StepWatermarkVisualOracle.cs" Link="StepWatermarkVisualOracle.cs" />
     <Compile Include="..\..\EasyEDA-Loader\StepProjectionRenderer.cs" Link="StepProjectionRenderer.cs" />
     <Compile Include="..\..\EasyEDA-Loader\StepSilhouetteProjection.cs" Link="StepSilhouetteProjection.cs" />
     <Compile Include="..\..\EasyEDA-Loader\FootprintModelPlacement.cs" Link="FootprintModelPlacement.cs" />

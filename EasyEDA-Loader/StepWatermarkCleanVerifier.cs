@@ -122,6 +122,16 @@ namespace EasyEDA_Loader
                 result.Failures.Add(failure);
             bool verifyRetainedEdgeDetail = residualTopology.Failures.Count > 0;
 
+            StepWatermarkVisualResidualResult visualResidual = StepWatermarkVisualOracle.VerifyKnownWatermarkRemoved(
+                originalStep,
+                cleanStep,
+                modelName);
+            if (visualResidual.OriginalDetections.Count > 0)
+            {
+                foreach (string failure in visualResidual.Failures)
+                    result.Failures.Add(failure);
+            }
+
             var verifiedDetectionReport = StepWatermarkCleaner.CreateVerifiedCleanupDetectionReport(detectionReport);
             var detectionRegions = StepProjectionRenderer.ProjectDetectionRegions(
                     originalStep,

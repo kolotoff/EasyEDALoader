@@ -64,6 +64,11 @@ namespace EasyEDA_Loader
         public int RectangleY { get; set; }
         public int RectangleWidth { get; set; }
         public int RectangleHeight { get; set; }
+        public string TemplateName { get; set; }
+        public string Kind { get; set; }
+        public double Score { get; set; }
+        public double ChamferDistance { get; set; }
+        public int EdgePixelCount { get; set; }
     }
 
     public sealed class StepWatermarkCleanerReport
@@ -528,6 +533,12 @@ namespace EasyEDA_Loader
             diagnostics.Add($"Template text/logo faces: {detection.TemplateTextLogoFaceCount}");
             diagnostics.Add($"Template text/logo host rejects: {detection.TemplateTextLogoHostRejectCount}");
             diagnostics.Add($"Template text/logo protected rejects: {detection.TemplateTextLogoProtectedRejectCount}");
+            if (detection.TemplateTextLogoFaceCount > 0 || detection.CoplanarFaceIds.Count > 0)
+                diagnostics.Add("Coplanar/text-logo face ids: " + string.Join(", ", detection.CoplanarFaceIds.OrderBy(id => id).Select(id => "#" + id.ToString(CultureInfo.InvariantCulture))));
+            if (detection.HostFaceBoundsToRemove.Count > 0)
+                diagnostics.Add("Host bounds to remove: " + string.Join("; ", detection.HostFaceBoundsToRemove.OrderBy(kvp => kvp.Key).Select(kvp =>
+                    "#" + kvp.Key.ToString(CultureInfo.InvariantCulture) + " -> " +
+                    string.Join(",", kvp.Value.OrderBy(id => id).Select(id => "#" + id.ToString(CultureInfo.InvariantCulture))))));
             diagnostics.Add($"Text cleanup candidates: {detection.TextCandidateCount}");
             diagnostics.Add($"Text cleanup clusters: {detection.TextClusterCount}");
             diagnostics.Add($"Detected text faces: {detection.TextFaceIds.Count}");
@@ -737,6 +748,11 @@ namespace EasyEDA_Loader
                 detection.TemplateTextLogoFaceCount = projectionPromotion.FaceIds.Count;
                 detection.TemplateTextLogoHostRejectCount = projectionPromotion.HostRejectCount;
                 detection.TemplateTextLogoProtectedRejectCount = projectionPromotion.ProtectedRejectCount;
+                PruneGenericCleanupToTextLogoVisualRegions(
+                    context,
+                    detection,
+                    projectionPromotion.MarkedRegions,
+                    options);
                 detection.AutomaticRegions.AddRange(projectionPromotion.Regions);
                 MergeHostFaceBounds(detection.HostFaceBoundsToRemove, projectionPromotion.HostFaceBoundsToRemove);
                 detection.CoplanarFaceIds = detection.CoplanarFaceIds
@@ -3481,9 +3497,17 @@ namespace EasyEDA_Loader
                 modelBounds,
                 textOnly: false,
                 requireHighConfidence: true);
-            result.DetectionCount = projectedRegions.Count;
+            int detectedProjectionRegionCount = projectedRegions.Count;
+            projectedRegions = FocusDominantTextLogoProjectionView(projectedRegions);
+            result.MarkedRegions = projectedRegions
+                .Where(HasMarkedRegionArea)
+                .ToList();
+            result.DetectionCount = detectedProjectionRegionCount;
             if (projectedRegions.Count == 0)
                 return result;
+
+            foreach (int faceId in FindFacesProjectingIntoTextLogoVisualRegions(context, result.MarkedRegions, options))
+                result.FaceIds.Add(faceId);
 
             foreach (StepWatermarkMarkedRegion region in projectedRegions.Where(HasMarkedRegionArea))
             {
@@ -3679,6 +3703,256 @@ namespace EasyEDA_Loader
             return result;
         }
 
+        private static List<int> FindFacesProjectingIntoTextLogoVisualRegions(
+            CleanupContext context,
+            List<StepWatermarkMarkedRegion> visualRegions,
+            StepWatermarkCleanerOptions options)
+        {
+            var result = new HashSet<int>();
+            if (context == null || visualRegions == null || visualRegions.Count == 0)
+                return result.ToList();
+
+            var candidateFaceIds = context.FaceOwners.Keys
+                .Where(faceId => context.Data.GetTypeName(faceId) == "ADVANCED_FACE")
+                .Where(faceId => !HasProtectedNonWatermarkColor(faceId, context.StyledByTarget, options))
+                .Where(faceId => !IsCylindricalFace(context.Data, faceId))
+                .OrderBy(faceId => faceId)
+                .ToList();
+            if (candidateFaceIds.Count == 0)
+                return result.ToList();
+
+            var boundedVisualRegions = visualRegions
+                .Where(HasMarkedRegionArea)
+                .ToList();
+            foreach (int faceId in candidateFaceIds)
+            {
+                if (!LooksLikeTemplatePromotionFaceColor(faceId, context.StyledByTarget, options))
+                    continue;
+
+                if (!context.FaceOwners.TryGetValue(faceId, out int ownerId) ||
+                    !context.SolidInfo.TryGetValue(ownerId, out SolidInfo ownerInfo) ||
+                    !ownerInfo.Bounds.HasValue)
+                {
+                    continue;
+                }
+
+                if (ownerInfo.FaceIds.Count > 500)
+                    continue;
+
+                Bounds? faceBounds = context.Data.GetBounds(faceId);
+                if (!faceBounds.HasValue)
+                    continue;
+
+                if (!LooksLikeSmallMark(faceBounds.Value, ownerInfo.Bounds.Value, options))
+                    continue;
+
+                if (!TryFindMarkedRegion(
+                    faceBounds.Value,
+                    boundedVisualRegions,
+                    options.MarkedCandidateMinOverlap,
+                    options,
+                    out StepWatermarkMarkedRegion matchedVisualRegion))
+                {
+                    continue;
+                }
+
+                Bounds protectedCheckBounds = CreateProjectionRegionBounds(
+                    matchedVisualRegion,
+                    ownerInfo.Bounds.Value,
+                    options);
+                if (ProjectionRegionContainsProtectedContactFace(
+                    context.Data,
+                    ownerInfo,
+                    context.StyledByTarget,
+                    protectedCheckBounds,
+                    matchedVisualRegion.DepthAxis,
+                    options))
+                {
+                    continue;
+                }
+
+                result.Add(faceId);
+            }
+
+            var faceReport = new StepWatermarkDetectionReport
+            {
+                RemovableSolidIds = Array.Empty<int>(),
+                EmbeddedFaceIds = candidateFaceIds,
+                CoplanarFaceIds = Array.Empty<int>(),
+                HostLoops = Array.Empty<StepWatermarkHostLoopDetection>(),
+                Regions = candidateFaceIds
+                    .SelectMany(faceId => StepProjectionRenderer.ViewNames.Select(viewName => new StepWatermarkRegionDetection
+                    {
+                        EntityId = faceId,
+                        Kind = "face",
+                        ViewName = viewName
+                    }))
+                    .ToList(),
+                Diagnostics = Array.Empty<string>()
+            };
+
+            IReadOnlyList<StepProjectionDetectionRegion> faceRegions;
+            try
+            {
+                faceRegions = StepProjectionRenderer.ProjectDetectionRegions(
+                    Encoding.Latin1.GetBytes(context.Data.Text),
+                    "text-logo-face-roi",
+                    faceReport,
+                    StepWatermarkVisualOracle.CreateProjectionOptions(StepProjectionRenderMode.Color));
+            }
+            catch
+            {
+                return result.ToList();
+            }
+
+            foreach (StepProjectionDetectionRegion faceRegion in faceRegions)
+            {
+                foreach (StepWatermarkMarkedRegion visualRegion in visualRegions)
+                {
+                    if (!string.Equals(faceRegion.ViewName, visualRegion.ViewName, StringComparison.OrdinalIgnoreCase))
+                        continue;
+
+                    if (!SmallProjectionInsideVisualRegion(faceRegion, visualRegion))
+                        continue;
+
+                    if (!context.FaceOwners.TryGetValue(faceRegion.EntityId, out int ownerId) ||
+                        !context.SolidInfo.TryGetValue(ownerId, out SolidInfo ownerInfo) ||
+                        !ownerInfo.Bounds.HasValue)
+                    {
+                        continue;
+                    }
+
+                    if (ownerInfo.FaceIds.Count > 500)
+                        continue;
+
+                    Bounds protectedCheckBounds = CreateProjectionRegionBounds(
+                        visualRegion,
+                        ownerInfo.Bounds.Value,
+                        options);
+                    if (ProjectionRegionContainsProtectedContactFace(
+                        context.Data,
+                        ownerInfo,
+                        context.StyledByTarget,
+                        protectedCheckBounds,
+                        visualRegion.DepthAxis,
+                        options))
+                    {
+                        continue;
+                    }
+
+                    result.Add(faceRegion.EntityId);
+                    break;
+                }
+            }
+
+            return result
+                .OrderBy(id => id)
+                .ToList();
+        }
+
+        private static bool SmallProjectionInsideVisualRegion(
+            StepProjectionDetectionRegion faceRegion,
+            StepWatermarkMarkedRegion visualRegion)
+        {
+            int padding = 18;
+            if (!RectanglesIntersect(
+                faceRegion.RectangleX,
+                faceRegion.RectangleY,
+                faceRegion.RectangleWidth,
+                faceRegion.RectangleHeight,
+                visualRegion.RectangleX,
+                visualRegion.RectangleY,
+                visualRegion.RectangleWidth,
+                visualRegion.RectangleHeight,
+                padding))
+            {
+                return false;
+            }
+
+            int visualArea = Math.Max(1, visualRegion.RectangleWidth * visualRegion.RectangleHeight);
+            int faceArea = Math.Max(1, faceRegion.RectangleWidth * faceRegion.RectangleHeight);
+            if (faceArea > visualArea * 8)
+                return false;
+
+            return faceRegion.RectangleWidth <= visualRegion.RectangleWidth + padding * 4 &&
+                faceRegion.RectangleHeight <= visualRegion.RectangleHeight + padding * 4;
+        }
+
+        private static void PruneGenericCleanupToTextLogoVisualRegions(
+            CleanupContext context,
+            AutomaticWatermarkDetection detection,
+            List<StepWatermarkMarkedRegion> visualRegions,
+            StepWatermarkCleanerOptions options)
+        {
+            if (context == null || detection == null || visualRegions == null || visualRegions.Count == 0)
+                return;
+
+            var boundedVisualRegions = visualRegions
+                .Where(HasMarkedRegionArea)
+                .ToList();
+            if (boundedVisualRegions.Count == 0)
+                return;
+
+            detection.RemovableSolidIds = new HashSet<int>(detection.RemovableSolidIds.Where(solidId =>
+            {
+                if (!context.SolidInfo.TryGetValue(solidId, out SolidInfo info) || !info.Bounds.HasValue)
+                    return false;
+
+                return BoundsOverlapsMarkedRegions(
+                    info.Bounds.Value,
+                    boundedVisualRegions,
+                    minOverlapRatio: 0.01,
+                    options);
+            }));
+
+            detection.EmbeddedFaceIds = detection.EmbeddedFaceIds
+                .Where(faceId => EntityBoundsOverlapMarkedRegions(context.Data, faceId, boundedVisualRegions, options))
+                .Distinct()
+                .OrderBy(id => id)
+                .ToList();
+            detection.CoplanarFaceIds = detection.CoplanarFaceIds
+                .Where(faceId => EntityBoundsOverlapMarkedRegions(context.Data, faceId, boundedVisualRegions, options))
+                .Distinct()
+                .OrderBy(id => id)
+                .ToList();
+
+            foreach (int hostFaceId in detection.HostFaceBoundsToRemove.Keys.ToList())
+            {
+                HashSet<int> boundIds = detection.HostFaceBoundsToRemove[hostFaceId];
+                foreach (int boundId in boundIds.ToList())
+                {
+                    if (!EntityBoundsOverlapMarkedRegions(context.Data, boundId, boundedVisualRegions, options))
+                        boundIds.Remove(boundId);
+                }
+
+                if (boundIds.Count == 0)
+                    detection.HostFaceBoundsToRemove.Remove(hostFaceId);
+            }
+
+            detection.AutomaticRegions.RemoveAll(region =>
+                region == null ||
+                !BoundsOverlapsMarkedRegions(
+                    region.Bounds,
+                    boundedVisualRegions,
+                    minOverlapRatio: 0.01,
+                    options));
+        }
+
+        private static bool EntityBoundsOverlapMarkedRegions(
+            StepData data,
+            int entityId,
+            List<StepWatermarkMarkedRegion> visualRegions,
+            StepWatermarkCleanerOptions options)
+        {
+            Bounds? bounds = data.GetBounds(entityId);
+            return bounds.HasValue &&
+                BoundsOverlapsMarkedRegions(
+                    bounds.Value,
+                    visualRegions,
+                    minOverlapRatio: 0.01,
+                    options);
+        }
+
         private static bool TryPromoteProjectionRegionFaceCluster(
             CleanupContext context,
             Bounds modelBounds,
@@ -3696,6 +3970,9 @@ namespace EasyEDA_Loader
                 int faceId = faceOwner.Key;
                 int ownerId = faceOwner.Value;
                 if (!context.SolidInfo.TryGetValue(ownerId, out SolidInfo ownerInfo) || !ownerInfo.Bounds.HasValue)
+                    continue;
+
+                if (ownerInfo.FaceIds.Count > 500)
                     continue;
 
                 if (context.Data.GetTypeName(faceId) != "ADVANCED_FACE")
@@ -3820,6 +4097,10 @@ namespace EasyEDA_Loader
             ProjectionPromotionResult result,
             StepWatermarkCleanerOptions options)
         {
+            const int maxHostFallbackRegions = 12;
+            bool acceptedAny = false;
+            int acceptedCount = 0;
+
             foreach (SolidInfo ownerInfo in context.SolidInfo.Values)
             {
                 if (!ownerInfo.Bounds.HasValue)
@@ -3881,7 +4162,10 @@ namespace EasyEDA_Loader
                         HostBounds = hostBounds.Value,
                         IsTemplatePromotion = true
                     });
-                    return true;
+                    acceptedAny = true;
+                    acceptedCount++;
+                    if (acceptedCount >= maxHostFallbackRegions)
+                        return true;
                 }
 
                 List<PlanarHostCandidate> hostCandidates = ownerInfo.PlanarHostCandidatesByAxis != null &&
@@ -3926,7 +4210,10 @@ namespace EasyEDA_Loader
                         HostBounds = candidate.Bounds,
                         IsTemplatePromotion = true
                     });
-                    return true;
+                    acceptedAny = true;
+                    acceptedCount++;
+                    if (acceptedCount >= maxHostFallbackRegions)
+                        return true;
                 }
 
                 Bounds ownerRegionBounds = CreateProjectionRegionBounds(region, ownerInfo.Bounds.Value, options);
@@ -3964,8 +4251,14 @@ namespace EasyEDA_Loader
                     HostBounds = ownerInfo.Bounds.Value,
                     IsTemplatePromotion = true
                 });
-                return true;
+                acceptedAny = true;
+                acceptedCount++;
+                if (acceptedCount >= maxHostFallbackRegions)
+                    return true;
             }
+
+            if (acceptedAny)
+                return true;
 
             foreach (SolidInfo ownerInfo in context.SolidInfo.Values)
             {
@@ -4010,10 +4303,13 @@ namespace EasyEDA_Loader
                     HostBounds = modelBounds,
                     IsTemplatePromotion = true
                 });
-                return true;
+                acceptedAny = true;
+                acceptedCount++;
+                if (acceptedCount >= maxHostFallbackRegions)
+                    return true;
             }
 
-            return false;
+            return acceptedAny;
         }
 
         private static bool ExistingCleanupAlreadyCoversProjectionPromotion(
@@ -4243,6 +4539,39 @@ namespace EasyEDA_Loader
             }
 
             return result;
+        }
+
+        private static List<StepWatermarkMarkedRegion> FocusDominantTextLogoProjectionView(
+            List<StepWatermarkMarkedRegion> regions)
+        {
+            if (regions == null || regions.Count <= 1)
+                return regions ?? new List<StepWatermarkMarkedRegion>();
+
+            var validRegions = regions
+                .Where(HasMarkedRegionArea)
+                .ToList();
+            if (validRegions.Count <= 1)
+                return validRegions;
+
+            var dominantView = validRegions
+                .GroupBy(region => region.ViewName ?? string.Empty, StringComparer.OrdinalIgnoreCase)
+                .Select(group => new
+                {
+                    ViewName = group.Key,
+                    Score = group.Sum(region => Math.Max(region.Score, 0.0)),
+                    BestScore = group.Max(region => Math.Max(region.Score, 0.0)),
+                    Count = group.Count()
+                })
+                .OrderByDescending(group => group.Score)
+                .ThenByDescending(group => group.BestScore)
+                .ThenByDescending(group => group.Count)
+                .FirstOrDefault();
+            if (dominantView == null || string.IsNullOrEmpty(dominantView.ViewName))
+                return validRegions;
+
+            return validRegions
+                .Where(region => string.Equals(region.ViewName, dominantView.ViewName, StringComparison.OrdinalIgnoreCase))
+                .ToList();
         }
 
         private static bool IsHighConfidenceTemplateTextDetection(StepTextLogoDetectionRegion detection)
@@ -6528,6 +6857,7 @@ namespace EasyEDA_Loader
             var removedSolidIds = new HashSet<int>(detection.RemovableSolidIds);
             var removedFaceIds = new HashSet<int>(flattenResult.FlattenedFaces);
             var removedHostLoopFaceIds = new HashSet<int>(flattenResult.HostFaceBoundsToRemove.Keys);
+            PruneRemovedFacesToVisualWatermarkRois(data, removedFaceIds);
             if (removedSolidIds.Count == 0 && removedFaceIds.Count == 0 && removedHostLoopFaceIds.Count == 0)
                 return string.Empty;
 
@@ -6605,6 +6935,99 @@ namespace EasyEDA_Loader
             }
 
             return ApplyCleanupDefinitionEdits(data, edits, inactiveRoots, out _);
+        }
+
+        private static void PruneRemovedFacesToVisualWatermarkRois(StepData data, HashSet<int> removedFaceIds)
+        {
+            if (data == null || removedFaceIds == null || removedFaceIds.Count == 0)
+                return;
+
+            byte[] stepBytes = Encoding.Latin1.GetBytes(data.Text);
+            StepWatermarkVisualScanResult visualScan;
+            try
+            {
+                visualScan = StepWatermarkVisualOracle.DetectKnownWatermarks(stepBytes, "removed-geometry-roi");
+            }
+            catch
+            {
+                return;
+            }
+
+            if (visualScan.Detections.Count == 0)
+                return;
+
+            var faceReport = new StepWatermarkDetectionReport
+            {
+                RemovableSolidIds = Array.Empty<int>(),
+                EmbeddedFaceIds = removedFaceIds.ToList(),
+                CoplanarFaceIds = Array.Empty<int>(),
+                HostLoops = Array.Empty<StepWatermarkHostLoopDetection>(),
+                Regions = removedFaceIds
+                    .SelectMany(faceId => StepProjectionRenderer.ViewNames.Select(viewName => new StepWatermarkRegionDetection
+                    {
+                        EntityId = faceId,
+                        Kind = "face",
+                        ViewName = viewName
+                    }))
+                    .ToList(),
+                Diagnostics = Array.Empty<string>()
+            };
+            IReadOnlyList<StepProjectionDetectionRegion> faceRegions;
+            try
+            {
+                faceRegions = StepProjectionRenderer.ProjectDetectionRegions(
+                    stepBytes,
+                    "removed-geometry-roi",
+                    faceReport,
+                    StepWatermarkVisualOracle.CreateProjectionOptions(StepProjectionRenderMode.Color));
+            }
+            catch
+            {
+                return;
+            }
+
+            var keptFaceIds = new HashSet<int>();
+            foreach (var faceGroup in faceRegions.GroupBy(region => region.EntityId))
+            {
+                bool overlapsVisualRoi = faceGroup.Any(faceRegion =>
+                    visualScan.Detections.Any(detection =>
+                        string.Equals(detection.ViewName, faceRegion.ViewName, StringComparison.OrdinalIgnoreCase) &&
+                        RectanglesIntersect(
+                            faceRegion.RectangleX,
+                            faceRegion.RectangleY,
+                            faceRegion.RectangleWidth,
+                            faceRegion.RectangleHeight,
+                            detection.X,
+                            detection.Y,
+                            detection.Width,
+                            detection.Height,
+                            36)));
+                if (overlapsVisualRoi)
+                    keptFaceIds.Add(faceGroup.Key);
+            }
+
+            removedFaceIds.RemoveWhere(faceId => !keptFaceIds.Contains(faceId));
+        }
+
+        private static bool RectanglesIntersect(
+            int leftX,
+            int leftY,
+            int leftWidth,
+            int leftHeight,
+            int rightX,
+            int rightY,
+            int rightWidth,
+            int rightHeight,
+            int padding)
+        {
+            int leftRight = leftX + leftWidth - 1;
+            int leftBottom = leftY + leftHeight - 1;
+            int rightRight = rightX + rightWidth - 1;
+            int rightBottom = rightY + rightHeight - 1;
+            return leftX <= rightRight + padding &&
+                leftRight + padding >= rightX &&
+                leftY <= rightBottom + padding &&
+                leftBottom + padding >= rightY;
         }
 
         private static bool IsDiagnosticPresentationRootType(string type)
@@ -7362,7 +7785,12 @@ namespace EasyEDA_Loader
                     RectangleX = detection.X,
                     RectangleY = detection.Y,
                     RectangleWidth = detection.Width,
-                    RectangleHeight = detection.Height
+                    RectangleHeight = detection.Height,
+                    TemplateName = detection.TemplateName,
+                    Kind = detection.Kind,
+                    Score = detection.Score,
+                    ChamferDistance = detection.ChamferDistance,
+                    EdgePixelCount = detection.EdgePixelCount
                 };
             }
         }
@@ -7431,6 +7859,7 @@ namespace EasyEDA_Loader
             public List<int> FaceIds { get; set; } = new List<int>();
             public Dictionary<int, HashSet<int>> HostFaceBoundsToRemove { get; } = new Dictionary<int, HashSet<int>>();
             public List<AutomaticWatermarkRegion> Regions { get; } = new List<AutomaticWatermarkRegion>();
+            public List<StepWatermarkMarkedRegion> MarkedRegions { get; set; } = new List<StepWatermarkMarkedRegion>();
             public int DetectionCount { get; set; }
             public int CandidateCount { get; set; }
             public int HostRejectCount { get; set; }

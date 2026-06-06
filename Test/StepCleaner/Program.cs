@@ -259,8 +259,14 @@ namespace StepCleaner.Tests
             if (IsOption(args[0], "--text-logo-verifier"))
                 return RunTextLogoVerifierTests();
 
+            if (IsOption(args[0], "--text-logo-visual-residuals"))
+                return RunTextLogoVisualResidualTests(args);
+
             if (IsOption(args[0], "--removed-geometry"))
                 return RunRemovedGeometryExportTests();
+
+            if (IsOption(args[0], "--removed-geometry-roi-locality"))
+                return RunRemovedGeometryRoiLocalityTests();
 
             if (IsOption(args[0], "--silhouette"))
                 return SaveSilhouetteProjectionImage(args);
@@ -293,7 +299,9 @@ namespace StepCleaner.Tests
             Console.Error.WriteLine("Usage: StepCleaner.Tests --text-logo-cleanup-promotion");
             Console.Error.WriteLine("Usage: StepCleaner.Tests --text-logo-negative-classifier");
             Console.Error.WriteLine("Usage: StepCleaner.Tests --text-logo-verifier");
+            Console.Error.WriteLine("Usage: StepCleaner.Tests --text-logo-visual-residuals [fixture-name]");
             Console.Error.WriteLine("Usage: StepCleaner.Tests --removed-geometry");
+            Console.Error.WriteLine("Usage: StepCleaner.Tests --removed-geometry-roi-locality");
             Console.Error.WriteLine("Usage: StepCleaner.Tests --silhouette <input.step> <output.png> [--rotx deg] [--roty deg] [--rotz deg] [--rotation2d deg] [--size pixels] [--padding pixels] [--no-grid] [--no-axes]");
             Console.Error.WriteLine("Usage: StepCleaner.Tests --silhouette-dump <input.step> <output.csv>");
             return 2;
@@ -2238,9 +2246,10 @@ namespace StepCleaner.Tests
                         failures.Add("Verifier should fail when original STEP is supplied as clean output for a detected text/logo watermark.");
 
                     if (!verificationFailures.Any(failure =>
+                        failure.Contains("retains known watermark visual template", StringComparison.OrdinalIgnoreCase) ||
                         failure.Contains("retains text/logo edge detail", StringComparison.OrdinalIgnoreCase)))
                     {
-                        failures.Add("Text/logo verifier failure should report retained edge detail inside the detected cleanup region.");
+                        failures.Add("Text/logo verifier failure should report retained visual template or edge detail inside the detected cleanup region.");
                     }
 
                     if (!File.Exists(reportPath))
@@ -2269,6 +2278,235 @@ namespace StepCleaner.Tests
 
             Console.WriteLine("Text/logo verifier test passed.");
             return 0;
+        }
+
+        private static int RunTextLogoVisualResidualTests(string[] args)
+        {
+            var failures = new List<string>();
+            string dataRoot = FindDataRoot();
+            string originalDirectory = Path.Combine(dataRoot, "Original");
+            List<string> fixtureNames = new[]
+            {
+                "USB-B-TH_USB-B10-BRW.step",
+                "USB-A-TH_FUS264-FDSW3K.step",
+                "CONN-TH_MR30PW-M30-G-Y.step",
+                "CONN-SMD_DF56_40S_0.3V_51.step",
+                "CONN-SMD_30P-P0.60_DF56C-30S-0.3V-51.step",
+                "SOT-223-4P_L6.5-W3.5-H1.6-LS7.0-P2.30.step",
+                "CONN-TH_XT60PB-M.step"
+            }.ToList();
+
+            if (args.Length > 1 && !string.IsNullOrWhiteSpace(args[1]))
+            {
+                string filter = args[1];
+                fixtureNames = fixtureNames
+                    .Where(fixtureName =>
+                        string.Equals(fixtureName, filter, StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(Path.GetFileNameWithoutExtension(fixtureName), filter, StringComparison.OrdinalIgnoreCase))
+                    .ToList();
+                if (fixtureNames.Count == 0)
+                {
+                    Console.Error.WriteLine("Text/logo visual residual test fixture was not found: " + filter);
+                    return 2;
+                }
+            }
+
+            foreach (string fixtureName in fixtureNames)
+            {
+                string inputPath = Path.Combine(originalDirectory, fixtureName);
+                if (!File.Exists(inputPath))
+                {
+                    failures.Add("Missing text/logo visual residual fixture: " + inputPath);
+                    continue;
+                }
+
+                byte[] originalStep = File.ReadAllBytes(inputPath);
+                var report = StepWatermarkCleaner.CleanWithReport(
+                    Encoding.Latin1.GetString(originalStep),
+                    new StepWatermarkCleanerOptions());
+                byte[] cleanedStep = Encoding.Latin1.GetBytes(report.CleanedStep);
+                StepWatermarkVisualResidualResult visual = StepWatermarkVisualOracle.VerifyKnownWatermarkRemoved(
+                    originalStep,
+                    cleanedStep,
+                    fixtureName);
+
+                foreach (string failure in visual.Failures)
+                    failures.Add(failure + " Diagnostics: " + string.Join(" | ", report.Diagnostics ?? Array.Empty<string>()));
+            }
+
+            if (failures.Count > 0)
+            {
+                Console.Error.WriteLine("Text/logo visual residual test failed.");
+                foreach (string failure in failures)
+                    Console.Error.WriteLine("  " + failure);
+                return 1;
+            }
+
+            Console.WriteLine("Text/logo visual residual test passed.");
+            return 0;
+        }
+
+        private static int RunRemovedGeometryRoiLocalityTests()
+        {
+            var failures = new List<string>();
+            string dataRoot = FindDataRoot();
+            string originalDirectory = Path.Combine(dataRoot, "Original");
+            var fixtureNames = new[]
+            {
+                "USB-B-TH_USB-B10-BRW.step",
+                "CONN-TH_MR30PW-M30-G-Y.step"
+            };
+
+            foreach (string fixtureName in fixtureNames)
+            {
+                string inputPath = Path.Combine(originalDirectory, fixtureName);
+                if (!File.Exists(inputPath))
+                {
+                    failures.Add("Missing removed-geometry ROI locality fixture: " + inputPath);
+                    continue;
+                }
+
+                byte[] originalStep = File.ReadAllBytes(inputPath);
+                var report = StepWatermarkCleaner.CleanWithReport(
+                    Encoding.Latin1.GetString(originalStep),
+                    new StepWatermarkCleanerOptions());
+                VerifyRemovedGeometryFacesStayInsideVisualRois(
+                    fixtureName,
+                    originalStep,
+                    report,
+                    failures);
+            }
+
+            if (failures.Count > 0)
+            {
+                Console.Error.WriteLine("Removed-geometry ROI locality test failed.");
+                foreach (string failure in failures)
+                    Console.Error.WriteLine("  " + failure);
+                return 1;
+            }
+
+            Console.WriteLine("Removed-geometry ROI locality test passed.");
+            return 0;
+        }
+
+        private static void VerifyRemovedGeometryFacesStayInsideVisualRois(
+            string fixtureName,
+            byte[] originalStep,
+            StepWatermarkCleanerReport report,
+            List<string> failures)
+        {
+            StepWatermarkVisualScanResult originalVisual = StepWatermarkVisualOracle.DetectKnownWatermarks(
+                originalStep,
+                fixtureName + ".original");
+            if (originalVisual.Detections.Count == 0)
+            {
+                failures.Add(fixtureName + " original model has no visual watermark ROI detections for removed-geometry locality.");
+                return;
+            }
+
+            if (string.IsNullOrWhiteSpace(report.RemovedGeometryStep))
+            {
+                failures.Add(fixtureName + " should export removed geometry for detected text/logo watermark cleanup.");
+                return;
+            }
+
+            List<int> removedFaceIds = GetActiveAdvancedFaceIds(report.RemovedGeometryStep).ToList();
+            if (removedFaceIds.Count == 0)
+            {
+                failures.Add(fixtureName + " removed geometry contains no ADVANCED_FACE entities.");
+                return;
+            }
+
+            var removedFaceReport = new StepWatermarkDetectionReport
+            {
+                RemovableSolidIds = Array.Empty<int>(),
+                EmbeddedFaceIds = removedFaceIds,
+                CoplanarFaceIds = Array.Empty<int>(),
+                HostLoops = Array.Empty<StepWatermarkHostLoopDetection>(),
+                Regions = removedFaceIds
+                    .SelectMany(faceId => StepProjectionRenderer.ViewNames.Select(viewName => new StepWatermarkRegionDetection
+                    {
+                        EntityId = faceId,
+                        Kind = "face",
+                        ViewName = viewName
+                    }))
+                    .ToList(),
+                Diagnostics = Array.Empty<string>()
+            };
+            IReadOnlyList<StepProjectionDetectionRegion> removedFaceRegions = StepProjectionRenderer.ProjectDetectionRegions(
+                originalStep,
+                fixtureName,
+                removedFaceReport,
+                StepWatermarkVisualOracle.CreateProjectionOptions(StepProjectionRenderMode.Color));
+            var projectedFaceIds = new HashSet<int>(removedFaceRegions.Select(region => region.EntityId));
+            foreach (int faceId in removedFaceIds)
+            {
+                if (!projectedFaceIds.Contains(faceId))
+                    failures.Add(fixtureName + " removed face #" + faceId.ToString(CultureInfo.InvariantCulture) + " could not be projected onto the original model.");
+            }
+
+            foreach (var faceGroup in removedFaceRegions.GroupBy(region => region.EntityId))
+            {
+                bool overlapsWatermark = faceGroup.Any(removedRegion =>
+                    originalVisual.Detections.Any(detection =>
+                        string.Equals(detection.ViewName, removedRegion.ViewName, StringComparison.OrdinalIgnoreCase) &&
+                        RectanglesIntersect(
+                            removedRegion.RectangleX,
+                            removedRegion.RectangleY,
+                            removedRegion.RectangleWidth,
+                            removedRegion.RectangleHeight,
+                            detection.X,
+                            detection.Y,
+                            detection.Width,
+                            detection.Height,
+                            padding: 36)));
+                if (!overlapsWatermark)
+                {
+                    string projectedRegions = string.Join(
+                        "; ",
+                        faceGroup.Select(region =>
+                            region.ViewName +
+                            " " +
+                            region.RectangleX.ToString(CultureInfo.InvariantCulture) +
+                            "," +
+                            region.RectangleY.ToString(CultureInfo.InvariantCulture) +
+                            " " +
+                            region.RectangleWidth.ToString(CultureInfo.InvariantCulture) +
+                            "x" +
+                            region.RectangleHeight.ToString(CultureInfo.InvariantCulture)));
+                    failures.Add(
+                        fixtureName +
+                        " removed face #" +
+                        faceGroup.Key.ToString(CultureInfo.InvariantCulture) +
+                        " projects outside all known watermark visual ROIs. Face projections: " +
+                        projectedRegions +
+                        ". Visual ROIs: " +
+                        string.Join("; ", originalVisual.Detections.Select(detection => detection.Describe())) +
+                        ". Diagnostics: " +
+                        string.Join(" | ", report.Diagnostics ?? Array.Empty<string>()));
+                }
+            }
+        }
+
+        private static bool RectanglesIntersect(
+            int leftX,
+            int leftY,
+            int leftWidth,
+            int leftHeight,
+            int rightX,
+            int rightY,
+            int rightWidth,
+            int rightHeight,
+            int padding)
+        {
+            int leftRight = leftX + leftWidth - 1;
+            int leftBottom = leftY + leftHeight - 1;
+            int rightRight = rightX + rightWidth - 1;
+            int rightBottom = rightY + rightHeight - 1;
+            return leftX <= rightRight + padding &&
+                leftRight + padding >= rightX &&
+                leftY <= rightBottom + padding &&
+                leftBottom + padding >= rightY;
         }
 
         private static void VerifyRemovedGeometryDoesNotExportLargeNonWatermarkModels(string dataRoot, List<string> failures)
@@ -6203,6 +6441,38 @@ namespace StepCleaner.Tests
             }
 
             return result;
+        }
+
+        private static IEnumerable<int> GetAdvancedFaceIds(string stepText)
+        {
+            foreach (var kvp in ParseStepEntityDefinitions(stepText))
+            {
+                if (kvp.Value.StartsWith("ADVANCED_FACE", StringComparison.OrdinalIgnoreCase))
+                    yield return kvp.Key;
+            }
+        }
+
+        private static IEnumerable<int> GetActiveAdvancedFaceIds(string stepText)
+        {
+            Dictionary<int, string> entities = ParseStepEntityDefinitions(stepText);
+            var referencedFaceIds = new HashSet<int>();
+            foreach (string definition in entities.Values)
+            {
+                if (!definition.StartsWith("CLOSED_SHELL", StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                foreach (Match match in Regex.Matches(definition, @"#(\d+)", RegexOptions.CultureInvariant))
+                {
+                    int referencedId = int.Parse(match.Groups[1].Value, CultureInfo.InvariantCulture);
+                    if (entities.TryGetValue(referencedId, out string referencedDefinition) &&
+                        referencedDefinition.StartsWith("ADVANCED_FACE", StringComparison.OrdinalIgnoreCase))
+                    {
+                        referencedFaceIds.Add(referencedId);
+                    }
+                }
+            }
+
+            return referencedFaceIds.OrderBy(id => id).ToList();
         }
 
         private static void VerifyProtectedFaceEntityClosurePreserved(
