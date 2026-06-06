@@ -1,4 +1,3 @@
-using EasyEDA_Loader;
 using SkiaSharp;
 using System;
 using System.Collections.Generic;
@@ -17,60 +16,24 @@ internal static class Program
 
     private static int Main(string[] args)
     {
-        string repoRoot = FindRepoRoot();
-        string dataRoot = Path.Combine(repoRoot, "Test", "StepCleaner", "Data");
-        string originalDirectory = Path.Combine(dataRoot, "Original");
+        string dataRoot = args.Length > 0
+            ? Path.GetFullPath(args[0])
+            : Path.Combine(FindRepoRoot(), "Test", "StepCleaner", "Data");
         string projectionDirectory = Path.Combine(dataRoot, "Projection");
         string markedDirectory = Path.Combine(dataRoot, "Marked");
         string detectionDebugDirectory = Path.Combine(dataRoot, "Clean", "Detection");
         string outputDirectory = Path.Combine(dataRoot, "CleanRunReport", "MarkedVsDetected");
         Directory.CreateDirectory(outputDirectory);
 
-        var options = new StepProjectionOptions
-        {
-            ImageSizePixels = 1600,
-            PaddingPixels = 80
-        };
-
         var detectedByKey = new Dictionary<string, List<RectI>>(StringComparer.OrdinalIgnoreCase);
-        var detectedSummary = new List<DetectedModelSummary>();
-        foreach (string stepFile in Directory.GetFiles(originalDirectory, "*.step").OrderBy(Path.GetFileName, StringComparer.OrdinalIgnoreCase))
-        {
-            var detectionReport = StepWatermarkCleaner.Detect(
-                File.ReadAllBytes(stepFile),
-                new StepWatermarkCleanerOptions
-                {
-                    CleanText = true
-                });
-            IReadOnlyList<StepProjectionDetectionRegion> regions =
-                StepProjectionRenderer.ProjectDetectionRegions(stepFile, detectionReport, options);
-
-            foreach (StepProjectionDetectionRegion region in regions)
-            {
-                string key = region.ModelName + "__" + region.ViewName;
-                if (!detectedByKey.TryGetValue(key, out List<RectI> rectangles))
-                {
-                    rectangles = new List<RectI>();
-                    detectedByKey[key] = rectangles;
-                }
-
-                rectangles.Add(new RectI(region.RectangleX, region.RectangleY, region.RectangleWidth, region.RectangleHeight));
-            }
-
-            detectedSummary.Add(new DetectedModelSummary
-            {
-                Model = Path.GetFileName(stepFile),
-                DetectedRegionCount = regions.Count,
-                DetectedViews = string.Join("; ", regions
-                    .GroupBy(region => region.ViewName, StringComparer.OrdinalIgnoreCase)
-                    .OrderBy(group => group.Key, StringComparer.OrdinalIgnoreCase)
-                    .Select(group => group.Key + ":" + group.Count().ToString(CultureInfo.InvariantCulture)))
-            });
-        }
+        List<DetectedModelSummary> detectedSummary = LoadDetectionRegionFiles(detectionDebugDirectory, detectedByKey);
 
         var rows = new List<CompareRow>();
         var markedKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (string markerPath in Directory.GetFiles(markedDirectory, "*.json").OrderBy(Path.GetFileName, StringComparer.OrdinalIgnoreCase))
+        IEnumerable<string> markerPaths = Directory.Exists(markedDirectory)
+            ? Directory.GetFiles(markedDirectory, "*.json").OrderBy(Path.GetFileName, StringComparer.OrdinalIgnoreCase)
+            : Enumerable.Empty<string>();
+        foreach (string markerPath in markerPaths)
         {
             if (!TryParseMarkedKey(markerPath, out string modelName, out string viewName))
                 continue;
@@ -160,6 +123,65 @@ internal static class Program
         foreach (var group in rows.GroupBy(row => row.Status).OrderBy(group => group.Key, StringComparer.OrdinalIgnoreCase))
             Console.WriteLine(group.Key + "=" + group.Count().ToString(CultureInfo.InvariantCulture));
         return 0;
+    }
+
+    private static List<DetectedModelSummary> LoadDetectionRegionFiles(
+        string detectionDirectory,
+        Dictionary<string, List<RectI>> detectedByKey)
+    {
+        var summaries = new List<DetectedModelSummary>();
+        if (!Directory.Exists(detectionDirectory))
+        {
+            Console.Error.WriteLine("Detection directory was not found: " + detectionDirectory);
+            return summaries;
+        }
+
+        foreach (string jsonPath in Directory.GetFiles(detectionDirectory, "*.detected-regions.json").OrderBy(Path.GetFileName, StringComparer.OrdinalIgnoreCase))
+        {
+            DetectionRegionDocument document = JsonSerializer.Deserialize<DetectionRegionDocument>(File.ReadAllText(jsonPath));
+            if (document == null)
+                continue;
+
+            string modelName = string.IsNullOrWhiteSpace(document.Model)
+                ? Path.GetFileName(jsonPath).Replace(".detected-regions.json", "", StringComparison.OrdinalIgnoreCase)
+                : document.Model;
+            List<DetectionRegionRecord> regions = document.Regions ?? new List<DetectionRegionRecord>();
+            foreach (DetectionRegionRecord region in regions)
+            {
+                if (string.IsNullOrWhiteSpace(region.ViewName) || region.Width <= 0 || region.Height <= 0)
+                    continue;
+
+                string key = modelName + "__" + region.ViewName;
+                if (!detectedByKey.TryGetValue(key, out List<RectI> rectangles))
+                {
+                    rectangles = new List<RectI>();
+                    detectedByKey[key] = rectangles;
+                }
+
+                rectangles.Add(new RectI(region.X, region.Y, region.Width, region.Height));
+            }
+
+            summaries.Add(new DetectedModelSummary
+            {
+                Model = modelName + ".step",
+                DetectedRegionCount = regions.Count,
+                DetectedViews = string.Join("; ", regions
+                    .Where(region => !string.IsNullOrWhiteSpace(region.ViewName))
+                    .GroupBy(region => region.ViewName, StringComparer.OrdinalIgnoreCase)
+                    .OrderBy(group => group.Key, StringComparer.OrdinalIgnoreCase)
+                    .Select(group => group.Key + ":" + group.Count().ToString(CultureInfo.InvariantCulture)))
+            });
+        }
+
+        if (summaries.Count == 0)
+        {
+            Console.Error.WriteLine(
+                "No *.detected-regions.json files were found in " +
+                detectionDirectory +
+                ". Run StepCleaner with --debug to create cached detection region data.");
+        }
+
+        return summaries;
     }
 
     private static string FindRepoRoot()
@@ -478,6 +500,25 @@ internal static class Program
     private sealed class MarkedFile
     {
         public List<MarkedRectangle> Rectangles { get; set; }
+    }
+
+    private sealed class DetectionRegionDocument
+    {
+        public string Model { get; set; }
+        public int ImageSizePixels { get; set; }
+        public int PaddingPixels { get; set; }
+        public List<DetectionRegionRecord> Regions { get; set; }
+    }
+
+    private sealed class DetectionRegionRecord
+    {
+        public string ViewName { get; set; }
+        public int X { get; set; }
+        public int Y { get; set; }
+        public int Width { get; set; }
+        public int Height { get; set; }
+        public int EntityId { get; set; }
+        public string Kind { get; set; }
     }
 
     private sealed class MarkedRectangle

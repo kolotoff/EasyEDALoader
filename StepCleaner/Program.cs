@@ -5,6 +5,7 @@ using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Text;
+using System.Text.Json;
 using SkiaSharp;
 
 namespace StepCleaner
@@ -1113,6 +1114,50 @@ namespace StepCleaner
                     WriteMetadata = false
                 },
                 markedRegions);
+
+            WriteDetectionRegionJson(inputPath, outputDirectory, detectionReport);
+        }
+
+        private static void WriteDetectionRegionJson(
+            string inputPath,
+            string outputDirectory,
+            StepWatermarkDetectionReport detectionReport)
+        {
+            var options = new StepProjectionOptions
+            {
+                ImageSizePixels = 1600,
+                PaddingPixels = 80
+            };
+            IReadOnlyList<StepProjectionDetectionRegion> regions =
+                StepProjectionRenderer.ProjectDetectionRegions(inputPath, detectionReport, options);
+            string modelName = Path.GetFileNameWithoutExtension(inputPath);
+            string outputPath = Path.Combine(outputDirectory, modelName + ".detected-regions.json");
+            var document = new DetectionRegionDocument
+            {
+                Model = modelName,
+                ImageSizePixels = options.ImageSizePixels,
+                PaddingPixels = options.PaddingPixels,
+                Regions = regions
+                    .OrderBy(region => region.ViewName, StringComparer.OrdinalIgnoreCase)
+                    .ThenBy(region => region.RectangleY)
+                    .ThenBy(region => region.RectangleX)
+                    .Select(region => new DetectionRegionRecord
+                    {
+                        ViewName = region.ViewName,
+                        X = region.RectangleX,
+                        Y = region.RectangleY,
+                        Width = region.RectangleWidth,
+                        Height = region.RectangleHeight,
+                        EntityId = region.EntityId,
+                        Kind = region.Kind
+                    })
+                    .ToList()
+            };
+            string json = JsonSerializer.Serialize(document, new JsonSerializerOptions
+            {
+                WriteIndented = true
+            });
+            File.WriteAllText(outputPath, json, Encoding.UTF8);
         }
 
         private static void PrintDetection(string label, StepWatermarkDetectionReport report)
@@ -1414,6 +1459,25 @@ namespace StepCleaner
             public string LeftImagePath { get; set; }
             public string RightLabel { get; set; }
             public string RightImagePath { get; set; }
+        }
+
+        private sealed class DetectionRegionDocument
+        {
+            public string Model { get; set; }
+            public int ImageSizePixels { get; set; }
+            public int PaddingPixels { get; set; }
+            public List<DetectionRegionRecord> Regions { get; set; } = new List<DetectionRegionRecord>();
+        }
+
+        private sealed class DetectionRegionRecord
+        {
+            public string ViewName { get; set; }
+            public int X { get; set; }
+            public int Y { get; set; }
+            public int Width { get; set; }
+            public int Height { get; set; }
+            public int EntityId { get; set; }
+            public string Kind { get; set; }
         }
 
         private static void PrintUsage()
