@@ -4504,14 +4504,18 @@ namespace EasyEDA_Loader
 
             var colorOptions = CreateTemplateTextProjectionOptions(StepProjectionRenderMode.Color);
             var edgeOptions = CreateTemplateTextProjectionOptions(StepProjectionRenderMode.Edge);
+            var logoEdgeOptions = CreateTemplateTextProjectionOptions(StepProjectionRenderMode.EdgeVisibleRaw);
             IReadOnlyList<StepProjectionImage> colorImages = StepProjectionRenderer.ProjectFileImages(stepData, "clean-text", colorOptions);
             IReadOnlyList<StepProjectionImage> edgeImages = StepProjectionRenderer.ProjectFileImages(stepData, "clean-text", edgeOptions);
+            IReadOnlyList<StepProjectionImage> logoEdgeImages = StepProjectionRenderer.ProjectFileImages(stepData, "clean-text", logoEdgeOptions);
             var edgeByViewName = edgeImages.ToDictionary(image => image.ViewName, StringComparer.OrdinalIgnoreCase);
+            var logoEdgeByViewName = logoEdgeImages.ToDictionary(image => image.ViewName, StringComparer.OrdinalIgnoreCase);
 
             foreach (StepProjectionImage colorImage in colorImages)
             {
                 if (!edgeByViewName.TryGetValue(colorImage.ViewName, out StepProjectionImage edgeImage))
                     continue;
+                logoEdgeByViewName.TryGetValue(colorImage.ViewName, out StepProjectionImage logoEdgeImage);
 
                 if (!TryFindTextProjectionView(colorImage.ViewName, out TextProjectionViewSpec view))
                     continue;
@@ -4523,7 +4527,11 @@ namespace EasyEDA_Loader
                     colorImage.Height,
                     colorOptions.PaddingPixels);
 
-                foreach (StepTextLogoDetectionRegion detection in StepTextLogoProjectionDetector.Detect(colorImage, edgeImage))
+                foreach (StepTextLogoDetectionRegion detection in StepTextLogoProjectionDetector.Detect(
+                    colorImage,
+                    edgeImage,
+                    logoEdgeImage,
+                    new StepTextLogoDetectionOptions { DetectArbitraryText = textOnly }))
                 {
                     if (textOnly && !string.Equals(detection.Kind, "text", StringComparison.OrdinalIgnoreCase))
                         continue;

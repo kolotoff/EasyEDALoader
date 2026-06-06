@@ -29,7 +29,8 @@ namespace EasyEDA_Loader
     public enum StepProjectionRenderMode
     {
         Color,
-        Edge
+        Edge,
+        EdgeVisibleRaw
     }
 
     public sealed class StepProjectionReport
@@ -274,6 +275,9 @@ namespace EasyEDA_Loader
 
             options = NormalizeOptions(options);
             IReadOnlyList<ViewSpec> selectedViews = GetSelectedViews(options);
+            if (options.RenderMode == StepProjectionRenderMode.Edge)
+                return ProjectFileOptimizedSilhouetteEdgeImages(stepData, selectedViews, options);
+
             if (options.RenderMode == StepProjectionRenderMode.Color &&
                 TryRenderWithF3DLibraryBatchToRawImages(stepData, modelName, selectedViews, options, out IReadOnlyList<StepProjectionImage> f3dImages))
             {
@@ -289,9 +293,62 @@ namespace EasyEDA_Loader
             foreach (ViewSpec view in selectedViews)
             {
                 ProjectionTransform transform = ProjectionTransform.Create(drawingModel.Bounds, view, options);
-                RgbaImage image = options.RenderMode == StepProjectionRenderMode.Edge
-                    ? RenderEdgeProjectionImage(drawingModel, view, transform, options)
-                    : RenderProjectionImage(drawingModel, view, transform, options);
+                RgbaImage image;
+                if (options.RenderMode == StepProjectionRenderMode.Edge)
+                    image = RenderEdgeProjectionImage(drawingModel, view, transform, options);
+                else if (options.RenderMode == StepProjectionRenderMode.EdgeVisibleRaw)
+                    image = RenderVisibleRawEdgeProjectionImage(drawingModel, view, transform, options);
+                else
+                    image = RenderProjectionImage(drawingModel, view, transform, options);
+                result.Add(image.ToProjectionImage(view.Name));
+            }
+
+            return result;
+        }
+
+        private static IReadOnlyList<StepProjectionImage> ProjectFileOptimizedSilhouetteEdgeImages(
+            byte[] stepData,
+            IReadOnlyList<ViewSpec> selectedViews,
+            StepProjectionOptions options)
+        {
+            return ProjectFileSilhouetteEdgeImages(
+                stepData,
+                selectedViews,
+                options,
+                StepSilhouetteProjection.GenerateViews);
+        }
+
+        private static IReadOnlyList<StepProjectionImage> ProjectFileSilhouetteEdgeImages(
+            byte[] stepData,
+            IReadOnlyList<ViewSpec> selectedViews,
+            StepProjectionOptions options,
+            Func<byte[], IReadOnlyDictionary<string, StepSilhouettePlacement>, IReadOnlyDictionary<string, IReadOnlyList<StepSilhouettePrimitive>>> generateViews)
+        {
+            string stepText = Encoding.Latin1.GetString(stepData);
+            StepModel model = StepModel.Parse(stepText);
+            model.BuildIndexes();
+            ProjectionModel drawingModel = ProjectionModel.Build(model);
+
+            var transformsByView = selectedViews.ToDictionary(
+                view => view.Name,
+                view => ProjectionTransform.Create(drawingModel.Bounds, view, options),
+                StringComparer.OrdinalIgnoreCase);
+            var placements = selectedViews.ToDictionary(
+                view => view.Name,
+                view => CreateRawSilhouettePlacement(transformsByView[view.Name]),
+                StringComparer.OrdinalIgnoreCase);
+
+            IReadOnlyDictionary<string, IReadOnlyList<StepSilhouettePrimitive>> primitivesByView =
+                generateViews(stepData, placements);
+
+            var result = new List<StepProjectionImage>();
+            foreach (ViewSpec view in selectedViews)
+            {
+                primitivesByView.TryGetValue(view.Name, out IReadOnlyList<StepSilhouettePrimitive> primitives);
+                RgbaImage image = RenderRawSilhouettePrimitives(
+                    primitives ?? Array.Empty<StepSilhouettePrimitive>(),
+                    transformsByView[view.Name],
+                    options);
                 result.Add(image.ToProjectionImage(view.Name));
             }
 
@@ -631,6 +688,12 @@ namespace EasyEDA_Loader
                 edgeImage.SavePng(outputPath);
                 return;
             }
+            if (options.RenderMode == StepProjectionRenderMode.EdgeVisibleRaw)
+            {
+                var edgeImage = RenderVisibleRawEdgeProjectionImage(model, view, transform, options, highlights);
+                edgeImage.SavePng(outputPath);
+                return;
+            }
 
             if (IsOpenCascadeVerificationRendererEnabled() &&
                 TryRenderWithOpenCascade(inputPath, outputPath, view, transform, options, highlights))
@@ -851,6 +914,11 @@ namespace EasyEDA_Loader
             return sweep;
         }
 
+        private static double DegreesToRadians(double degrees)
+        {
+            return degrees * Math.PI / 180.0;
+        }
+
         private static RgbaImage RenderProjectionImage(
             ProjectionModel model,
             ViewSpec view,
@@ -935,6 +1003,115 @@ namespace EasyEDA_Loader
             return image;
         }
 
+        private static RgbaImage RenderVisibleRawEdgeProjectionImage(
+            ProjectionModel model,
+            ViewSpec view,
+            ProjectionTransform transform,
+            StepProjectionOptions options,
+            IReadOnlyList<ProjectionHighlight> highlights = null)
+        {
+            var image = new RgbaImage(GetImageWidthPixels(options), GetImageHeightPixels(options));
+            image.Clear(new Rgba(255, 255, 255, 255));
+            double[] zBuffer = CreateDepthBuffer(image.Width, image.Height);
+            double lineDepthTolerance = Math.Max(0.000001, model.Bounds.Size.Get(view.DepthAxis) * 0.00001);
+
+            var visibleFaces = model.Faces
+                .Where(face => face.Points.Count >= 2)
+                .OrderBy(face => face.Depth(view))
+                .ThenBy(face => face.Id)
+                .ToList();
+
+            var faceDepthPlanes = new Dictionary<int, DepthPlane>();
+            foreach (ProjectionFace face in visibleFaces)
+            {
+                DepthPlane depthPlane = DepthPlane.Create(face, view);
+                faceDepthPlanes[face.Id] = depthPlane;
+                foreach (List<Point2d> polygon in BuildFillPolygons(face, transform))
+                {
+                    image.FillPolygonsEvenOdd(
+                        new List<List<Point2d>> { polygon },
+                        new Rgba(255, 255, 255, 255),
+                        zBuffer,
+                        (x, y) => depthPlane.DepthAtPixel(x + 0.5, y + 0.5, transform, view));
+                }
+            }
+
+            var edgeColor = new Rgba(0, 0, 0, 255);
+            foreach (ProjectionFace face in visibleFaces.OrderBy(face => face.Id))
+            {
+                if (!faceDepthPlanes.TryGetValue(face.Id, out DepthPlane depthPlane))
+                    continue;
+
+                foreach (ProjectionLoop loop in face.Loops)
+                    DrawLoop(image, loop.Points, transform, view, depthPlane, zBuffer, edgeColor, lineDepthTolerance);
+            }
+
+            DrawDetectionHighlights(image, view, transform, highlights);
+            return image;
+        }
+
+        private static StepSilhouettePlacement CreateRawSilhouettePlacement(ProjectionTransform transform)
+        {
+            return new StepSilhouettePlacement
+            {
+                TargetBounds = new StepSilhouetteBounds
+                {
+                    Left = transform.UMin,
+                    Bottom = transform.VMin,
+                    Right = transform.UMax,
+                    Top = transform.VMax
+                }
+            };
+        }
+
+        private static RgbaImage RenderRawSilhouettePrimitives(
+            IReadOnlyList<StepSilhouettePrimitive> primitives,
+            ProjectionTransform transform,
+            StepProjectionOptions options)
+        {
+            var image = new RgbaImage(GetImageWidthPixels(options), GetImageHeightPixels(options));
+            image.Clear(new Rgba(255, 255, 255, 255));
+            var edgeColor = new Rgba(0, 0, 0, 255);
+            foreach (StepSilhouettePrimitive primitive in primitives ?? Array.Empty<StepSilhouettePrimitive>())
+                DrawRawSilhouettePrimitive(image, transform, primitive, edgeColor);
+
+            return image;
+        }
+
+        private static void DrawRawSilhouettePrimitive(
+            RgbaImage image,
+            ProjectionTransform transform,
+            StepSilhouettePrimitive primitive,
+            Rgba color)
+        {
+            if (primitive == null)
+                return;
+
+            if (primitive.Kind == StepSilhouettePrimitiveKind.Line)
+            {
+                Point2i start = transform.ProjectUv(primitive.X1, primitive.Y1);
+                Point2i end = transform.ProjectUv(primitive.X2, primitive.Y2);
+                image.DrawLine(start.X, start.Y, end.X, end.Y, color);
+                return;
+            }
+
+            double sweep = NormalizeArcSweepDegrees(primitive.StartAngle, primitive.EndAngle);
+            int segments = Math.Max(8, Math.Min(96, (int)Math.Ceiling(sweep / 6.0)));
+            Point2i previous = default;
+            bool hasPrevious = false;
+            for (int i = 0; i <= segments; i++)
+            {
+                double angle = DegreesToRadians(primitive.StartAngle + sweep * i / Math.Max(1, segments));
+                double x = primitive.CenterX + Math.Cos(angle) * primitive.Radius;
+                double y = primitive.CenterY + Math.Sin(angle) * primitive.Radius;
+                Point2i current = transform.ProjectUv(x, y);
+                if (hasPrevious)
+                    image.DrawLine(previous.X, previous.Y, current.X, current.Y, color);
+                previous = current;
+                hasPrevious = true;
+            }
+        }
+
         private static bool TryRenderWithF3D(
             string inputPath,
             string outputPath,
@@ -972,7 +1149,6 @@ namespace EasyEDA_Loader
             startInfo.ArgumentList.Add(F3DBackgroundColor);
             startInfo.ArgumentList.Add("--camera-orthographic");
             startInfo.ArgumentList.Add("--anti-aliasing=fxaa");
-            startInfo.ArgumentList.Add("--ambient-occlusion");
             startInfo.ArgumentList.Add("--scalar-coloring");
             startInfo.ArgumentList.Add("--coloring-by-cells");
             startInfo.ArgumentList.Add("--coloring-array=Colors");
@@ -2002,7 +2178,9 @@ namespace EasyEDA_Loader
         {
             string modeSuffix = options != null && options.RenderMode == StepProjectionRenderMode.Edge
                 ? "__edge"
-                : string.Empty;
+                : options != null && options.RenderMode == StepProjectionRenderMode.EdgeVisibleRaw
+                    ? "__edge_visible_raw"
+                    : string.Empty;
             return modelName + "__" + viewName + modeSuffix + extension;
         }
 

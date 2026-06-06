@@ -235,6 +235,9 @@ namespace StepCleaner.Tests
             if (IsOption(args[0], "--f3d-preview-smoke"))
                 return RunF3DPreviewSmoke(args);
 
+            if (IsOption(args[0], "--f3d-no-ambient-occlusion"))
+                return RunF3DNoAmbientOcclusionTests();
+
             if (IsOption(args[0], "--clean-text"))
                 return RunCleanTextTests();
 
@@ -244,11 +247,24 @@ namespace StepCleaner.Tests
             if (IsOption(args[0], "--projection-edge-mode"))
                 return RunProjectionEdgeModeTests();
 
+            if (IsOption(args[0], "--raw-silhouette-edge-projection"))
+                return RunRawSilhouetteEdgeProjectionTests();
+            if (IsOption(args[0], "--visible-raw-silhouette-edge-projection"))
+                return RunVisibleRawSilhouetteEdgeProjectionTests();
+            if (IsOption(args[0], "--edge-preview"))
+                return SaveEdgePreview(args);
+
             if (IsOption(args[0], "--watermark-template-library"))
                 return RunWatermarkTemplateLibraryTests();
 
             if (IsOption(args[0], "--text-logo-detection"))
                 return RunTextLogoDetectionTests();
+
+            if (IsOption(args[0], "--marked-detection-parity"))
+                return RunMarkedDetectionParityTests(false);
+
+            if (IsOption(args[0], "--marked-detection-parity-clean-text"))
+                return RunMarkedDetectionParityTests(true);
 
             if (IsOption(args[0], "--text-logo-cleanup-promotion"))
                 return RunTextLogoCleanupPromotionTests();
@@ -291,11 +307,15 @@ namespace StepCleaner.Tests
             Console.Error.WriteLine("Usage: StepCleaner.Tests --occt-stage-report [output-dir]");
             Console.Error.WriteLine("Usage: StepCleaner.Tests --f3d-buffer-smoke <input.step>");
             Console.Error.WriteLine("Usage: StepCleaner.Tests --f3d-preview-smoke <input.step> [output.png]");
+            Console.Error.WriteLine("Usage: StepCleaner.Tests --f3d-no-ambient-occlusion");
             Console.Error.WriteLine("Usage: StepCleaner.Tests --clean-text");
             Console.Error.WriteLine("Usage: StepCleaner.Tests --xt60-lceda");
             Console.Error.WriteLine("Usage: StepCleaner.Tests --projection-edge-mode");
+            Console.Error.WriteLine("Usage: StepCleaner.Tests --raw-silhouette-edge-projection");
             Console.Error.WriteLine("Usage: StepCleaner.Tests --watermark-template-library");
             Console.Error.WriteLine("Usage: StepCleaner.Tests --text-logo-detection");
+            Console.Error.WriteLine("Usage: StepCleaner.Tests --marked-detection-parity");
+            Console.Error.WriteLine("Usage: StepCleaner.Tests --marked-detection-parity-clean-text");
             Console.Error.WriteLine("Usage: StepCleaner.Tests --text-logo-cleanup-promotion");
             Console.Error.WriteLine("Usage: StepCleaner.Tests --text-logo-negative-classifier");
             Console.Error.WriteLine("Usage: StepCleaner.Tests --text-logo-verifier");
@@ -3038,6 +3058,123 @@ namespace StepCleaner.Tests
             return 0;
         }
 
+        private static int RunRawSilhouetteEdgeProjectionTests()
+        {
+            var failures = new List<string>();
+            string repoRoot = FindRepoRoot();
+            string projectionRenderer = File.ReadAllText(Path.Combine(repoRoot, "EasyEDA-Loader", "StepProjectionRenderer.cs"));
+            string silhouetteProjection = File.ReadAllText(Path.Combine(repoRoot, "EasyEDA-Loader", "StepSilhouetteProjection.cs"));
+            if (!projectionRenderer.Contains("StepSilhouetteProjection.GenerateViews", StringComparison.Ordinal))
+                failures.Add("StepProjectionRenderer edge mode should use optimized OCCT silhouette views.");
+            if (projectionRenderer.Contains("StepSilhouetteProjection.GenerateRawViews", StringComparison.Ordinal))
+                failures.Add("StepProjectionRenderer edge mode must not use raw OCCT silhouette views.");
+            if (!silhouetteProjection.Contains("GenerateViews(", StringComparison.Ordinal))
+                failures.Add("StepSilhouetteProjection should expose optimized byte-array view generation.");
+
+            string dataRoot = FindDataRoot();
+            string inputPath = Path.Combine(dataRoot, "Original", "CONN-TH_XT60PB-M.step");
+            byte[] stepData = File.ReadAllBytes(inputPath);
+            StepProjectionImage edgeImage = ProjectSingleTestView(
+                stepData,
+                "CONN-TH_XT60PB-M.optimized-edge",
+                "z_minus",
+                StepProjectionRenderMode.Edge);
+
+            int darkPixels = CountDarkPixels(edgeImage.RgbaBytes, 48);
+            if (darkPixels < 1000)
+                failures.Add("Optimized silhouette edge image should contain visible HLR edge pixels, got " + darkPixels.ToString(CultureInfo.InvariantCulture) + ".");
+
+            if (failures.Count > 0)
+            {
+                Console.Error.WriteLine("Optimized silhouette edge projection test failed.");
+                foreach (string failure in failures)
+                    Console.Error.WriteLine("  " + failure);
+                return 1;
+            }
+
+            Console.WriteLine("Optimized silhouette edge projection test passed.");
+            Console.WriteLine("edge_dark_pixels=" + darkPixels.ToString(CultureInfo.InvariantCulture));
+            Console.WriteLine("projection_size=" + edgeImage.Width.ToString(CultureInfo.InvariantCulture) + "x" + edgeImage.Height.ToString(CultureInfo.InvariantCulture));
+            return 0;
+        }
+
+        private static int RunVisibleRawSilhouetteEdgeProjectionTests()
+        {
+            var failures = new List<string>();
+            string repoRoot = FindRepoRoot();
+            string projectionRenderer = File.ReadAllText(Path.Combine(repoRoot, "EasyEDA-Loader", "StepProjectionRenderer.cs"));
+            if (!projectionRenderer.Contains("RenderVisibleRawEdgeProjectionImage", StringComparison.Ordinal))
+                failures.Add("StepProjectionRenderer should expose visible raw depth-tested edge projection.");
+            if (!projectionRenderer.Contains("StepProjectionRenderMode.EdgeVisibleRaw", StringComparison.Ordinal))
+                failures.Add("StepProjectionRenderer should expose the EdgeVisibleRaw render mode.");
+            if (!projectionRenderer.Contains("DrawLoop(image, loop.Points, transform, view, depthPlane, zBuffer", StringComparison.Ordinal))
+                failures.Add("Visible raw edge projection should draw raw loops through the depth-tested path.");
+
+            string dataRoot = FindDataRoot();
+            string inputPath = Path.Combine(dataRoot, "Original", "USB-B-TH_USB-B10-BRW.step");
+            string markedPath = Path.Combine(dataRoot, "Marked", "USB-B-TH_USB-B10-BRW__x_plus.json");
+            byte[] stepData = File.ReadAllBytes(inputPath);
+            StepProjectionImage edgeImage = ProjectSingleTestView(
+                stepData,
+                "USB-B-TH_USB-B10-BRW.visible-raw-edge",
+                "x_plus",
+                StepProjectionRenderMode.EdgeVisibleRaw);
+
+            MarkedRectI marked = ReadMarkedRectangles(markedPath).First();
+            int markedDarkPixels = CountDarkPixels(edgeImage, marked, 48);
+            if (markedDarkPixels < 250)
+            {
+                failures.Add(
+                    "Visible raw silhouette edge image should preserve watermark strokes inside marked region, got " +
+                    markedDarkPixels.ToString(CultureInfo.InvariantCulture) +
+                    " dark pixels.");
+            }
+
+            if (failures.Count > 0)
+            {
+                Console.Error.WriteLine("Visible raw silhouette edge projection test failed.");
+                foreach (string failure in failures)
+                    Console.Error.WriteLine("  " + failure);
+                return 1;
+            }
+
+            Console.WriteLine("Visible raw silhouette edge projection test passed.");
+            Console.WriteLine("marked_dark_pixels=" + markedDarkPixels.ToString(CultureInfo.InvariantCulture));
+            Console.WriteLine("projection_size=" + edgeImage.Width.ToString(CultureInfo.InvariantCulture) + "x" + edgeImage.Height.ToString(CultureInfo.InvariantCulture));
+            return 0;
+        }
+
+        private static int SaveEdgePreview(string[] args)
+        {
+            if (args.Length < 4 || args.Length > 5)
+            {
+                Console.Error.WriteLine("Usage: StepCleaner.Tests --edge-preview <input.step> <view> <output.png> [--visible-raw]");
+                return 2;
+            }
+
+            string inputPath = args[1];
+            string viewName = args[2];
+            string outputPath = args[3];
+            StepProjectionRenderMode renderMode = args.Length == 5 && IsOption(args[4], "--visible-raw")
+                ? StepProjectionRenderMode.EdgeVisibleRaw
+                : StepProjectionRenderMode.Edge;
+            if (!File.Exists(inputPath))
+            {
+                Console.Error.WriteLine("STEP file does not exist: " + inputPath);
+                return 2;
+            }
+
+            StepProjectionImage edgeImage = ProjectSingleTestView(
+                File.ReadAllBytes(inputPath),
+                Path.GetFileNameWithoutExtension(inputPath),
+                viewName,
+                renderMode);
+            edgeImage.SavePng(outputPath);
+            Console.WriteLine("Edge preview written: " + Path.GetFullPath(outputPath));
+            Console.WriteLine("projection_size=" + edgeImage.Width.ToString(CultureInfo.InvariantCulture) + "x" + edgeImage.Height.ToString(CultureInfo.InvariantCulture));
+            return 0;
+        }
+
         private static int RunWatermarkTemplateLibraryTests()
         {
             var failures = new List<string>();
@@ -3141,7 +3278,16 @@ namespace StepCleaner.Tests
                     Path.GetFileNameWithoutExtension(inputPath),
                     expectation.ViewName,
                     StepProjectionRenderMode.Edge);
-                IReadOnlyList<StepTextLogoDetectionRegion> detections = StepTextLogoProjectionDetector.Detect(colorImage, edgeImage);
+                StepProjectionImage logoEdgeImage = ProjectSingleTestView(
+                    stepData,
+                    Path.GetFileNameWithoutExtension(inputPath),
+                    expectation.ViewName,
+                    StepProjectionRenderMode.EdgeVisibleRaw);
+                IReadOnlyList<StepTextLogoDetectionRegion> detections = StepTextLogoProjectionDetector.Detect(
+                    colorImage,
+                    edgeImage,
+                    logoEdgeImage,
+                    new StepTextLogoDetectionOptions());
                 StepTextLogoDetectionRegion requiredDetection = detections
                     .OrderByDescending(detection => detection.Score)
                     .FirstOrDefault(detection => string.Equals(detection.TemplateName, expectation.RequiredTemplate, StringComparison.OrdinalIgnoreCase));
@@ -3444,6 +3590,137 @@ namespace StepCleaner.Tests
             }
         }
 
+        private static int RunMarkedDetectionParityTests(bool cleanText)
+        {
+            string dataRoot = FindDataRoot();
+            string originalDirectory = Path.Combine(dataRoot, "Original");
+            string markedDirectory = Path.Combine(dataRoot, "Marked");
+            var failures = new List<string>();
+
+            foreach (string markerPath in Directory.GetFiles(markedDirectory, "*.json").OrderBy(Path.GetFileName, StringComparer.OrdinalIgnoreCase))
+            {
+                if (!TryParseMarkedModelAndView(markerPath, out string modelName, out string viewName))
+                    continue;
+
+                List<MarkedRectI> markedRects = ReadMarkedRectangles(markerPath);
+                if (markedRects.Count == 0)
+                    continue;
+
+                string stepPath = Path.Combine(originalDirectory, modelName + ".step");
+                if (!File.Exists(stepPath))
+                {
+                    failures.Add("Missing original STEP for marked parity: " + stepPath);
+                    continue;
+                }
+
+                byte[] stepData = File.ReadAllBytes(stepPath);
+                StepProjectionImage colorImage = ProjectSingleTestView(stepData, modelName, viewName, StepProjectionRenderMode.Color);
+                StepProjectionImage edgeImage = ProjectSingleTestView(stepData, modelName, viewName, StepProjectionRenderMode.Edge);
+                StepProjectionImage logoEdgeImage = ProjectSingleTestView(stepData, modelName, viewName, StepProjectionRenderMode.EdgeVisibleRaw);
+                IReadOnlyList<StepTextLogoDetectionRegion> detections = StepTextLogoProjectionDetector.Detect(
+                    colorImage,
+                    edgeImage,
+                    logoEdgeImage,
+                    new StepTextLogoDetectionOptions { DetectArbitraryText = cleanText });
+
+                AssertMarkedParity(modelName, viewName, markedRects, detections, failures);
+            }
+
+            if (failures.Count > 0)
+            {
+                Console.Error.WriteLine("Marked detection parity failed. cleanText=" + cleanText.ToString(CultureInfo.InvariantCulture));
+                foreach (string failure in failures)
+                    Console.Error.WriteLine("  " + failure);
+                return 1;
+            }
+
+            Console.WriteLine("Marked detection parity passed. cleanText=" + cleanText.ToString(CultureInfo.InvariantCulture));
+            return 0;
+        }
+
+        private static bool TryParseMarkedModelAndView(string markerPath, out string modelName, out string viewName)
+        {
+            string name = Path.GetFileNameWithoutExtension(markerPath);
+            foreach (string candidateViewName in StepProjectionRenderer.ViewNames.OrderByDescending(value => value.Length))
+            {
+                string suffix = "__" + candidateViewName;
+                if (!name.EndsWith(suffix, StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                modelName = name.Substring(0, name.Length - suffix.Length);
+                viewName = candidateViewName;
+                return true;
+            }
+
+            modelName = string.Empty;
+            viewName = string.Empty;
+            return false;
+        }
+
+        private static List<MarkedRectI> ReadMarkedRectangles(string markerPath)
+        {
+            MarkedRegionFile document = JsonSerializer.Deserialize<MarkedRegionFile>(File.ReadAllText(markerPath));
+            return (document?.Rectangles ?? new List<MarkedRectangle>())
+                .Where(rectangle => rectangle.Width > 0 && rectangle.Height > 0)
+                .Select(rectangle => new MarkedRectI(rectangle.X, rectangle.Y, rectangle.Width, rectangle.Height))
+                .ToList();
+        }
+
+        private static void AssertMarkedParity(
+            string modelName,
+            string viewName,
+            IReadOnlyList<MarkedRectI> markedRects,
+            IReadOnlyList<StepTextLogoDetectionRegion> detections,
+            List<string> failures)
+        {
+            if (detections.Count != markedRects.Count)
+            {
+                failures.Add(
+                    modelName +
+                    " " +
+                    viewName +
+                    " expected " +
+                    markedRects.Count.ToString(CultureInfo.InvariantCulture) +
+                    " detections from marked data, got " +
+                    detections.Count.ToString(CultureInfo.InvariantCulture) +
+                    ".");
+                return;
+            }
+
+            var detectedRects = detections
+                .Select(detection => new MarkedRectI(detection.X, detection.Y, detection.Width, detection.Height))
+                .ToList();
+            foreach (MarkedRectI detected in detectedRects)
+            {
+                MarkedRectI best = markedRects
+                    .OrderByDescending(marked => IntersectArea(marked, detected))
+                    .First();
+                if (!IsInsideMarkedRectangle(detected, best))
+                    failures.Add(modelName + " " + viewName + " detection " + detected + " is not fully inside marked rectangle " + best + ".");
+                if (detected.Area >= best.Area)
+                    failures.Add(modelName + " " + viewName + " detection " + detected + " should be smaller than marked rectangle " + best + ".");
+            }
+        }
+
+        private static bool IsInsideMarkedRectangle(MarkedRectI inner, MarkedRectI outer)
+        {
+            return inner.X >= outer.X &&
+                inner.Y >= outer.Y &&
+                inner.X + inner.Width <= outer.X + outer.Width &&
+                inner.Y + inner.Height <= outer.Y + outer.Height;
+        }
+
+        private static int IntersectArea(MarkedRectI left, MarkedRectI right)
+        {
+            int x0 = Math.Max(left.X, right.X);
+            int y0 = Math.Max(left.Y, right.Y);
+            int x1 = Math.Min(left.X + left.Width, right.X + right.Width);
+            int y1 = Math.Min(left.Y + left.Height, right.Y + right.Height);
+            if (x1 <= x0 || y1 <= y0)
+                return 0;
+            return (x1 - x0) * (y1 - y0);
+        }
+
         private static string FormatBounds(int x, int y, int width, int height)
         {
             return x.ToString(CultureInfo.InvariantCulture) +
@@ -3501,6 +3778,32 @@ namespace StepCleaner.Tests
             {
                 session.Dispose();
             }
+        }
+
+        private static int RunF3DNoAmbientOcclusionTests()
+        {
+            var failures = new List<string>();
+            string repoRoot = FindRepoRoot();
+            string projectionRendererPath = Path.Combine(repoRoot, "EasyEDA-Loader", "StepProjectionRenderer.cs");
+            string f3dRendererPath = Path.Combine(repoRoot, "StepF3DRenderLib", "F3DProjectionRenderer.cs");
+            string projectionRenderer = File.ReadAllText(projectionRendererPath);
+            string f3dRenderer = File.ReadAllText(f3dRendererPath);
+
+            if (projectionRenderer.Contains("\"--ambient-occlusion\"", StringComparison.Ordinal))
+                failures.Add("External f3d-console render path must not pass --ambient-occlusion.");
+            if (f3dRenderer.Contains("\"render.effect.ambient_occlusion\", 1", StringComparison.Ordinal))
+                failures.Add("In-process F3D render path must not enable render.effect.ambient_occlusion.");
+
+            if (failures.Count > 0)
+            {
+                Console.Error.WriteLine("F3D no ambient occlusion test failed.");
+                foreach (string failure in failures)
+                    Console.Error.WriteLine("  " + failure);
+                return 1;
+            }
+
+            Console.WriteLine("F3D no ambient occlusion test passed.");
+            return 0;
         }
 
         private static byte[] ConvertRawF3DImageToRgba(F3DRenderedImage image)
@@ -3566,6 +3869,32 @@ namespace StepCleaner.Tests
             {
                 if (rgba[i + 3] > 0 && rgba[i] <= threshold && rgba[i + 1] <= threshold && rgba[i + 2] <= threshold)
                     count++;
+            }
+
+            return count;
+        }
+
+        private static int CountDarkPixels(StepProjectionImage image, MarkedRectI rectangle, byte threshold)
+        {
+            int count = 0;
+            int left = Math.Max(0, rectangle.X);
+            int top = Math.Max(0, rectangle.Y);
+            int right = Math.Min(image.Width, rectangle.X + rectangle.Width);
+            int bottom = Math.Min(image.Height, rectangle.Y + rectangle.Height);
+            for (int y = top; y < bottom; y++)
+            {
+                int row = y * image.Width * 4;
+                for (int x = left; x < right; x++)
+                {
+                    int offset = row + x * 4;
+                    if (image.RgbaBytes[offset + 3] > 0 &&
+                        image.RgbaBytes[offset] <= threshold &&
+                        image.RgbaBytes[offset + 1] <= threshold &&
+                        image.RgbaBytes[offset + 2] <= threshold)
+                    {
+                        count++;
+                    }
+                }
             }
 
             return count;
@@ -6265,6 +6594,49 @@ namespace StepCleaner.Tests
             public double MinScore { get; set; }
             public double MaxChamferDistance { get; set; }
             public double MaxUnexpectedHighScore { get; set; }
+        }
+
+        private sealed class MarkedRegionFile
+        {
+            public List<MarkedRectangle> Rectangles { get; set; }
+        }
+
+        private sealed class MarkedRectangle
+        {
+            public int X { get; set; }
+            public int Y { get; set; }
+            public int Width { get; set; }
+            public int Height { get; set; }
+        }
+
+        private readonly struct MarkedRectI
+        {
+            public MarkedRectI(int x, int y, int width, int height)
+            {
+                X = x;
+                Y = y;
+                Width = width;
+                Height = height;
+            }
+
+            public int X { get; }
+            public int Y { get; }
+            public int Width { get; }
+            public int Height { get; }
+            public int Area => Math.Max(0, Width) * Math.Max(0, Height);
+
+            public override string ToString()
+            {
+                return "[" +
+                    X.ToString(CultureInfo.InvariantCulture) +
+                    "," +
+                    Y.ToString(CultureInfo.InvariantCulture) +
+                    " " +
+                    Width.ToString(CultureInfo.InvariantCulture) +
+                    "x" +
+                    Height.ToString(CultureInfo.InvariantCulture) +
+                    "]";
+            }
         }
 
         private static string FindDataRoot()

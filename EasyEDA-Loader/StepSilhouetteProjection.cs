@@ -76,6 +76,13 @@ namespace EasyEDA_Loader
         public double Rotation2D { get; set; }
     }
 
+    internal enum StepOcctPrimitiveProcessing
+    {
+        Optimized,
+        VisibleRaw,
+        Raw
+    }
+
     internal static class StepSilhouetteProjection
     {
         private const double PointEpsilonMm = 1e-5;
@@ -83,6 +90,7 @@ namespace EasyEDA_Loader
         private const double OutputMinLineLengthMm = 0.03;
         private const double OcctOutputMinLineLengthMm = 0.03;
         private const double OcctOverlapCoverageThreshold = 0.90;
+        private const double VisibleRawOverlapRemovalMinLengthMm = 2.0;
         private const double OcctLineCenterlineBucketToleranceMm = 0.01;
         private const double OcctLineCenterlineMergeToleranceMm = 0.001;
         private const double OcctLineProjectedIntervalTouchToleranceMm = 0.001;
@@ -138,6 +146,57 @@ namespace EasyEDA_Loader
             });
 
             return ModelImportTrace.Measure("projection_optimization", null, () => ReadOcctProjectionViewsJsonFromString(standardOutput, placements));
+        }
+
+        public static IReadOnlyDictionary<string, IReadOnlyList<StepSilhouettePrimitive>> GenerateViews(
+            byte[] stepData,
+            IReadOnlyDictionary<string, StepSilhouettePlacement> placements)
+        {
+            if (stepData == null || stepData.Length == 0 || placements == null || placements.Count == 0)
+                return new Dictionary<string, IReadOnlyList<StepSilhouettePrimitive>>(StringComparer.OrdinalIgnoreCase);
+
+            string standardOutput = RunOcctHelper("-", stepData, arguments =>
+            {
+                arguments.Add("--views");
+                arguments.Add(string.Join(",", placements.Keys));
+            });
+
+            return ModelImportTrace.Measure("projection_optimization", null, () => ReadOcctProjectionViewsJsonFromString(standardOutput, placements));
+        }
+
+        public static IReadOnlyDictionary<string, IReadOnlyList<StepSilhouettePrimitive>> GenerateRawViews(
+            byte[] stepData,
+            IReadOnlyDictionary<string, StepSilhouettePlacement> placements)
+        {
+            if (stepData == null || stepData.Length == 0 || placements == null || placements.Count == 0)
+                return new Dictionary<string, IReadOnlyList<StepSilhouettePrimitive>>(StringComparer.OrdinalIgnoreCase);
+
+            string standardOutput = RunOcctHelper("-", stepData, arguments =>
+            {
+                arguments.Add("--views");
+                arguments.Add(string.Join(",", placements.Keys));
+            });
+
+            return ModelImportTrace.Measure("projection_raw_occt_hlr", null, () => ReadOcctProjectionViewsJsonFromString(standardOutput, placements, false));
+        }
+
+        public static IReadOnlyDictionary<string, IReadOnlyList<StepSilhouettePrimitive>> GenerateVisibleRawViews(
+            byte[] stepData,
+            IReadOnlyDictionary<string, StepSilhouettePlacement> placements)
+        {
+            if (stepData == null || stepData.Length == 0 || placements == null || placements.Count == 0)
+                return new Dictionary<string, IReadOnlyList<StepSilhouettePrimitive>>(StringComparer.OrdinalIgnoreCase);
+
+            string standardOutput = RunOcctHelper("-", stepData, arguments =>
+            {
+                arguments.Add("--views");
+                arguments.Add(string.Join(",", placements.Keys));
+            });
+
+            return ModelImportTrace.Measure(
+                "projection_visible_raw_occt_hlr",
+                null,
+                () => ReadOcctProjectionViewsJsonFromString(standardOutput, placements, StepOcctPrimitiveProcessing.VisibleRaw));
         }
 
         private static IReadOnlyList<StepSilhouettePrimitive> GenerateWithOcctHelper(
@@ -348,6 +407,25 @@ namespace EasyEDA_Loader
             string json,
             IReadOnlyDictionary<string, StepSilhouettePlacement> placements)
         {
+            return ReadOcctProjectionViewsJsonFromString(json, placements, true);
+        }
+
+        private static IReadOnlyDictionary<string, IReadOnlyList<StepSilhouettePrimitive>> ReadOcctProjectionViewsJsonFromString(
+            string json,
+            IReadOnlyDictionary<string, StepSilhouettePlacement> placements,
+            bool optimize)
+        {
+            return ReadOcctProjectionViewsJsonFromString(
+                json,
+                placements,
+                optimize ? StepOcctPrimitiveProcessing.Optimized : StepOcctPrimitiveProcessing.Raw);
+        }
+
+        private static IReadOnlyDictionary<string, IReadOnlyList<StepSilhouettePrimitive>> ReadOcctProjectionViewsJsonFromString(
+            string json,
+            IReadOnlyDictionary<string, StepSilhouettePlacement> placements,
+            StepOcctPrimitiveProcessing processing)
+        {
             using (JsonDocument document = JsonDocument.Parse(json))
             {
                 JsonElement root = document.RootElement;
@@ -369,7 +447,10 @@ namespace EasyEDA_Loader
                     if (!viewElement.TryGetProperty("Primitives", out JsonElement primitivesElement) || primitivesElement.ValueKind != JsonValueKind.Array)
                         throw new InvalidDataException("OCCT HLR helper batch result does not contain primitives for view " + name + ".");
 
-                    results[name] = PlaceAndOptimizeOcctPrimitives(ReadOcctPrimitives(primitivesElement), placement.TargetBounds);
+                    results[name] = PlaceOcctPrimitives(
+                        ReadOcctPrimitives(primitivesElement),
+                        placement.TargetBounds,
+                        processing);
                 }
 
                 return results;
@@ -408,6 +489,14 @@ namespace EasyEDA_Loader
             List<StepSilhouettePrimitive> sourcePrimitives,
             StepSilhouetteBounds targetBounds)
         {
+            return PlaceOcctPrimitives(sourcePrimitives, targetBounds, StepOcctPrimitiveProcessing.Optimized);
+        }
+
+        private static IReadOnlyList<StepSilhouettePrimitive> PlaceOcctPrimitives(
+            List<StepSilhouettePrimitive> sourcePrimitives,
+            StepSilhouetteBounds targetBounds,
+            StepOcctPrimitiveProcessing processing)
+        {
             if (sourcePrimitives == null || sourcePrimitives.Count == 0)
                 return Array.Empty<StepSilhouettePrimitive>();
 
@@ -420,7 +509,18 @@ namespace EasyEDA_Loader
                 targetBounds,
                 sourceBounds,
                 0.0);
-            return OptimizeOcctPrimitives(placed);
+            if (processing == StepOcctPrimitiveProcessing.Optimized)
+                return OptimizeOcctPrimitives(placed);
+            if (processing == StepOcctPrimitiveProcessing.VisibleRaw)
+                return RemoveFullyOverlappedOcctPrimitives(placed, VisibleRawOverlapRemovalMinLengthMm);
+            return placed;
+        }
+
+        private static IReadOnlyList<StepSilhouettePrimitive> PlaceRawOcctPrimitives(
+            List<StepSilhouettePrimitive> sourcePrimitives,
+            StepSilhouetteBounds targetBounds)
+        {
+            return PlaceOcctPrimitives(sourcePrimitives, targetBounds, StepOcctPrimitiveProcessing.Raw);
         }
 
         private static string ReadOcctError(string jsonPath)
@@ -552,7 +652,9 @@ namespace EasyEDA_Loader
             return RemoveSmallOcctPrimitives(primitives);
         }
 
-        private static List<StepSilhouettePrimitive> RemoveFullyOverlappedOcctPrimitives(List<StepSilhouettePrimitive> primitives)
+        private static List<StepSilhouettePrimitive> RemoveFullyOverlappedOcctPrimitives(
+            List<StepSilhouettePrimitive> primitives,
+            double minimumPrimitiveLengthForRemovalMm = 0.0)
         {
             if (primitives == null || primitives.Count < 2)
                 return primitives ?? new List<StepSilhouettePrimitive>();
@@ -575,6 +677,8 @@ namespace EasyEDA_Loader
                 if (remove[candidateIndex])
                     continue;
                 if (lengths[candidateIndex] <= PointEpsilonMm)
+                    continue;
+                if (lengths[candidateIndex] < minimumPrimitiveLengthForRemovalMm)
                     continue;
 
                 double coveredRatio = OcctStrokeAreaCoverageRatio(

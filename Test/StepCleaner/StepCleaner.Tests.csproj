@@ -17,8 +17,10 @@
     <Compile Include="..\..\EasyEDA-Loader\StepWatermarkCleanVerifier.cs" Link="StepWatermarkCleanVerifier.cs" />
     <Compile Include="..\..\EasyEDA-Loader\StepWatermarkTemplateLibrary.cs" Link="StepWatermarkTemplateLibrary.cs" />
     <Compile Include="..\..\EasyEDA-Loader\StepWatermarkTemplateExtractor.cs" Link="StepWatermarkTemplateExtractor.cs" />
+    <Compile Include="..\..\EasyEDA-Loader\StepTextLogoDetectionOptions.cs" Link="StepTextLogoDetectionOptions.cs" />
     <Compile Include="..\..\EasyEDA-Loader\StepTextLogoProjectionDetector.cs" Link="StepTextLogoProjectionDetector.cs" />
     <Compile Include="..\..\EasyEDA-Loader\StepWatermarkVisualOracle.cs" Link="StepWatermarkVisualOracle.cs" />
+    <Compile Include="..\..\EasyEDA-Loader\StepProjectionImageOpenCv.cs" Link="StepProjectionImageOpenCv.cs" />
     <Compile Include="..\..\EasyEDA-Loader\StepProjectionRenderer.cs" Link="StepProjectionRenderer.cs" />
     <Compile Include="..\..\EasyEDA-Loader\StepSilhouetteProjection.cs" Link="StepSilhouetteProjection.cs" />
     <Compile Include="..\..\EasyEDA-Loader\FootprintModelPlacement.cs" Link="FootprintModelPlacement.cs" />
@@ -33,6 +35,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <PackageReference Include="OpenCvSharp4.Windows" Version="4.13.0.20260602" />
     <PackageReference Include="SkiaSharp" Version="3.119.2" />
     <PackageReference Include="SkiaSharp.NativeAssets.Win32" Version="3.119.2" />
   </ItemGroup>

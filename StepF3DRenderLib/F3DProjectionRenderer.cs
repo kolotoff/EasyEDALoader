@@ -533,7 +533,7 @@ namespace StepF3DRenderLib
             f3d_options_set_as_int(options, "model.scivis.component", -2);
             f3d_options_set_as_string(options, "render.effect.antialiasing.mode", "fxaa");
             f3d_options_set_as_bool(options, "render.effect.antialiasing.enable", 1);
-            f3d_options_set_as_bool(options, "render.effect.ambient_occlusion", 1);
+            f3d_options_set_as_bool(options, "render.effect.ambient_occlusion", 0);
             f3d_options_set_as_double_vector(
                 options,
                 "render.background.color",
