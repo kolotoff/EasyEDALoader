@@ -277,6 +277,8 @@ namespace EasyEDA_Loader
             IReadOnlyList<ViewSpec> selectedViews = GetSelectedViews(options);
             if (options.RenderMode == StepProjectionRenderMode.Edge)
                 return ProjectFileOptimizedSilhouetteEdgeImages(stepData, selectedViews, options);
+            if (options.RenderMode == StepProjectionRenderMode.EdgeVisibleRaw)
+                return ProjectFileVectorProjectionImages(stepData, selectedViews, options);
 
             if (options.RenderMode == StepProjectionRenderMode.Color &&
                 TryRenderWithF3DLibraryBatchToRawImages(stepData, modelName, selectedViews, options, out IReadOnlyList<StepProjectionImage> f3dImages))
@@ -296,8 +298,6 @@ namespace EasyEDA_Loader
                 RgbaImage image;
                 if (options.RenderMode == StepProjectionRenderMode.Edge)
                     image = RenderEdgeProjectionImage(drawingModel, view, transform, options);
-                else if (options.RenderMode == StepProjectionRenderMode.EdgeVisibleRaw)
-                    image = RenderVisibleRawEdgeProjectionImage(drawingModel, view, transform, options);
                 else
                     image = RenderProjectionImage(drawingModel, view, transform, options);
                 result.Add(image.ToProjectionImage(view.Name));
@@ -316,6 +316,18 @@ namespace EasyEDA_Loader
                 selectedViews,
                 options,
                 StepSilhouetteProjection.GenerateViews);
+        }
+
+        private static IReadOnlyList<StepProjectionImage> ProjectFileVectorProjectionImages(
+            byte[] stepData,
+            IReadOnlyList<ViewSpec> selectedViews,
+            StepProjectionOptions options)
+        {
+            return ProjectFileSilhouetteEdgeImages(
+                stepData,
+                selectedViews,
+                options,
+                StepSilhouetteProjection.GenerateVectorViews);
         }
 
         private static IReadOnlyList<StepProjectionImage> ProjectFileSilhouetteEdgeImages(
@@ -690,7 +702,7 @@ namespace EasyEDA_Loader
             }
             if (options.RenderMode == StepProjectionRenderMode.EdgeVisibleRaw)
             {
-                var edgeImage = RenderVisibleRawEdgeProjectionImage(model, view, transform, options, highlights);
+                var edgeImage = RenderVectorProjectionImageFromFile(inputPath, view, transform, options, highlights);
                 edgeImage.SavePng(outputPath);
                 return;
             }
@@ -713,6 +725,29 @@ namespace EasyEDA_Loader
 
             var image = RenderProjectionImage(model, view, transform, options, highlights);
             image.SavePng(outputPath);
+        }
+
+        private static RgbaImage RenderVectorProjectionImageFromFile(
+            string inputPath,
+            ViewSpec view,
+            ProjectionTransform transform,
+            StepProjectionOptions options,
+            IReadOnlyList<ProjectionHighlight> highlights = null)
+        {
+            var placements = new Dictionary<string, StepSilhouettePlacement>(StringComparer.OrdinalIgnoreCase)
+            {
+                [view.Name] = CreateRawSilhouettePlacement(transform)
+            };
+
+            IReadOnlyDictionary<string, IReadOnlyList<StepSilhouettePrimitive>> primitivesByView =
+                StepSilhouetteProjection.GenerateVectorViewsFromFile(inputPath, placements);
+            primitivesByView.TryGetValue(view.Name, out IReadOnlyList<StepSilhouettePrimitive> primitives);
+            RgbaImage image = RenderRawSilhouettePrimitives(
+                primitives ?? Array.Empty<StepSilhouettePrimitive>(),
+                transform,
+                options);
+            DrawDetectionHighlights(image, view, transform, highlights);
+            return image;
         }
 
         private static bool TryRenderWithOpenCascade(
@@ -997,53 +1032,6 @@ namespace EasyEDA_Loader
             {
                 foreach (ProjectionLoop loop in face.Loops)
                     DrawLoop(image, loop.Points, transform, edgeColor);
-            }
-
-            DrawDetectionHighlights(image, view, transform, highlights);
-            return image;
-        }
-
-        private static RgbaImage RenderVisibleRawEdgeProjectionImage(
-            ProjectionModel model,
-            ViewSpec view,
-            ProjectionTransform transform,
-            StepProjectionOptions options,
-            IReadOnlyList<ProjectionHighlight> highlights = null)
-        {
-            var image = new RgbaImage(GetImageWidthPixels(options), GetImageHeightPixels(options));
-            image.Clear(new Rgba(255, 255, 255, 255));
-            double[] zBuffer = CreateDepthBuffer(image.Width, image.Height);
-            double lineDepthTolerance = Math.Max(0.000001, model.Bounds.Size.Get(view.DepthAxis) * 0.00001);
-
-            var visibleFaces = model.Faces
-                .Where(face => face.Points.Count >= 2)
-                .OrderBy(face => face.Depth(view))
-                .ThenBy(face => face.Id)
-                .ToList();
-
-            var faceDepthPlanes = new Dictionary<int, DepthPlane>();
-            foreach (ProjectionFace face in visibleFaces)
-            {
-                DepthPlane depthPlane = DepthPlane.Create(face, view);
-                faceDepthPlanes[face.Id] = depthPlane;
-                foreach (List<Point2d> polygon in BuildFillPolygons(face, transform))
-                {
-                    image.FillPolygonsEvenOdd(
-                        new List<List<Point2d>> { polygon },
-                        new Rgba(255, 255, 255, 255),
-                        zBuffer,
-                        (x, y) => depthPlane.DepthAtPixel(x + 0.5, y + 0.5, transform, view));
-                }
-            }
-
-            var edgeColor = new Rgba(0, 0, 0, 255);
-            foreach (ProjectionFace face in visibleFaces.OrderBy(face => face.Id))
-            {
-                if (!faceDepthPlanes.TryGetValue(face.Id, out DepthPlane depthPlane))
-                    continue;
-
-                foreach (ProjectionLoop loop in face.Loops)
-                    DrawLoop(image, loop.Points, transform, view, depthPlane, zBuffer, edgeColor, lineDepthTolerance);
             }
 
             DrawDetectionHighlights(image, view, transform, highlights);

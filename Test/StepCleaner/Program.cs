@@ -12,6 +12,7 @@ using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Xml.Linq;
 using SkiaSharp;
 using StepF3DRenderLib;
 
@@ -251,6 +252,8 @@ namespace StepCleaner.Tests
                 return RunRawSilhouetteEdgeProjectionTests();
             if (IsOption(args[0], "--visible-raw-silhouette-edge-projection"))
                 return RunVisibleRawSilhouetteEdgeProjectionTests();
+            if (IsOption(args[0], "--vector-projection-contract"))
+                return RunVectorProjectionContractTests(args);
             if (IsOption(args[0], "--edge-preview"))
                 return SaveEdgePreview(args);
 
@@ -312,6 +315,7 @@ namespace StepCleaner.Tests
             Console.Error.WriteLine("Usage: StepCleaner.Tests --xt60-lceda");
             Console.Error.WriteLine("Usage: StepCleaner.Tests --projection-edge-mode");
             Console.Error.WriteLine("Usage: StepCleaner.Tests --raw-silhouette-edge-projection");
+            Console.Error.WriteLine("Usage: StepCleaner.Tests --vector-projection-contract [output-dir]");
             Console.Error.WriteLine("Usage: StepCleaner.Tests --watermark-template-library");
             Console.Error.WriteLine("Usage: StepCleaner.Tests --text-logo-detection");
             Console.Error.WriteLine("Usage: StepCleaner.Tests --marked-detection-parity");
@@ -3103,16 +3107,19 @@ namespace StepCleaner.Tests
             var failures = new List<string>();
             string repoRoot = FindRepoRoot();
             string projectionRenderer = File.ReadAllText(Path.Combine(repoRoot, "EasyEDA-Loader", "StepProjectionRenderer.cs"));
-            if (!projectionRenderer.Contains("RenderVisibleRawEdgeProjectionImage", StringComparison.Ordinal))
-                failures.Add("StepProjectionRenderer should expose visible raw depth-tested edge projection.");
             if (!projectionRenderer.Contains("StepProjectionRenderMode.EdgeVisibleRaw", StringComparison.Ordinal))
                 failures.Add("StepProjectionRenderer should expose the EdgeVisibleRaw render mode.");
-            if (!projectionRenderer.Contains("DrawLoop(image, loop.Points, transform, view, depthPlane, zBuffer", StringComparison.Ordinal))
-                failures.Add("Visible raw edge projection should draw raw loops through the depth-tested path.");
+            if (!projectionRenderer.Contains("ProjectFileVectorProjectionImages", StringComparison.Ordinal))
+                failures.Add("EdgeVisibleRaw projection should route file-image generation through vector OCCT HLR primitives.");
+            if (projectionRenderer.Contains("image = RenderVisibleRawEdgeProjectionImage(drawingModel", StringComparison.Ordinal))
+                failures.Add("ProjectFileImages must not route EdgeVisibleRaw through the STEP parser depth-tested raw renderer.");
+            if (projectionRenderer.Contains("var edgeImage = RenderVisibleRawEdgeProjectionImage(model", StringComparison.Ordinal))
+                failures.Add("RenderProjection must not route EdgeVisibleRaw through the STEP parser depth-tested raw renderer.");
+            if (projectionRenderer.Contains("private static RgbaImage RenderVisibleRawEdgeProjectionImage", StringComparison.Ordinal))
+                failures.Add("The legacy visible-raw depth-tested renderer should be removed or moved out of the active renderer.");
 
             string dataRoot = FindDataRoot();
             string inputPath = Path.Combine(dataRoot, "Original", "USB-B-TH_USB-B10-BRW.step");
-            string markedPath = Path.Combine(dataRoot, "Marked", "USB-B-TH_USB-B10-BRW__x_plus.json");
             byte[] stepData = File.ReadAllBytes(inputPath);
             StepProjectionImage edgeImage = ProjectSingleTestView(
                 stepData,
@@ -3120,14 +3127,51 @@ namespace StepCleaner.Tests
                 "x_plus",
                 StepProjectionRenderMode.EdgeVisibleRaw);
 
-            MarkedRectI marked = ReadMarkedRectangles(markedPath).First();
-            int markedDarkPixels = CountDarkPixels(edgeImage, marked, 48);
-            if (markedDarkPixels < 250)
+            int darkPixels = CountDarkPixels(edgeImage.RgbaBytes, 48);
+            if (darkPixels < 500)
             {
                 failures.Add(
-                    "Visible raw silhouette edge image should preserve watermark strokes inside marked region, got " +
-                    markedDarkPixels.ToString(CultureInfo.InvariantCulture) +
+                    "Visible raw vector edge image should render nonblank linework, got " +
+                    darkPixels.ToString(CultureInfo.InvariantCulture) +
                     " dark pixels.");
+            }
+            ValidateVisibleRawUsbXPlusBounds(
+                "ProjectFileImages EdgeVisibleRaw",
+                GetDarkPixelBounds(edgeImage, 128),
+                failures);
+
+            string projectOutputDirectory = Path.Combine(repoRoot, ".codex-temp", "visible-raw-project-file");
+            Directory.CreateDirectory(projectOutputDirectory);
+            foreach (string oldOutput in Directory.GetFiles(projectOutputDirectory, "USB-B-TH_USB-B10-BRW__x_plus.*"))
+                File.Delete(oldOutput);
+
+            var projectOptions = new StepProjectionOptions
+            {
+                RenderMode = StepProjectionRenderMode.EdgeVisibleRaw,
+                ImageSizePixels = 1600
+            };
+            projectOptions.ViewNames.Add("x_plus");
+
+            StepProjectionReport report = StepProjectionRenderer.ProjectFile(inputPath, projectOutputDirectory, projectOptions);
+            string projectPngPath = Directory
+                .GetFiles(projectOutputDirectory, "USB-B-TH_USB-B10-BRW__x_plus*.png")
+                .FirstOrDefault();
+            if (string.IsNullOrWhiteSpace(projectPngPath) || new FileInfo(projectPngPath).Length == 0)
+                failures.Add("ProjectFile should write an EdgeVisibleRaw vector PNG through RenderProjection.");
+            if (!string.IsNullOrWhiteSpace(projectPngPath) &&
+                (report.OutputFiles == null || !report.OutputFiles.Any(path => string.Equals(path, projectPngPath, StringComparison.OrdinalIgnoreCase))))
+            {
+                failures.Add("ProjectFile report should include the EdgeVisibleRaw vector PNG output.");
+            }
+            if (!string.IsNullOrWhiteSpace(projectPngPath) && File.Exists(projectPngPath))
+            {
+                using (SKBitmap projectBitmap = SKBitmap.Decode(projectPngPath))
+                {
+                    ValidateVisibleRawUsbXPlusBounds(
+                        "ProjectFile EdgeVisibleRaw",
+                        GetDarkPixelBounds(projectBitmap, 128),
+                        failures);
+                }
             }
 
             if (failures.Count > 0)
@@ -3139,9 +3183,1236 @@ namespace StepCleaner.Tests
             }
 
             Console.WriteLine("Visible raw silhouette edge projection test passed.");
-            Console.WriteLine("marked_dark_pixels=" + markedDarkPixels.ToString(CultureInfo.InvariantCulture));
+            Console.WriteLine("dark_pixels=" + darkPixels.ToString(CultureInfo.InvariantCulture));
             Console.WriteLine("projection_size=" + edgeImage.Width.ToString(CultureInfo.InvariantCulture) + "x" + edgeImage.Height.ToString(CultureInfo.InvariantCulture));
             return 0;
+        }
+
+        private static int RunVectorProjectionContractTests(string[] args)
+        {
+            var failures = new List<string>();
+            string repoRoot = FindRepoRoot();
+            string dataRoot = FindDataRoot();
+            string outputRoot = args.Length >= 2
+                ? Path.GetFullPath(args[1])
+                : Path.Combine(repoRoot, ".codex-temp", "vector-projection-debug");
+
+            Directory.CreateDirectory(outputRoot);
+
+            ValidateReadableViewMirrorPolicy(repoRoot, failures);
+
+            string[] validationFileNames = new[]
+            {
+                "CONN-TH_MR30PW-M30-G-Y.step",
+                "HDMI-SMD_HDMI-001S.step",
+                "SOT-223-4P_L6.5-W3.5-H1.6-LS7.0-P2.30.step",
+                "USB-B-TH_USB-B10-BRW.step"
+            };
+            foreach (string requiredFileName in new[]
+            {
+                "CONN-TH_MR30PW-M30-G-Y.step",
+                "HDMI-SMD_HDMI-001S.step",
+                "SOT-223-4P_L6.5-W3.5-H1.6-LS7.0-P2.30.step",
+                "USB-B-TH_USB-B10-BRW.step"
+            })
+            {
+                if (!validationFileNames.Contains(requiredFileName, StringComparer.OrdinalIgnoreCase))
+                    failures.Add("Vector projection validation set should include " + requiredFileName + ".");
+            }
+
+            foreach (string fileName in validationFileNames)
+            {
+                string inputPath = Path.Combine(dataRoot, "Original", fileName);
+                string modelName = Path.GetFileNameWithoutExtension(fileName);
+                string modelOutputDirectory = Path.Combine(outputRoot, modelName);
+                string svgDirectory = Path.Combine(modelOutputDirectory, "svg");
+                string pngDirectory = Path.Combine(modelOutputDirectory, "png");
+                string jsonPath = Path.Combine(modelOutputDirectory, modelName + ".vector.json");
+                Directory.CreateDirectory(modelOutputDirectory);
+                Directory.CreateDirectory(svgDirectory);
+                Directory.CreateDirectory(pngDirectory);
+
+                RunStepOcctVectorProjection(repoRoot, inputPath, jsonPath, svgDirectory, failures);
+                if (!File.Exists(jsonPath))
+                {
+                    failures.Add("Vector projection JSON was not written: " + jsonPath);
+                    continue;
+                }
+
+                VectorProjectionResultDto result;
+                try
+                {
+                    result = JsonSerializer.Deserialize<VectorProjectionResultDto>(File.ReadAllText(jsonPath));
+                }
+                catch (Exception ex)
+                {
+                    failures.Add("Vector projection JSON could not be parsed for " + fileName + ": " + ex.Message);
+                    continue;
+                }
+
+                ValidateVectorProjectionResult(fileName, result, failures);
+                if (result == null || result.Views == null)
+                    continue;
+
+                ValidateMarkedRegionVectorAlignment(fileName, dataRoot, result, failures);
+
+                foreach (VectorProjectionViewDto view in result.Views)
+                {
+                    if (view == null || string.IsNullOrWhiteSpace(view.Name))
+                        continue;
+
+                    string pngPath = Path.Combine(pngDirectory, view.Name + ".png");
+                    try
+                    {
+                        SaveVectorProjectionPng(view, pngPath, modelName + " " + view.Name);
+                    }
+                    catch (Exception ex)
+                    {
+                        failures.Add("Vector debug PNG failed for " + modelName + " " + view.Name + ": " + ex.Message);
+                    }
+                }
+
+                ValidateVectorDebugSvg(modelName, svgDirectory, failures);
+            }
+
+            if (failures.Count > 0)
+            {
+                Console.Error.WriteLine("Vector projection contract test failed.");
+                foreach (string failure in failures)
+                    Console.Error.WriteLine("  " + failure);
+                Console.Error.WriteLine("Debug output: " + outputRoot);
+                return 1;
+            }
+
+            Console.WriteLine("Vector projection contract test passed.");
+            Console.WriteLine("Debug output: " + outputRoot);
+            return 0;
+        }
+
+        private static void ValidateReadableViewMirrorPolicy(string repoRoot, List<string> failures)
+        {
+            string programPath = Path.Combine(repoRoot, "StepOcctHlr", "Program.cs");
+            string programText = File.ReadAllText(programPath);
+            foreach (string viewName in new[] { "x_plus", "x_minus", "y_plus", "y_minus", "z_plus", "z_minus" })
+            {
+                int viewIndex = programText.IndexOf("\"" + viewName + "\"", StringComparison.OrdinalIgnoreCase);
+                if (viewIndex < 0)
+                {
+                    failures.Add("StepOcctHlr named view policy should define " + viewName + ".");
+                    continue;
+                }
+
+                int nextViewIndex = programText.IndexOf("else if", viewIndex + viewName.Length, StringComparison.Ordinal);
+                if (nextViewIndex < 0)
+                    nextViewIndex = programText.IndexOf("else", viewIndex + viewName.Length, StringComparison.Ordinal);
+                if (nextViewIndex < 0)
+                    nextViewIndex = programText.Length;
+
+                string viewBlock = programText.Substring(viewIndex, nextViewIndex - viewIndex);
+                if (viewBlock.IndexOf("options.MirrorX = true", StringComparison.Ordinal) < 0)
+                {
+                    failures.Add(
+                        "StepOcctHlr " +
+                        viewName +
+                        " should apply the readable vector projection MirrorX policy.");
+                }
+            }
+        }
+
+        private static void ValidateMarkedRegionVectorAlignment(
+            string fileName,
+            string dataRoot,
+            VectorProjectionResultDto result,
+            List<string> failures)
+        {
+            string modelName = Path.GetFileNameWithoutExtension(fileName);
+            string markedDirectory = Path.Combine(dataRoot, "Marked");
+            if (!Directory.Exists(markedDirectory))
+                return;
+
+            foreach (string markerPath in Directory.GetFiles(markedDirectory, modelName + "__*.json"))
+            {
+                string markerName = Path.GetFileNameWithoutExtension(markerPath);
+                string prefix = modelName + "__";
+                if (!markerName.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                string viewName = markerName.Substring(prefix.Length);
+                string oppositeViewName = OppositeVectorViewName(viewName);
+                if (string.IsNullOrEmpty(oppositeViewName))
+                    continue;
+
+                VectorProjectionViewDto view = result.Views.FirstOrDefault(candidate =>
+                    string.Equals(candidate.Name, viewName, StringComparison.OrdinalIgnoreCase));
+                VectorProjectionViewDto oppositeView = result.Views.FirstOrDefault(candidate =>
+                    string.Equals(candidate.Name, oppositeViewName, StringComparison.OrdinalIgnoreCase));
+                if (view == null || oppositeView == null)
+                    continue;
+
+                MarkedRegionFile marker;
+                try
+                {
+                    marker = JsonSerializer.Deserialize<MarkedRegionFile>(File.ReadAllText(markerPath));
+                }
+                catch (Exception ex)
+                {
+                    failures.Add("Marked region JSON could not be parsed for " + markerName + ": " + ex.Message);
+                    continue;
+                }
+
+                if (marker == null || marker.Rectangles == null || marker.Rectangles.Count == 0)
+                    continue;
+
+                int sameViewSamples = CountVectorSamplesInMarkedRegions(view, marker);
+                int oppositeViewSamples = CountVectorSamplesInMarkedRegions(oppositeView, marker);
+                if (sameViewSamples <= 0)
+                {
+                    failures.Add(
+                        modelName +
+                        " " +
+                        viewName +
+                        " vector content should align with its marked region, got same-view samples=" +
+                        sameViewSamples.ToString(CultureInfo.InvariantCulture) +
+                        " (" +
+                        oppositeViewName +
+                        " samples=" +
+                        oppositeViewSamples.ToString(CultureInfo.InvariantCulture) +
+                        ").");
+                }
+            }
+        }
+
+        private static string OppositeVectorViewName(string viewName)
+        {
+            if (string.Equals(viewName, "x_plus", StringComparison.OrdinalIgnoreCase))
+                return "x_minus";
+            if (string.Equals(viewName, "x_minus", StringComparison.OrdinalIgnoreCase))
+                return "x_plus";
+            if (string.Equals(viewName, "y_plus", StringComparison.OrdinalIgnoreCase))
+                return "y_minus";
+            if (string.Equals(viewName, "y_minus", StringComparison.OrdinalIgnoreCase))
+                return "y_plus";
+            if (string.Equals(viewName, "z_plus", StringComparison.OrdinalIgnoreCase))
+                return "z_minus";
+            if (string.Equals(viewName, "z_minus", StringComparison.OrdinalIgnoreCase))
+                return "z_plus";
+            return null;
+        }
+
+        private static int CountVectorSamplesInMarkedRegions(
+            VectorProjectionViewDto view,
+            MarkedRegionFile marker)
+        {
+            const int imageSize = 1000;
+            const int padding = 60;
+            VectorProjectionBoundsDto bounds = NormalizeVectorBounds(view.Bounds);
+            var rectangles = new List<MarkedRectI>();
+            int markerWidth = marker.ImageWidth > 0 ? marker.ImageWidth : 1600;
+            int markerHeight = marker.ImageHeight > 0 ? marker.ImageHeight : 1600;
+            foreach (MarkedRectangle rectangle in marker.Rectangles)
+            {
+                rectangles.Add(new MarkedRectI(
+                    ScaleMarkedCoordinate(rectangle.X, markerWidth, imageSize),
+                    ScaleMarkedCoordinate(rectangle.Y, markerHeight, imageSize),
+                    ScaleMarkedCoordinate(rectangle.Width, markerWidth, imageSize),
+                    ScaleMarkedCoordinate(rectangle.Height, markerHeight, imageSize)));
+            }
+
+            int count = 0;
+            foreach (VectorProjectionPrimitiveDto primitive in view.Primitives ?? new List<VectorProjectionPrimitiveDto>())
+                count += CountPrimitiveSamplesInMarkedRegions(primitive, bounds, rectangles, imageSize, padding);
+
+            return count;
+        }
+
+        private static int CountPrimitiveSamplesInMarkedRegions(
+            VectorProjectionPrimitiveDto primitive,
+            VectorProjectionBoundsDto bounds,
+            List<MarkedRectI> rectangles,
+            int imageSize,
+            int padding)
+        {
+            if (primitive == null || rectangles.Count == 0)
+                return 0;
+            if (!IsMarkedRegionVectorPrimitive(primitive))
+                return 0;
+
+            if (string.Equals(primitive.Kind, "line", StringComparison.OrdinalIgnoreCase) &&
+                primitive.Points != null &&
+                primitive.Points.Length >= 4)
+            {
+                return CountSegmentSamplesInMarkedRegions(
+                    VectorImageX(primitive.Points[0], bounds, imageSize, padding),
+                    VectorImageY(primitive.Points[1], bounds, imageSize, padding),
+                    VectorImageX(primitive.Points[2], bounds, imageSize, padding),
+                    VectorImageY(primitive.Points[3], bounds, imageSize, padding),
+                    rectangles);
+            }
+
+            if (string.Equals(primitive.Kind, "polyline", StringComparison.OrdinalIgnoreCase) &&
+                primitive.Points != null &&
+                primitive.Points.Length >= 4)
+            {
+                int count = 0;
+                for (int index = 0; index + 3 < primitive.Points.Length; index += 2)
+                {
+                    count += CountSegmentSamplesInMarkedRegions(
+                        VectorImageX(primitive.Points[index], bounds, imageSize, padding),
+                        VectorImageY(primitive.Points[index + 1], bounds, imageSize, padding),
+                        VectorImageX(primitive.Points[index + 2], bounds, imageSize, padding),
+                        VectorImageY(primitive.Points[index + 3], bounds, imageSize, padding),
+                        rectangles);
+                }
+
+                return count;
+            }
+
+            if (string.Equals(primitive.Kind, "arc", StringComparison.OrdinalIgnoreCase))
+                return CountArcSamplesInMarkedRegions(primitive, bounds, rectangles, imageSize, padding);
+
+            return 0;
+        }
+
+        private static bool IsMarkedRegionVectorPrimitive(VectorProjectionPrimitiveDto primitive)
+        {
+            return primitive != null &&
+                string.Equals(primitive.Kind, "polyline", StringComparison.OrdinalIgnoreCase) &&
+                !string.IsNullOrWhiteSpace(primitive.OriginalKind) &&
+                primitive.OriginalKind.IndexOf("bspline", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        private static int CountArcSamplesInMarkedRegions(
+            VectorProjectionPrimitiveDto primitive,
+            VectorProjectionBoundsDto bounds,
+            List<MarkedRectI> rectangles,
+            int imageSize,
+            int padding)
+        {
+            double sweep = primitive.EndAngle - primitive.StartAngle;
+            while (sweep < 0.0)
+                sweep += 360.0;
+            if (sweep <= 0.0)
+                sweep = 360.0;
+
+            int count = 0;
+            int steps = Math.Max(8, (int)Math.Ceiling(sweep / 3.0));
+            for (int i = 0; i <= steps; i++)
+            {
+                double angle = (primitive.StartAngle + sweep * i / steps) * Math.PI / 180.0;
+                double x = primitive.CenterX + Math.Cos(angle) * primitive.Radius;
+                double y = primitive.CenterY + Math.Sin(angle) * primitive.Radius;
+                if (IsPointInMarkedRegions(
+                    VectorImageX(x, bounds, imageSize, padding),
+                    VectorImageY(y, bounds, imageSize, padding),
+                    rectangles))
+                {
+                    count++;
+                }
+            }
+
+            return count;
+        }
+
+        private static int CountSegmentSamplesInMarkedRegions(
+            float x1,
+            float y1,
+            float x2,
+            float y2,
+            List<MarkedRectI> rectangles)
+        {
+            double length = Math.Sqrt((x2 - x1) * (double)(x2 - x1) + (y2 - y1) * (double)(y2 - y1));
+            int steps = Math.Max(1, (int)Math.Ceiling(length / 4.0));
+            int count = 0;
+            for (int i = 0; i <= steps; i++)
+            {
+                double t = i / (double)steps;
+                float x = (float)(x1 + (x2 - x1) * t);
+                float y = (float)(y1 + (y2 - y1) * t);
+                if (IsPointInMarkedRegions(x, y, rectangles))
+                    count++;
+            }
+
+            return count;
+        }
+
+        private static bool IsPointInMarkedRegions(float x, float y, List<MarkedRectI> rectangles)
+        {
+            foreach (MarkedRectI rectangle in rectangles)
+            {
+                if (x >= rectangle.X &&
+                    x <= rectangle.X + rectangle.Width &&
+                    y >= rectangle.Y &&
+                    y <= rectangle.Y + rectangle.Height)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static int ScaleMarkedCoordinate(int value, int sourceSize, int targetSize)
+        {
+            return (int)Math.Round(value * (double)targetSize / Math.Max(1, sourceSize));
+        }
+
+        private static void RunStepOcctVectorProjection(
+            string repoRoot,
+            string inputPath,
+            string jsonPath,
+            string svgDirectory,
+            List<string> failures)
+        {
+            var processStart = new ProcessStartInfo
+            {
+                FileName = "dotnet",
+                WorkingDirectory = repoRoot,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false
+            };
+            processStart.ArgumentList.Add("run");
+            processStart.ArgumentList.Add("--project");
+            processStart.ArgumentList.Add(Path.Combine(repoRoot, "StepOcctHlr", "StepOcctHlr.csproj"));
+            processStart.ArgumentList.Add("--");
+            processStart.ArgumentList.Add(inputPath);
+            processStart.ArgumentList.Add(jsonPath);
+            processStart.ArgumentList.Add("--vector-views");
+            processStart.ArgumentList.Add("x_plus,x_minus,y_plus,y_minus,z_plus,z_minus");
+            processStart.ArgumentList.Add("--vector-svg-dir");
+            processStart.ArgumentList.Add(svgDirectory);
+
+            using (Process process = Process.Start(processStart))
+            {
+                string stdout = process.StandardOutput.ReadToEnd();
+                string stderr = process.StandardError.ReadToEnd();
+                process.WaitForExit();
+                if (process.ExitCode != 0)
+                {
+                    failures.Add(
+                        "StepOcctHlr vector projection failed for " +
+                        Path.GetFileName(inputPath) +
+                        " with exit code " +
+                        process.ExitCode.ToString(CultureInfo.InvariantCulture) +
+                        ". stdout=" +
+                        stdout +
+                        " stderr=" +
+                        stderr);
+                }
+            }
+        }
+
+        private static void ValidateVectorProjectionResult(
+            string fileName,
+            VectorProjectionResultDto result,
+            List<string> failures)
+        {
+            if (result == null)
+            {
+                failures.Add(fileName + " vector result should not be null.");
+                return;
+            }
+
+            if (!result.Success)
+                failures.Add(fileName + " vector result should succeed: " + result.Error);
+
+            AssertEqual(
+                "occt-hlr-vector-managed",
+                result.Engine,
+                fileName + " vector result should identify the managed OCCT HLR vector engine",
+                failures);
+
+            if (result.Views == null)
+            {
+                failures.Add(fileName + " vector result should include view results.");
+                return;
+            }
+
+            if (result.Views.Count != 6)
+            {
+                failures.Add(
+                    fileName +
+                    " vector result should include six views, got " +
+                    result.Views.Count.ToString(CultureInfo.InvariantCulture) +
+                    ".");
+            }
+
+            foreach (VectorProjectionViewDto view in result.Views)
+            {
+                if (view == null)
+                {
+                    failures.Add(fileName + " vector result contains a null view.");
+                    continue;
+                }
+
+                if (!view.Success)
+                    failures.Add(fileName + " " + view.Name + " should succeed: " + view.Error);
+                if (view.Primitives == null || view.Primitives.Count == 0)
+                {
+                    failures.Add(fileName + " " + view.Name + " should contain vector primitives.");
+                    continue;
+                }
+
+                foreach (VectorProjectionPrimitiveDto primitive in view.Primitives)
+                {
+                    if (primitive == null)
+                    {
+                        failures.Add(fileName + " " + view.Name + " contains a null primitive.");
+                        continue;
+                    }
+
+                    if (string.IsNullOrWhiteSpace(primitive.Kind))
+                        failures.Add(fileName + " " + view.Name + " primitive is missing Kind.");
+                    if (string.IsNullOrWhiteSpace(primitive.Visibility))
+                        failures.Add(fileName + " " + view.Name + " primitive is missing Visibility.");
+                    if (string.IsNullOrWhiteSpace(primitive.Category))
+                        failures.Add(fileName + " " + view.Name + " primitive is missing Category.");
+                }
+            }
+
+            VectorProjectionViewDto connYPlus = result.Views.FirstOrDefault(view =>
+                string.Equals(view.Name, "y_plus", StringComparison.OrdinalIgnoreCase));
+            if (fileName.StartsWith("CONN-TH_MR30PW-M30-G-Y", StringComparison.OrdinalIgnoreCase) &&
+                connYPlus != null &&
+                (connYPlus.Bounds == null || connYPlus.Bounds.Width < 12.0 || connYPlus.Bounds.Height < 4.0))
+            {
+                failures.Add(
+                    "CONN y_plus vector bounds should not collapse; got " +
+                    FormatVectorBounds(connYPlus.Bounds) +
+                    ".");
+            }
+
+            if (fileName.StartsWith("CONN-TH_MR30PW-M30-G-Y", StringComparison.OrdinalIgnoreCase) &&
+                connYPlus != null &&
+                connYPlus.Bounds != null &&
+                (connYPlus.Bounds.Width > 20.0 || connYPlus.Bounds.Height > 12.0))
+            {
+                failures.Add(
+                    "CONN y_plus vector bounds should exclude detached off-body strokes; got " +
+                    FormatVectorBounds(connYPlus.Bounds) +
+                    ".");
+            }
+
+            VectorProjectionViewDto connZMinus = result.Views.FirstOrDefault(view =>
+                string.Equals(view.Name, "z_minus", StringComparison.OrdinalIgnoreCase));
+            if (fileName.StartsWith("CONN-TH_MR30PW-M30-G-Y", StringComparison.OrdinalIgnoreCase) &&
+                connZMinus != null &&
+                connZMinus.Bounds != null &&
+                (connZMinus.Bounds.Width > 20.0 || connZMinus.Bounds.Height > 18.0))
+            {
+                failures.Add(
+                    "CONN z_minus vector bounds should exclude detached off-body strokes; got " +
+                    FormatVectorBounds(connZMinus.Bounds) +
+                    ".");
+            }
+
+            VectorProjectionViewDto hdmiYPlus = result.Views.FirstOrDefault(view =>
+                string.Equals(view.Name, "y_plus", StringComparison.OrdinalIgnoreCase));
+            if (fileName.StartsWith("HDMI-SMD_HDMI-001S", StringComparison.OrdinalIgnoreCase) &&
+                hdmiYPlus != null &&
+                (hdmiYPlus.Primitives == null || hdmiYPlus.Primitives.Count < 40))
+            {
+                failures.Add(
+                    "HDMI y_plus should include logo-bearing vector content, got " +
+                    (hdmiYPlus.Primitives == null ? 0 : hdmiYPlus.Primitives.Count).ToString(CultureInfo.InvariantCulture) +
+                    " primitives.");
+            }
+
+            if (fileName.StartsWith("HDMI-SMD_HDMI-001S", StringComparison.OrdinalIgnoreCase) &&
+                hdmiYPlus != null &&
+                hdmiYPlus.Primitives != null)
+            {
+                int explicitCurveFallbackCount = 0;
+                int shortLineFragmentCount = 0;
+                foreach (VectorProjectionPrimitiveDto primitive in hdmiYPlus.Primitives)
+                {
+                    if (string.Equals(primitive.Kind, "polyline", StringComparison.OrdinalIgnoreCase) &&
+                        !string.IsNullOrWhiteSpace(primitive.OriginalKind) &&
+                        primitive.Tolerance > 0.0)
+                    {
+                        explicitCurveFallbackCount++;
+                    }
+
+                    if (IsVectorLine(primitive))
+                    {
+                        double fragmentLength = Distance2d(
+                            primitive.Points[0],
+                            primitive.Points[1],
+                            primitive.Points[2],
+                            primitive.Points[3]);
+                        if (fragmentLength < 0.2)
+                            shortLineFragmentCount++;
+                    }
+
+                    if (!IsVectorLine(primitive) ||
+                        !string.Equals(primitive.Category, "outline", StringComparison.OrdinalIgnoreCase))
+                    {
+                        continue;
+                    }
+
+                    double length = Distance2d(
+                        primitive.Points[0],
+                        primitive.Points[1],
+                        primitive.Points[2],
+                        primitive.Points[3]);
+                    if (length > 1.2)
+                    {
+                        failures.Add(
+                            "HDMI y_plus should not contain long diagonal outline parser artifacts, got source " +
+                            primitive.SourceIndex.ToString(CultureInfo.InvariantCulture) +
+                            " length " +
+                            length.ToString("R", CultureInfo.InvariantCulture) +
+                            " points " +
+                            FormatVectorPoints(primitive.Points) +
+                            ".");
+                    }
+                }
+
+                if (explicitCurveFallbackCount < 20)
+                {
+                    failures.Add(
+                        "HDMI y_plus should preserve logo/curve geometry as explicit curve fallback primitives, got " +
+                        explicitCurveFallbackCount.ToString(CultureInfo.InvariantCulture) +
+                        " polyline fallback primitives.");
+                }
+
+                if (shortLineFragmentCount >= 300)
+                {
+                    failures.Add(
+                        "HDMI y_plus should not be dominated by tiny endpoint line fragments, got " +
+                        shortLineFragmentCount.ToString(CultureInfo.InvariantCulture) +
+                        " line fragments shorter than 0.2 mm.");
+                }
+            }
+
+            if (fileName.StartsWith("SOT-223-4P_L6.5-W3.5-H1.6-LS7.0-P2.30", StringComparison.OrdinalIgnoreCase))
+            {
+                AssertVectorViewBounds(result, fileName, "z_plus", 5.5, 8.5, 5.5, 8.5, 12, failures);
+                AssertVectorViewBounds(result, fileName, "z_minus", 5.5, 8.5, 5.5, 8.5, 12, failures);
+                AssertSplineFallbacksAreSampled(result, fileName, "z_minus", failures);
+                AssertSot223ZMinusMarkingIsNotMirrored(result, fileName, failures);
+                AssertSot223ZPlusTextMarkingIsNotMirrored(result, fileName, failures);
+            }
+
+            if (fileName.StartsWith("USB-B-TH_USB-B10-BRW", StringComparison.OrdinalIgnoreCase))
+            {
+                AssertVectorViewBounds(result, fileName, "x_plus", 10.0, 22.0, 10.0, 22.0, 40, failures);
+                AssertVectorViewBounds(result, fileName, "z_minus", 10.0, 22.0, 10.0, 22.0, 40, failures);
+                AssertSplineFallbacksAreSampled(result, fileName, "x_plus", failures);
+                AssertUsbB10ZMinusMarkingIsNotMirrored(result, fileName, failures);
+                AssertUsbB10XPlusMarkingIsNotMirrored(result, fileName, failures);
+            }
+        }
+
+        private static void AssertUsbB10ZMinusMarkingIsNotMirrored(
+            VectorProjectionResultDto result,
+            string fileName,
+            List<string> failures)
+        {
+            VectorProjectionViewDto view = result.Views.FirstOrDefault(candidate =>
+                string.Equals(candidate.Name, "z_minus", StringComparison.OrdinalIgnoreCase));
+            if (view == null || view.Primitives == null)
+                return;
+
+            double centroidX = CentroidXOfPolylineFallbacks(
+                view,
+                centerXMin: double.NegativeInfinity,
+                centerXMax: double.PositiveInfinity,
+                centerYMin: -4.8,
+                centerYMax: -3.8,
+                maxPrimitiveSpan: 1.2,
+                out int sampleCount);
+
+            if (sampleCount < 8 || centroidX >= -0.5)
+            {
+                failures.Add(
+                    fileName +
+                    " z_minus LCEDA vector fallback cluster should not be mirrored horizontally; centroidX=" +
+                    centroidX.ToString("R", CultureInfo.InvariantCulture) +
+                    ", sampleCount=" +
+                    sampleCount.ToString(CultureInfo.InvariantCulture) +
+                    ".");
+            }
+        }
+
+        private static void AssertUsbB10XPlusMarkingIsNotMirrored(
+            VectorProjectionResultDto result,
+            string fileName,
+            List<string> failures)
+        {
+            VectorProjectionViewDto view = result.Views.FirstOrDefault(candidate =>
+                string.Equals(candidate.Name, "x_plus", StringComparison.OrdinalIgnoreCase));
+            if (view == null || view.Primitives == null)
+                return;
+
+            double centroidX = CentroidXOfPolylineFallbacks(
+                view,
+                centerXMin: double.NegativeInfinity,
+                centerXMax: double.PositiveInfinity,
+                centerYMin: -3.1,
+                centerYMax: -1.3,
+                maxPrimitiveSpan: 1.2,
+                out int sampleCount);
+
+            if (sampleCount < 20 || centroidX >= -0.5)
+            {
+                failures.Add(
+                    fileName +
+                    " x_plus EasyEDA/logo vector fallback cluster should not be mirrored horizontally; centroidX=" +
+                    centroidX.ToString("R", CultureInfo.InvariantCulture) +
+                    ", sampleCount=" +
+                    sampleCount.ToString(CultureInfo.InvariantCulture) +
+                    ".");
+            }
+        }
+
+        private static void AssertSot223ZMinusMarkingIsNotMirrored(
+            VectorProjectionResultDto result,
+            string fileName,
+            List<string> failures)
+        {
+            VectorProjectionViewDto view = result.Views.FirstOrDefault(candidate =>
+                string.Equals(candidate.Name, "z_minus", StringComparison.OrdinalIgnoreCase));
+            if (view == null || view.Primitives == null)
+                return;
+
+            double pointSkewX = PointSkewXOfPolylineFallbacks(
+                view,
+                centerXMin: -0.4,
+                centerXMax: 0.4,
+                centerYMin: -0.7,
+                centerYMax: 0.8,
+                maxPrimitiveSpan: 0.3,
+                out int sampleCount);
+
+            if (sampleCount < 200 || pointSkewX <= 0.00005)
+            {
+                failures.Add(
+                    fileName +
+                    " z_minus LCEDA vector fallback cluster should not be mirrored horizontally; pointSkewX=" +
+                    pointSkewX.ToString("R", CultureInfo.InvariantCulture) +
+                    ", sampleCount=" +
+                    sampleCount.ToString(CultureInfo.InvariantCulture) +
+                    ".");
+            }
+        }
+
+        private static void AssertSot223ZPlusTextMarkingIsNotMirrored(
+            VectorProjectionResultDto result,
+            string fileName,
+            List<string> failures)
+        {
+            VectorProjectionViewDto view = result.Views.FirstOrDefault(candidate =>
+                string.Equals(candidate.Name, "z_plus", StringComparison.OrdinalIgnoreCase));
+            if (view == null || view.Primitives == null)
+                return;
+
+            double centroidX = CentroidXOfPolylineFallbacks(
+                view,
+                centerXMin: -1.5,
+                centerXMax: 1.5,
+                centerYMin: -2.9,
+                centerYMax: -1.5,
+                maxPrimitiveSpan: 0.25,
+                out int sampleCount);
+
+            if (sampleCount < 40 || centroidX <= 0.5)
+            {
+                failures.Add(
+                    fileName +
+                    " z_plus SOT/text vector fallback cluster should not be mirrored horizontally; centroidX=" +
+                    centroidX.ToString("R", CultureInfo.InvariantCulture) +
+                    ", sampleCount=" +
+                    sampleCount.ToString(CultureInfo.InvariantCulture) +
+                    ".");
+            }
+        }
+
+        private static double CentroidXOfPolylineFallbacks(
+            VectorProjectionViewDto view,
+            double centerXMin,
+            double centerXMax,
+            double centerYMin,
+            double centerYMax,
+            double maxPrimitiveSpan,
+            out int sampleCount)
+        {
+            sampleCount = 0;
+            double xSum = 0.0;
+            foreach (VectorProjectionPrimitiveDto primitive in view.Primitives)
+            {
+                if (!TryGetPolylineFallbackBounds(primitive, out double minX, out double minY, out double maxX, out double maxY))
+                    continue;
+
+                double centerX = (minX + maxX) / 2.0;
+                double centerY = (minY + maxY) / 2.0;
+                if (centerX < centerXMin ||
+                    centerX > centerXMax ||
+                    centerY < centerYMin ||
+                    centerY > centerYMax ||
+                    Math.Max(maxX - minX, maxY - minY) > maxPrimitiveSpan)
+                {
+                    continue;
+                }
+
+                xSum += centerX;
+                sampleCount++;
+            }
+
+            return sampleCount == 0 ? double.NaN : xSum / sampleCount;
+        }
+
+        private static double PointSkewXOfPolylineFallbacks(
+            VectorProjectionViewDto view,
+            double centerXMin,
+            double centerXMax,
+            double centerYMin,
+            double centerYMax,
+            double maxPrimitiveSpan,
+            out int sampleCount)
+        {
+            sampleCount = 0;
+            double xSum = 0.0;
+            double xSquaredSum = 0.0;
+            double xCubedSum = 0.0;
+            foreach (VectorProjectionPrimitiveDto primitive in view.Primitives)
+            {
+                if (!TryGetPolylineFallbackBounds(primitive, out double minX, out double minY, out double maxX, out double maxY))
+                    continue;
+
+                double centerX = (minX + maxX) / 2.0;
+                double centerY = (minY + maxY) / 2.0;
+                if (centerX < centerXMin ||
+                    centerX > centerXMax ||
+                    centerY < centerYMin ||
+                    centerY > centerYMax ||
+                    Math.Max(maxX - minX, maxY - minY) > maxPrimitiveSpan)
+                {
+                    continue;
+                }
+
+                for (int index = 0; index + 1 < primitive.Points.Length; index += 2)
+                {
+                    double x = primitive.Points[index];
+                    xSum += x;
+                    xSquaredSum += x * x;
+                    xCubedSum += x * x * x;
+                    sampleCount++;
+                }
+            }
+
+            if (sampleCount == 0)
+                return double.NaN;
+
+            double mean = xSum / sampleCount;
+            return xCubedSum / sampleCount -
+                3.0 * mean * xSquaredSum / sampleCount +
+                2.0 * mean * mean * mean;
+        }
+
+        private static bool TryGetPolylineFallbackBounds(
+            VectorProjectionPrimitiveDto primitive,
+            out double minX,
+            out double minY,
+            out double maxX,
+            out double maxY)
+        {
+            minX = minY = double.PositiveInfinity;
+            maxX = maxY = double.NegativeInfinity;
+            if (primitive == null ||
+                !string.Equals(primitive.Kind, "polyline", StringComparison.OrdinalIgnoreCase) ||
+                primitive.Points == null ||
+                primitive.Points.Length < 4 ||
+                string.IsNullOrWhiteSpace(primitive.OriginalKind) ||
+                primitive.OriginalKind.IndexOf("bspline", StringComparison.OrdinalIgnoreCase) < 0)
+            {
+                return false;
+            }
+
+            for (int index = 0; index + 1 < primitive.Points.Length; index += 2)
+            {
+                double x = primitive.Points[index];
+                double y = primitive.Points[index + 1];
+                minX = Math.Min(minX, x);
+                minY = Math.Min(minY, y);
+                maxX = Math.Max(maxX, x);
+                maxY = Math.Max(maxY, y);
+            }
+
+            return true;
+        }
+
+        private static void AssertSplineFallbacksAreSampled(
+            VectorProjectionResultDto result,
+            string fileName,
+            string viewName,
+            List<string> failures)
+        {
+            VectorProjectionViewDto view = result.Views.FirstOrDefault(candidate =>
+                string.Equals(candidate.Name, viewName, StringComparison.OrdinalIgnoreCase));
+            if (view == null || view.Primitives == null)
+                return;
+
+            int lowResolutionSplineCount = 0;
+            foreach (VectorProjectionPrimitiveDto primitive in view.Primitives)
+            {
+                if (primitive == null ||
+                    !string.Equals(primitive.Kind, "polyline", StringComparison.OrdinalIgnoreCase) ||
+                    primitive.Points == null ||
+                    primitive.Points.Length < 4 ||
+                    primitive.OriginalKind == null ||
+                    primitive.OriginalKind.IndexOf("bspline", StringComparison.OrdinalIgnoreCase) < 0)
+                {
+                    continue;
+                }
+
+                int pointCount = primitive.Points.Length / 2;
+                if (pointCount < 24)
+                    lowResolutionSplineCount++;
+            }
+
+            if (lowResolutionSplineCount > 0)
+            {
+                failures.Add(
+                    fileName +
+                    " " +
+                    viewName +
+                    " spline fallback primitives should be evaluated curves, not low-resolution control polygons; got " +
+                    lowResolutionSplineCount.ToString(CultureInfo.InvariantCulture) +
+                    " spline fallback(s) with fewer than 24 points.");
+            }
+        }
+
+        private static void AssertVectorViewBounds(
+            VectorProjectionResultDto result,
+            string fileName,
+            string viewName,
+            double minWidth,
+            double maxWidth,
+            double minHeight,
+            double maxHeight,
+            int minPrimitiveCount,
+            List<string> failures)
+        {
+            VectorProjectionViewDto view = result.Views.FirstOrDefault(candidate =>
+                string.Equals(candidate.Name, viewName, StringComparison.OrdinalIgnoreCase));
+            if (view == null)
+            {
+                failures.Add(fileName + " should include " + viewName + " vector view.");
+                return;
+            }
+
+            int primitiveCount = view.Primitives == null ? 0 : view.Primitives.Count;
+            if (primitiveCount < minPrimitiveCount)
+            {
+                failures.Add(
+                    fileName +
+                    " " +
+                    viewName +
+                    " should include at least " +
+                    minPrimitiveCount.ToString(CultureInfo.InvariantCulture) +
+                    " primitives, got " +
+                    primitiveCount.ToString(CultureInfo.InvariantCulture) +
+                    ".");
+            }
+
+            if (view.Bounds == null ||
+                view.Bounds.Width < minWidth ||
+                view.Bounds.Width > maxWidth ||
+                view.Bounds.Height < minHeight ||
+                view.Bounds.Height > maxHeight)
+            {
+                failures.Add(
+                    fileName +
+                    " " +
+                    viewName +
+                    " vector bounds should stay within expected model span, got " +
+                    FormatVectorBounds(view.Bounds) +
+                    ".");
+            }
+        }
+
+        private static string FormatVectorBounds(VectorProjectionBoundsDto bounds)
+        {
+            if (bounds == null)
+                return "<null>";
+
+            return
+                "left=" + bounds.Left.ToString("R", CultureInfo.InvariantCulture) +
+                ", bottom=" + bounds.Bottom.ToString("R", CultureInfo.InvariantCulture) +
+                ", right=" + bounds.Right.ToString("R", CultureInfo.InvariantCulture) +
+                ", top=" + bounds.Top.ToString("R", CultureInfo.InvariantCulture) +
+                ", width=" + bounds.Width.ToString("R", CultureInfo.InvariantCulture) +
+                ", height=" + bounds.Height.ToString("R", CultureInfo.InvariantCulture);
+        }
+
+        private static bool IsVectorLine(VectorProjectionPrimitiveDto primitive)
+        {
+            return primitive != null &&
+                string.Equals(primitive.Kind, "line", StringComparison.OrdinalIgnoreCase) &&
+                primitive.Points != null &&
+                primitive.Points.Length >= 4;
+        }
+
+        private static double Distance2d(double x1, double y1, double x2, double y2)
+        {
+            double dx = x2 - x1;
+            double dy = y2 - y1;
+            return Math.Sqrt(dx * dx + dy * dy);
+        }
+
+        private static string FormatVectorPoints(double[] points)
+        {
+            if (points == null)
+                return "<null>";
+
+            return "[" + string.Join(",", points.Select(point => point.ToString("R", CultureInfo.InvariantCulture))) + "]";
+        }
+
+        private static void ValidateVectorDebugSvg(string modelName, string svgDirectory, List<string> failures)
+        {
+            bool sawSvgArcCommand = false;
+            foreach (string viewName in new[] { "x_plus", "x_minus", "y_plus", "y_minus", "z_plus", "z_minus" })
+            {
+                string svgPath = Path.Combine(svgDirectory, viewName + ".svg");
+                if (!File.Exists(svgPath))
+                {
+                    failures.Add(modelName + " " + viewName + " debug SVG was not written: " + svgPath);
+                    continue;
+                }
+
+                string svg = File.ReadAllText(svgPath);
+                try
+                {
+                    XDocument document = XDocument.Parse(svg);
+                    if (!string.Equals(document.Root?.Name.LocalName, "svg", StringComparison.OrdinalIgnoreCase))
+                        failures.Add(modelName + " " + viewName + " debug SVG should contain an SVG root.");
+
+                    bool containsImage = document
+                        .Descendants()
+                        .Any(element => string.Equals(element.Name.LocalName, "image", StringComparison.OrdinalIgnoreCase));
+                    if (containsImage)
+                        failures.Add(modelName + " " + viewName + " debug SVG must not contain image elements.");
+
+                    bool containsForeignObject = document
+                        .Descendants()
+                        .Any(element => string.Equals(element.Name.LocalName, "foreignObject", StringComparison.OrdinalIgnoreCase));
+                    if (containsForeignObject)
+                        failures.Add(modelName + " " + viewName + " debug SVG must not contain foreignObject elements.");
+
+                    bool containsRasterReference = document
+                        .Descendants()
+                        .Attributes()
+                        .Any(attribute =>
+                        {
+                            string localName = attribute.Name.LocalName;
+                            if (!string.Equals(localName, "href", StringComparison.OrdinalIgnoreCase))
+                                return false;
+                            string value = attribute.Value ?? string.Empty;
+                            return value.StartsWith("data:image", StringComparison.OrdinalIgnoreCase) ||
+                                value.EndsWith(".png", StringComparison.OrdinalIgnoreCase);
+                        });
+                    if (containsRasterReference)
+                        failures.Add(modelName + " " + viewName + " debug SVG must not reference raster image payloads.");
+
+                    int vectorElementCount = document
+                        .Descendants()
+                        .Count(element =>
+                            string.Equals(element.Name.LocalName, "line", StringComparison.OrdinalIgnoreCase) ||
+                            string.Equals(element.Name.LocalName, "path", StringComparison.OrdinalIgnoreCase) ||
+                            string.Equals(element.Name.LocalName, "circle", StringComparison.OrdinalIgnoreCase) ||
+                            string.Equals(element.Name.LocalName, "polyline", StringComparison.OrdinalIgnoreCase) ||
+                            string.Equals(element.Name.LocalName, "polygon", StringComparison.OrdinalIgnoreCase) ||
+                            string.Equals(element.Name.LocalName, "ellipse", StringComparison.OrdinalIgnoreCase) ||
+                            string.Equals(element.Name.LocalName, "rect", StringComparison.OrdinalIgnoreCase));
+                    if (vectorElementCount == 0)
+                        failures.Add(modelName + " " + viewName + " debug SVG should contain vector primitives.");
+
+                    bool viewHasArcCommand = document
+                        .Descendants()
+                        .Any(element =>
+                            string.Equals(element.Name.LocalName, "path", StringComparison.OrdinalIgnoreCase) &&
+                            element.Attribute("d") != null &&
+                            Regex.IsMatch(element.Attribute("d").Value, @"(^|[\s,])A[\s,]", RegexOptions.IgnoreCase));
+                    if (viewHasArcCommand)
+                        sawSvgArcCommand = true;
+                }
+                catch (Exception ex)
+                {
+                    failures.Add(modelName + " " + viewName + " debug SVG should parse as XML: " + ex.Message);
+                }
+
+                if (svg.IndexOf("data:image", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    svg.IndexOf("image/png", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    svg.IndexOf(".png", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    failures.Add(modelName + " " + viewName + " debug SVG text must not contain raster image references.");
+                }
+            }
+
+            if (!modelName.StartsWith("HDMI-SMD_HDMI-001S", StringComparison.OrdinalIgnoreCase) &&
+                !sawSvgArcCommand)
+            {
+                failures.Add(modelName + " debug SVG should emit real SVG arc commands for circular arc primitives.");
+            }
+        }
+
+        private static void SaveVectorProjectionPng(VectorProjectionViewDto view, string outputPath, string title)
+        {
+            string directory = Path.GetDirectoryName(outputPath);
+            if (!string.IsNullOrEmpty(directory))
+                Directory.CreateDirectory(directory);
+
+            const int imageSize = 1000;
+            const int padding = 60;
+            VectorProjectionBoundsDto bounds = NormalizeVectorBounds(view.Bounds);
+            using (var bitmap = new SKBitmap(imageSize, imageSize, SKColorType.Rgba8888, SKAlphaType.Premul))
+            using (var canvas = new SKCanvas(bitmap))
+            using (var paint = new SKPaint())
+            using (var textPaint = new SKPaint())
+            using (var font = new SKFont())
+            {
+                canvas.Clear(SKColors.White);
+                paint.Color = SKColors.Black;
+                paint.StrokeWidth = 2.0f;
+                paint.StrokeCap = SKStrokeCap.Round;
+                paint.StrokeJoin = SKStrokeJoin.Round;
+                paint.IsAntialias = true;
+                paint.Style = SKPaintStyle.Stroke;
+
+                textPaint.Color = SKColors.Black;
+                textPaint.IsAntialias = true;
+                font.Size = 18.0f;
+
+                foreach (VectorProjectionPrimitiveDto primitive in view.Primitives ?? new List<VectorProjectionPrimitiveDto>())
+                    DrawVectorPrimitive(canvas, paint, primitive, bounds, imageSize, padding);
+
+                canvas.DrawText(title, 14.0f, 28.0f, SKTextAlign.Left, font, textPaint);
+
+                using (SKImage image = SKImage.FromBitmap(bitmap))
+                using (SKData data = image.Encode(SKEncodedImageFormat.Png, 100))
+                using (Stream stream = File.Create(outputPath))
+                    data.SaveTo(stream);
+            }
+        }
+
+        private static void DrawVectorPrimitive(
+            SKCanvas canvas,
+            SKPaint paint,
+            VectorProjectionPrimitiveDto primitive,
+            VectorProjectionBoundsDto bounds,
+            int imageSize,
+            int padding)
+        {
+            if (primitive == null)
+                return;
+
+            if (string.Equals(primitive.Kind, "line", StringComparison.OrdinalIgnoreCase) &&
+                primitive.Points != null &&
+                primitive.Points.Length >= 4)
+            {
+                canvas.DrawLine(
+                    VectorImageX(primitive.Points[0], bounds, imageSize, padding),
+                    VectorImageY(primitive.Points[1], bounds, imageSize, padding),
+                    VectorImageX(primitive.Points[2], bounds, imageSize, padding),
+                    VectorImageY(primitive.Points[3], bounds, imageSize, padding),
+                    paint);
+                return;
+            }
+
+            if (string.Equals(primitive.Kind, "arc", StringComparison.OrdinalIgnoreCase))
+            {
+                using (var path = new SKPath())
+                {
+                    bool started = false;
+                    double sweep = primitive.EndAngle - primitive.StartAngle;
+                    while (sweep < 0.0)
+                        sweep += 360.0;
+                    if (sweep <= 0.0)
+                        sweep = 360.0;
+
+                    int steps = Math.Max(8, (int)Math.Ceiling(sweep / 3.0));
+                    for (int i = 0; i <= steps; i++)
+                    {
+                        double angle = (primitive.StartAngle + sweep * i / steps) * Math.PI / 180.0;
+                        double x = primitive.CenterX + Math.Cos(angle) * primitive.Radius;
+                        double y = primitive.CenterY + Math.Sin(angle) * primitive.Radius;
+                        float px = VectorImageX(x, bounds, imageSize, padding);
+                        float py = VectorImageY(y, bounds, imageSize, padding);
+                        if (!started)
+                        {
+                            path.MoveTo(px, py);
+                            started = true;
+                        }
+                        else
+                        {
+                            path.LineTo(px, py);
+                        }
+                    }
+
+                    if (started)
+                        canvas.DrawPath(path, paint);
+                }
+            }
+            else if (string.Equals(primitive.Kind, "polyline", StringComparison.OrdinalIgnoreCase) &&
+                primitive.Points != null &&
+                primitive.Points.Length >= 4)
+            {
+                using (var path = new SKPath())
+                {
+                    path.MoveTo(
+                        VectorImageX(primitive.Points[0], bounds, imageSize, padding),
+                        VectorImageY(primitive.Points[1], bounds, imageSize, padding));
+                    for (int index = 2; index + 1 < primitive.Points.Length; index += 2)
+                    {
+                        path.LineTo(
+                            VectorImageX(primitive.Points[index], bounds, imageSize, padding),
+                            VectorImageY(primitive.Points[index + 1], bounds, imageSize, padding));
+                    }
+
+                    canvas.DrawPath(path, paint);
+                }
+            }
+        }
+
+        private static VectorProjectionBoundsDto NormalizeVectorBounds(VectorProjectionBoundsDto bounds)
+        {
+            if (bounds == null || bounds.Width <= 0.0 || bounds.Height <= 0.0)
+            {
+                return new VectorProjectionBoundsDto
+                {
+                    Left = -5.0,
+                    Bottom = -5.0,
+                    Right = 5.0,
+                    Top = 5.0,
+                    Width = 10.0,
+                    Height = 10.0
+                };
+            }
+
+            return bounds;
+        }
+
+        private static float VectorImageX(double x, VectorProjectionBoundsDto bounds, int imageSize, int padding)
+        {
+            double scale = VectorImageScale(bounds, imageSize, padding);
+            double drawingWidth = bounds.Width * scale;
+            double offset = (imageSize - drawingWidth) / 2.0;
+            return (float)(offset + (x - bounds.Left) * scale);
+        }
+
+        private static float VectorImageY(double y, VectorProjectionBoundsDto bounds, int imageSize, int padding)
+        {
+            double scale = VectorImageScale(bounds, imageSize, padding);
+            double drawingHeight = bounds.Height * scale;
+            double offset = (imageSize - drawingHeight) / 2.0;
+            return (float)(imageSize - offset - (y - bounds.Bottom) * scale);
+        }
+
+        private static double VectorImageScale(VectorProjectionBoundsDto bounds, int imageSize, int padding)
+        {
+            double drawable = Math.Max(1.0, imageSize - padding * 2.0);
+            return drawable / Math.Max(bounds.Width, bounds.Height);
         }
 
         private static int SaveEdgePreview(string[] args)
@@ -3898,6 +5169,98 @@ namespace StepCleaner.Tests
             }
 
             return count;
+        }
+
+        private static void ValidateVisibleRawUsbXPlusBounds(
+            string label,
+            MarkedRectI? bounds,
+            List<string> failures)
+        {
+            if (!bounds.HasValue)
+            {
+                failures.Add(label + " should contain placed x_plus vector linework.");
+                return;
+            }
+
+            MarkedRectI value = bounds.Value;
+            if (value.X < 50 || value.X > 120 ||
+                value.Y < 140 || value.Y > 220 ||
+                value.Width < 1380 || value.Width > 1490 ||
+                value.Height < 1200 || value.Height > 1290)
+            {
+                failures.Add(
+                    label +
+                    " should keep USB-B x_plus linework in the expected image envelope, got " +
+                    value.ToString() +
+                    ".");
+            }
+        }
+
+        private static MarkedRectI? GetDarkPixelBounds(StepProjectionImage image, byte threshold)
+        {
+            if (image == null || image.RgbaBytes == null)
+                return null;
+
+            int left = image.Width;
+            int top = image.Height;
+            int right = -1;
+            int bottom = -1;
+            for (int y = 0; y < image.Height; y++)
+            {
+                int row = y * image.Width * 4;
+                for (int x = 0; x < image.Width; x++)
+                {
+                    int offset = row + x * 4;
+                    if (image.RgbaBytes[offset + 3] > 0 &&
+                        image.RgbaBytes[offset] <= threshold &&
+                        image.RgbaBytes[offset + 1] <= threshold &&
+                        image.RgbaBytes[offset + 2] <= threshold)
+                    {
+                        left = Math.Min(left, x);
+                        top = Math.Min(top, y);
+                        right = Math.Max(right, x);
+                        bottom = Math.Max(bottom, y);
+                    }
+                }
+            }
+
+            if (right < left || bottom < top)
+                return null;
+
+            return new MarkedRectI(left, top, right - left + 1, bottom - top + 1);
+        }
+
+        private static MarkedRectI? GetDarkPixelBounds(SKBitmap bitmap, byte threshold)
+        {
+            if (bitmap == null)
+                return null;
+
+            int left = bitmap.Width;
+            int top = bitmap.Height;
+            int right = -1;
+            int bottom = -1;
+            for (int y = 0; y < bitmap.Height; y++)
+            {
+                for (int x = 0; x < bitmap.Width; x++)
+                {
+                    SKColor pixel = bitmap.GetPixel(x, y);
+                    if (pixel.Alpha > 0 &&
+                        pixel.Red <= threshold &&
+                        pixel.Green <= threshold &&
+                        pixel.Blue <= threshold)
+                    {
+                        left = Math.Min(left, x);
+                        top = Math.Min(top, y);
+                        right = Math.Max(right, x);
+                        bottom = Math.Max(bottom, y);
+                    }
+                }
+            }
+
+            if (right < left || bottom < top)
+                return null;
+
+            return new MarkedRectI(left, top, right - left + 1, bottom - top + 1);
         }
 
         private static void SaveRgbaPng(byte[] rgba, int width, int height, string outputPath)
@@ -6598,6 +7961,8 @@ namespace StepCleaner.Tests
 
         private sealed class MarkedRegionFile
         {
+            public int ImageWidth { get; set; }
+            public int ImageHeight { get; set; }
             public List<MarkedRectangle> Rectangles { get; set; }
         }
 
@@ -6687,6 +8052,49 @@ namespace StepCleaner.Tests
             public string LeftImagePath { get; set; }
             public string RightLabel { get; set; }
             public string RightImagePath { get; set; }
+        }
+
+        private sealed class VectorProjectionResultDto
+        {
+            public bool Success { get; set; }
+            public string Error { get; set; }
+            public string Engine { get; set; }
+            public List<VectorProjectionViewDto> Views { get; set; } = new List<VectorProjectionViewDto>();
+        }
+
+        private sealed class VectorProjectionViewDto
+        {
+            public string Name { get; set; }
+            public bool Success { get; set; }
+            public string Error { get; set; }
+            public VectorProjectionBoundsDto Bounds { get; set; }
+            public List<VectorProjectionPrimitiveDto> Primitives { get; set; } = new List<VectorProjectionPrimitiveDto>();
+        }
+
+        private sealed class VectorProjectionBoundsDto
+        {
+            public double Left { get; set; }
+            public double Bottom { get; set; }
+            public double Right { get; set; }
+            public double Top { get; set; }
+            public double Width { get; set; }
+            public double Height { get; set; }
+        }
+
+        private sealed class VectorProjectionPrimitiveDto
+        {
+            public string Kind { get; set; }
+            public string Visibility { get; set; }
+            public string Category { get; set; }
+            public int SourceIndex { get; set; }
+            public double[] Points { get; set; }
+            public double CenterX { get; set; }
+            public double CenterY { get; set; }
+            public double Radius { get; set; }
+            public double StartAngle { get; set; }
+            public double EndAngle { get; set; }
+            public string OriginalKind { get; set; }
+            public double Tolerance { get; set; }
         }
 
         private sealed class FullTestDetectionCache

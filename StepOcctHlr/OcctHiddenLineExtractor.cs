@@ -14,6 +14,7 @@ namespace StepOcctHlr
         public double RotY { get; set; }
         public double RotZ { get; set; }
         public double Rotation2D { get; set; }
+        public bool MirrorX { get; set; }
     }
 
     internal sealed class ProjectionViewRequest
@@ -27,6 +28,10 @@ namespace StepOcctHlr
         private const double GeometryTolerance = 1e-6;
         private const double CircleRadiusTolerance = 1e-5;
         private const double FullCircleRadiansTolerance = 1e-5;
+        private const double CurveFallbackTolerance = 0.01;
+        private const double CurveFallbackSampleStepDegrees = 3.0;
+        private const int BsplineMinimumSampleCount = 24;
+        private const int BsplineSamplesPerKnotInterval = 8;
 
         public static ProjectionResultDto Extract(string inputPath, ProjectionOptions options)
         {
@@ -76,7 +81,7 @@ namespace StepOcctHlr
             return result;
         }
 
-        private static ProjectionResultDto TryReadRootShape(
+        internal static ProjectionResultDto TryReadRootShape(
             string inputPath,
             Stopwatch stopwatch,
             out TopoDS_Shape shape)
@@ -161,7 +166,18 @@ namespace StepOcctHlr
             AddPrimitivesFromBrepText(primitives, Encoding.ASCII.GetString(brepBytes), options);
         }
 
-        private static TopoDS_Shape ApplyModelRotation(TopoDS_Shape shape, ProjectionOptions options)
+        internal static List<ProjectionPrimitiveDto> ExtractPrimitivesFromCompound(
+            TopoDS_Shape compound,
+            ProjectionOptions options,
+            Stopwatch stopwatch,
+            int compoundIndex)
+        {
+            var primitives = new List<ProjectionPrimitiveDto>();
+            AddPrimitivesFromBrep(primitives, compound, options, stopwatch, compoundIndex);
+            return primitives;
+        }
+
+        internal static TopoDS_Shape ApplyModelRotation(TopoDS_Shape shape, ProjectionOptions options)
         {
             if (IsIdentityModelRotation(options))
                 return shape;
@@ -254,11 +270,33 @@ namespace StepOcctHlr
                 if (!TryGetCurve2dType(line, out int type))
                     continue;
 
-                Curve2dRecord record = ParseCurve2dRecord(line, type);
+                string recordText = line;
+                if (type == 7)
+                {
+                    int knotLineIndex = NextNonEmptyLineIndex(lines, lineIndex + 1, tshapesLine);
+                    if (knotLineIndex >= 0)
+                    {
+                        recordText += " " + lines[knotLineIndex].Trim();
+                        lineIndex = knotLineIndex;
+                    }
+                }
+
+                Curve2dRecord record = ParseCurve2dRecord(recordText, type);
                 curves[curveIndex++] = record;
             }
 
             return curves;
+        }
+
+        private static int NextNonEmptyLineIndex(string[] lines, int startIndex, int endIndex)
+        {
+            for (int index = startIndex; index < endIndex && index < lines.Length; index++)
+            {
+                if (!string.IsNullOrWhiteSpace(lines[index]))
+                    return index;
+            }
+
+            return -1;
         }
 
         private static bool TryGetCurve2dType(string line, out int type)
@@ -304,10 +342,100 @@ namespace StepOcctHlr
                     values[8]);
             }
 
-            if (type == 7)
+            if (type == 7 && values.Length >= 10)
+            {
+                int rational = (int)Math.Round(values[1]);
+                int degree = (int)Math.Round(values[3]);
+                int poleCount = (int)Math.Round(values[4]);
+                if (degree >= 1 && poleCount >= 2)
+                {
+                    Curve2dRecord record = ParseType7Curve(values, rational != 0, degree, poleCount);
+                    if (record.Kind != Curve2dKind.Unsupported)
+                        return record;
+                }
+
                 return Curve2dRecord.Fallback;
+            }
 
             return Curve2dRecord.Unsupported;
+        }
+
+        private static Curve2dRecord ParseType7Curve(double[] values, bool rational, int degree, int poleCount)
+        {
+            int stride = rational ? 3 : 2;
+            int offset = 6;
+            if (values.Length < offset + poleCount * stride)
+                return Curve2dRecord.Unsupported;
+
+            var poles = new Point2d[poleCount];
+            var weights = rational ? new double[poleCount] : null;
+            for (int index = 0; index < poleCount; index++)
+            {
+                int valueIndex = offset + index * stride;
+                poles[index] = new Point2d(values[valueIndex], values[valueIndex + 1]);
+                if (rational)
+                    weights[index] = values[valueIndex + 2];
+            }
+
+            int knotCount = (int)Math.Round(values[5]);
+            int knotOffset = offset + poleCount * stride;
+            if (values.Length < knotOffset + knotCount * 2)
+                return Curve2dRecord.Unsupported;
+
+            var knots = new double[knotCount];
+            var multiplicities = new int[knotCount];
+            for (int index = 0; index < knotCount; index++)
+            {
+                int valueIndex = knotOffset + index * 2;
+                knots[index] = values[valueIndex];
+                multiplicities[index] = Math.Max(1, (int)Math.Round(values[valueIndex + 1]));
+            }
+
+            double[] expandedKnots = ExpandKnots(knots, multiplicities);
+            if (expandedKnots.Length != poleCount + degree + 1)
+                return Curve2dRecord.Unsupported;
+
+            if (degree == 1 && poleCount == 2)
+                return Curve2dRecord.Line(poles[0].X, poles[0].Y, poles[1].X - poles[0].X, poles[1].Y - poles[0].Y);
+
+            return Curve2dRecord.BSpline(
+                degree,
+                poles,
+                weights,
+                knots,
+                multiplicities,
+                expandedKnots,
+                rational ? "rational-bspline" : "bspline",
+                CurveFallbackTolerance);
+        }
+
+        private static double[] ExpandKnots(double[] knots, int[] multiplicities)
+        {
+            int count = 0;
+            for (int index = 0; index < multiplicities.Length; index++)
+                count += multiplicities[index];
+
+            var expanded = new double[count];
+            int targetIndex = 0;
+            for (int knotIndex = 0; knotIndex < knots.Length; knotIndex++)
+            {
+                for (int repeat = 0; repeat < multiplicities[knotIndex]; repeat++)
+                    expanded[targetIndex++] = knots[knotIndex];
+            }
+
+            return expanded;
+        }
+
+        private static double[] FlattenPoints(Point2d[] points)
+        {
+            var result = new double[points.Length * 2];
+            for (int index = 0; index < points.Length; index++)
+            {
+                result[index * 2] = points[index].X;
+                result[index * 2 + 1] = points[index].Y;
+            }
+
+            return result;
         }
 
         private static void ReadVertex(
@@ -327,9 +455,7 @@ namespace StepOcctHlr
             double[] coords = ParseDoubles(lines[lineIndex++]);
             if (coords.Length >= 2)
             {
-                var point = new Point2d(coords[0], -coords[1]);
-                point = Rotate2D(point, EffectiveRotation2D(options));
-                vertices[shapeIndex] = point;
+                vertices[shapeIndex] = TransformBrepPoint(coords[0], coords[1], options);
             }
 
             SkipShape(lines, ref lineIndex);
@@ -457,26 +583,36 @@ namespace StepOcctHlr
         {
             if (curve.Kind == Curve2dKind.Line)
             {
-                Point2d a = TransformBrepPoint(
+                Point2d curveStart = TransformBrepPoint(
                     curve.OriginX + curve.XDirection * firstParameter,
                     curve.OriginY + curve.YDirection * firstParameter,
                     options);
-                Point2d b = TransformBrepPoint(
+                Point2d curveEnd = TransformBrepPoint(
                     curve.OriginX + curve.XDirection * lastParameter,
                     curve.OriginY + curve.YDirection * lastParameter,
                     options);
 
-                if (Distance(a, b) < GeometryTolerance)
+                if (Distance(curveStart, curveEnd) < GeometryTolerance)
                     return false;
 
-                primitives.Add(Line(a, b));
+                if (!LineEndpointsMatchVertices(curveStart, curveEnd, firstVertex, secondVertex))
+                    return false;
+
+                primitives.Add(Line(curveStart, curveEnd));
                 return true;
             }
 
             if (curve.Kind == Curve2dKind.Conic)
             {
                 if (Math.Abs(curve.MajorRadius - curve.MinorRadius) > CircleRadiusTolerance)
-                    return false;
+                    return AddConicPolylinePrimitive(
+                        primitives,
+                        curve,
+                        firstParameter,
+                        lastParameter,
+                        firstVertex,
+                        secondVertex,
+                        options);
 
                 double radius = (Math.Abs(curve.MajorRadius) + Math.Abs(curve.MinorRadius)) / 2.0;
                 if (radius < GeometryTolerance)
@@ -522,7 +658,226 @@ namespace StepOcctHlr
                 return true;
             }
 
+            if (curve.Kind == Curve2dKind.Polyline)
+            {
+                if (curve.Points == null || curve.Points.Length < 4)
+                    return false;
+
+                var points = new double[curve.Points.Length];
+                for (int index = 0; index + 1 < curve.Points.Length; index += 2)
+                {
+                    Point2d point = TransformBrepPoint(curve.Points[index], curve.Points[index + 1], options);
+                    points[index] = point.X;
+                    points[index + 1] = point.Y;
+                }
+
+                primitives.Add(Polyline(points, curve.OriginalKind, curve.Tolerance));
+                return true;
+            }
+
+            if (curve.Kind == Curve2dKind.BSpline)
+            {
+                double[] points = SampleBSplinePolyline(curve, firstParameter, lastParameter, options);
+                if (points == null || points.Length < 4)
+                    return false;
+
+                primitives.Add(Polyline(points, curve.OriginalKind, curve.Tolerance));
+                return true;
+            }
+
             return false;
+        }
+
+        private static double[] SampleBSplinePolyline(
+            Curve2dRecord curve,
+            double firstParameter,
+            double lastParameter,
+            ProjectionOptions options)
+        {
+            if (curve.Poles == null ||
+                curve.Poles.Length == 0 ||
+                curve.ExpandedKnots == null ||
+                curve.ExpandedKnots.Length < curve.Poles.Length + curve.Degree + 1)
+            {
+                return null;
+            }
+
+            int poleCount = curve.Poles.Length;
+            double domainStart = curve.ExpandedKnots[curve.Degree];
+            double domainEnd = curve.ExpandedKnots[poleCount];
+            double start = Clamp(firstParameter, domainStart, domainEnd);
+            double end = Clamp(lastParameter, domainStart, domainEnd);
+            if (Math.Abs(start - end) < GeometryTolerance)
+            {
+                start = domainStart;
+                end = domainEnd;
+            }
+
+            int intervalCount = CountKnotIntervals(curve.Knots, Math.Min(start, end), Math.Max(start, end));
+            int steps = Math.Max(BsplineMinimumSampleCount, Math.Max(1, intervalCount) * BsplineSamplesPerKnotInterval);
+            var points = new double[(steps + 1) * 2];
+            for (int index = 0; index <= steps; index++)
+            {
+                double parameter = start + (end - start) * index / steps;
+                Point2d rawPoint = EvaluateBSpline(curve, parameter);
+                Point2d point = TransformBrepPoint(rawPoint.X, rawPoint.Y, options);
+                points[index * 2] = point.X;
+                points[index * 2 + 1] = point.Y;
+            }
+
+            return points;
+        }
+
+        private static int CountKnotIntervals(double[] knots, double start, double end)
+        {
+            if (knots == null || knots.Length < 2)
+                return 1;
+
+            int count = 0;
+            for (int index = 0; index + 1 < knots.Length; index++)
+            {
+                double left = knots[index];
+                double right = knots[index + 1];
+                if (right <= start || left >= end)
+                    continue;
+                if (right - left > GeometryTolerance)
+                    count++;
+            }
+
+            return Math.Max(1, count);
+        }
+
+        private static Point2d EvaluateBSpline(Curve2dRecord curve, double parameter)
+        {
+            int degree = curve.Degree;
+            int lastPole = curve.Poles.Length - 1;
+            double[] knots = curve.ExpandedKnots;
+            if (parameter <= knots[degree] + GeometryTolerance)
+                return curve.Poles[0];
+            if (parameter >= knots[lastPole + 1] - GeometryTolerance)
+                return curve.Poles[lastPole];
+
+            int span = FindBSplineSpan(lastPole, degree, parameter, knots);
+            var work = new HomogeneousPoint[degree + 1];
+            for (int index = 0; index <= degree; index++)
+            {
+                int poleIndex = span - degree + index;
+                double weight = curve.Weights == null ? 1.0 : curve.Weights[poleIndex];
+                work[index] = new HomogeneousPoint(
+                    curve.Poles[poleIndex].X * weight,
+                    curve.Poles[poleIndex].Y * weight,
+                    weight);
+            }
+
+            for (int level = 1; level <= degree; level++)
+            {
+                for (int index = degree; index >= level; index--)
+                {
+                    int knotIndex = span - degree + index;
+                    double denominator = knots[knotIndex + degree + 1 - level] - knots[knotIndex];
+                    double alpha = Math.Abs(denominator) < GeometryTolerance
+                        ? 0.0
+                        : (parameter - knots[knotIndex]) / denominator;
+                    work[index] = Lerp(work[index - 1], work[index], alpha);
+                }
+            }
+
+            HomogeneousPoint result = work[degree];
+            if (Math.Abs(result.W) < GeometryTolerance)
+                return curve.Poles[Math.Max(0, Math.Min(lastPole, span))];
+
+            return new Point2d(result.X / result.W, result.Y / result.W);
+        }
+
+        private static int FindBSplineSpan(int lastPole, int degree, double parameter, double[] knots)
+        {
+            if (parameter >= knots[lastPole + 1])
+                return lastPole;
+
+            int low = degree;
+            int high = lastPole + 1;
+            int middle = (low + high) / 2;
+            while (parameter < knots[middle] || parameter >= knots[middle + 1])
+            {
+                if (parameter < knots[middle])
+                    high = middle;
+                else
+                    low = middle;
+                middle = (low + high) / 2;
+            }
+
+            return middle;
+        }
+
+        private static HomogeneousPoint Lerp(HomogeneousPoint a, HomogeneousPoint b, double alpha)
+        {
+            double beta = 1.0 - alpha;
+            return new HomogeneousPoint(
+                beta * a.X + alpha * b.X,
+                beta * a.Y + alpha * b.Y,
+                beta * a.W + alpha * b.W);
+        }
+
+        private static bool AddConicPolylinePrimitive(
+            List<ProjectionPrimitiveDto> primitives,
+            Curve2dRecord curve,
+            double firstParameter,
+            double lastParameter,
+            Point2d firstVertex,
+            Point2d secondVertex,
+            ProjectionOptions options)
+        {
+            double majorRadius = Math.Abs(curve.MajorRadius);
+            double minorRadius = Math.Abs(curve.MinorRadius);
+            if (majorRadius < GeometryTolerance || minorRadius < GeometryTolerance)
+                return false;
+
+            double sweep = lastParameter - firstParameter;
+            if (Math.Abs(sweep) < GeometryTolerance)
+            {
+                if (Distance(firstVertex, secondVertex) < GeometryTolerance)
+                    sweep = 2.0 * Math.PI;
+                else
+                    return false;
+            }
+
+            int steps = Math.Max(
+                8,
+                (int)Math.Ceiling(Math.Abs(sweep) * 180.0 / Math.PI / CurveFallbackSampleStepDegrees));
+            var points = new double[(steps + 1) * 2];
+            for (int index = 0; index <= steps; index++)
+            {
+                double parameter = firstParameter + sweep * index / steps;
+                Point2d point = TransformBrepPoint(
+                    curve.OriginX + majorRadius * Math.Cos(parameter) * curve.XDirectionX + minorRadius * Math.Sin(parameter) * curve.YDirectionX,
+                    curve.OriginY + majorRadius * Math.Cos(parameter) * curve.XDirectionY + minorRadius * Math.Sin(parameter) * curve.YDirectionY,
+                    options);
+                points[index * 2] = point.X;
+                points[index * 2 + 1] = point.Y;
+            }
+
+            if (points.Length < 4 ||
+                Distance(new Point2d(points[0], points[1]), new Point2d(points[points.Length - 2], points[points.Length - 1])) < GeometryTolerance)
+            {
+                if (Math.Abs(sweep) < (2.0 * Math.PI) - FullCircleRadiansTolerance)
+                    return false;
+            }
+
+            primitives.Add(Polyline(points, "ellipse", CurveFallbackTolerance));
+            return true;
+        }
+
+        private static bool LineEndpointsMatchVertices(
+            Point2d curveStart,
+            Point2d curveEnd,
+            Point2d firstVertex,
+            Point2d secondVertex)
+        {
+            return
+                (Distance(curveStart, firstVertex) <= CircleRadiusTolerance &&
+                    Distance(curveEnd, secondVertex) <= CircleRadiusTolerance) ||
+                (Distance(curveStart, secondVertex) <= CircleRadiusTolerance &&
+                    Distance(curveEnd, firstVertex) <= CircleRadiusTolerance);
         }
 
         private static void AddEndpointLine(List<ProjectionPrimitiveDto> primitives, Point2d a, Point2d b)
@@ -555,6 +910,17 @@ namespace StepOcctHlr
                 Radius = radius,
                 StartAngle = startAngle,
                 EndAngle = endAngle
+            };
+        }
+
+        private static ProjectionPrimitiveDto Polyline(double[] points, string originalKind, double tolerance)
+        {
+            return new ProjectionPrimitiveDto
+            {
+                Kind = "Polyline",
+                Points = points,
+                OriginalKind = originalKind,
+                Tolerance = tolerance
             };
         }
 
@@ -593,6 +959,19 @@ namespace StepOcctHlr
                     ScalarKey(primitive.Radius) + "," +
                     ScalarKey(NormalizeDegrees(primitive.StartAngle)) + "," +
                     ScalarKey(NormalizeDegrees(primitive.EndAngle));
+            }
+
+            if (primitive.Kind == "Polyline" && primitive.Points != null && primitive.Points.Length >= 4)
+            {
+                var builder = new StringBuilder("P|");
+                builder.Append(primitive.OriginalKind ?? string.Empty);
+                for (int index = 0; index < primitive.Points.Length; index++)
+                {
+                    builder.Append('|');
+                    builder.Append(ScalarKey(primitive.Points[index]));
+                }
+
+                return builder.ToString();
             }
 
             return null;
@@ -649,12 +1028,17 @@ namespace StepOcctHlr
 
         private static Point2d TransformBrepPoint(double x, double y, ProjectionOptions options)
         {
-            return Rotate2D(new Point2d(x, -y), EffectiveRotation2D(options));
+            Point2d point = Rotate2D(new Point2d(x, -y), EffectiveRotation2D(options));
+            return options != null && options.MirrorX
+                ? new Point2d(-point.X, point.Y)
+                : point;
         }
 
         private static Vector2d TransformBrepVector(double x, double y, ProjectionOptions options)
         {
             Point2d point = Rotate2D(new Point2d(x, -y), EffectiveRotation2D(options));
+            if (options != null && options.MirrorX)
+                point = new Point2d(-point.X, point.Y);
             return new Vector2d(point.X, point.Y);
         }
 
@@ -717,6 +1101,15 @@ namespace StepOcctHlr
             return Math.Sqrt(dx * dx + dy * dy);
         }
 
+        private static double Clamp(double value, double min, double max)
+        {
+            if (value < min)
+                return min;
+            if (value > max)
+                return max;
+            return value;
+        }
+
         private static double Cross(Vector2d a, Vector2d b)
         {
             return a.X * b.Y - a.Y * b.X;
@@ -755,12 +1148,28 @@ namespace StepOcctHlr
             public double Y { get; }
         }
 
+        private struct HomogeneousPoint
+        {
+            public HomogeneousPoint(double x, double y, double w)
+            {
+                X = x;
+                Y = y;
+                W = w;
+            }
+
+            public double X { get; }
+            public double Y { get; }
+            public double W { get; }
+        }
+
         private enum Curve2dKind
         {
             Unsupported,
             Line,
             Conic,
-            Fallback
+            Fallback,
+            Polyline,
+            BSpline
         }
 
         private struct Curve2dRecord
@@ -781,6 +1190,15 @@ namespace StepOcctHlr
                 YDirectionY = 0.0;
                 MajorRadius = 0.0;
                 MinorRadius = 0.0;
+                Points = null;
+                Poles = null;
+                Weights = null;
+                Knots = null;
+                Multiplicities = null;
+                ExpandedKnots = null;
+                Degree = 0;
+                OriginalKind = null;
+                Tolerance = 0.0;
             }
 
             public Curve2dKind Kind { get; private set; }
@@ -794,6 +1212,15 @@ namespace StepOcctHlr
             public double YDirectionY { get; private set; }
             public double MajorRadius { get; private set; }
             public double MinorRadius { get; private set; }
+            public double[] Points { get; private set; }
+            public Point2d[] Poles { get; private set; }
+            public double[] Weights { get; private set; }
+            public double[] Knots { get; private set; }
+            public int[] Multiplicities { get; private set; }
+            public double[] ExpandedKnots { get; private set; }
+            public int Degree { get; private set; }
+            public string OriginalKind { get; private set; }
+            public double Tolerance { get; private set; }
 
             public static Curve2dRecord Line(double originX, double originY, double xDirection, double yDirection)
             {
@@ -826,6 +1253,39 @@ namespace StepOcctHlr
                     YDirectionY = yDirectionY,
                     MajorRadius = majorRadius,
                     MinorRadius = minorRadius
+                };
+            }
+
+            public static Curve2dRecord Polyline(double[] points, string originalKind, double tolerance)
+            {
+                return new Curve2dRecord(Curve2dKind.Polyline)
+                {
+                    Points = points,
+                    OriginalKind = originalKind,
+                    Tolerance = tolerance
+                };
+            }
+
+            public static Curve2dRecord BSpline(
+                int degree,
+                Point2d[] poles,
+                double[] weights,
+                double[] knots,
+                int[] multiplicities,
+                double[] expandedKnots,
+                string originalKind,
+                double tolerance)
+            {
+                return new Curve2dRecord(Curve2dKind.BSpline)
+                {
+                    Degree = degree,
+                    Poles = poles,
+                    Weights = weights,
+                    Knots = knots,
+                    Multiplicities = multiplicities,
+                    ExpandedKnots = expandedKnots,
+                    OriginalKind = originalKind,
+                    Tolerance = tolerance
                 };
             }
         }

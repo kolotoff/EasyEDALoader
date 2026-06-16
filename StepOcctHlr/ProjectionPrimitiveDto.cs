@@ -32,5 +32,8 @@ namespace StepOcctHlr
         public double Radius { get; set; }
         public double StartAngle { get; set; }
         public double EndAngle { get; set; }
+        public double[] Points { get; set; }
+        public string OriginalKind { get; set; }
+        public double Tolerance { get; set; }
     }
 }

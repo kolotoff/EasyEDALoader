@@ -148,6 +148,22 @@ namespace EasyEDA_Loader
             return ModelImportTrace.Measure("projection_optimization", null, () => ReadOcctProjectionViewsJsonFromString(standardOutput, placements));
         }
 
+        public static IReadOnlyDictionary<string, IReadOnlyList<StepSilhouettePrimitive>> GenerateVectorViewsFromFile(
+            string stepPath,
+            IReadOnlyDictionary<string, StepSilhouettePlacement> placements)
+        {
+            if (string.IsNullOrWhiteSpace(stepPath) || !File.Exists(stepPath) || placements == null || placements.Count == 0)
+                return new Dictionary<string, IReadOnlyList<StepSilhouettePrimitive>>(StringComparer.OrdinalIgnoreCase);
+
+            string standardOutput = RunOcctHelper(stepPath, null, arguments =>
+            {
+                arguments.Add("--vector-views");
+                arguments.Add(string.Join(",", placements.Keys));
+            });
+
+            return ModelImportTrace.Measure("projection_vector_occt_hlr", null, () => ReadOcctVectorProjectionViewsJsonFromString(standardOutput, placements));
+        }
+
         public static IReadOnlyDictionary<string, IReadOnlyList<StepSilhouettePrimitive>> GenerateViews(
             byte[] stepData,
             IReadOnlyDictionary<string, StepSilhouettePlacement> placements)
@@ -162,6 +178,22 @@ namespace EasyEDA_Loader
             });
 
             return ModelImportTrace.Measure("projection_optimization", null, () => ReadOcctProjectionViewsJsonFromString(standardOutput, placements));
+        }
+
+        public static IReadOnlyDictionary<string, IReadOnlyList<StepSilhouettePrimitive>> GenerateVectorViews(
+            byte[] stepData,
+            IReadOnlyDictionary<string, StepSilhouettePlacement> placements)
+        {
+            if (stepData == null || stepData.Length == 0 || placements == null || placements.Count == 0)
+                return new Dictionary<string, IReadOnlyList<StepSilhouettePrimitive>>(StringComparer.OrdinalIgnoreCase);
+
+            string standardOutput = RunOcctHelper("-", stepData, arguments =>
+            {
+                arguments.Add("--vector-views");
+                arguments.Add(string.Join(",", placements.Keys));
+            });
+
+            return ModelImportTrace.Measure("projection_vector_occt_hlr", null, () => ReadOcctVectorProjectionViewsJsonFromString(standardOutput, placements));
         }
 
         public static IReadOnlyDictionary<string, IReadOnlyList<StepSilhouettePrimitive>> GenerateRawViews(
@@ -457,6 +489,40 @@ namespace EasyEDA_Loader
             }
         }
 
+        private static IReadOnlyDictionary<string, IReadOnlyList<StepSilhouettePrimitive>> ReadOcctVectorProjectionViewsJsonFromString(
+            string json,
+            IReadOnlyDictionary<string, StepSilhouettePlacement> placements)
+        {
+            using (JsonDocument document = JsonDocument.Parse(json))
+            {
+                JsonElement root = document.RootElement;
+                if (!root.TryGetProperty("Success", out JsonElement successElement) || !successElement.GetBoolean())
+                    throw new InvalidOperationException("OCCT vector HLR helper failed: " + ReadOcctError(root));
+                if (!root.TryGetProperty("Views", out JsonElement viewsElement) || viewsElement.ValueKind != JsonValueKind.Array)
+                    throw new InvalidDataException("OCCT vector HLR helper batch result does not contain a views array.");
+
+                var results = new Dictionary<string, IReadOnlyList<StepSilhouettePrimitive>>(StringComparer.OrdinalIgnoreCase);
+                foreach (JsonElement viewElement in viewsElement.EnumerateArray())
+                {
+                    string name = viewElement.TryGetProperty("Name", out JsonElement nameElement)
+                        ? nameElement.GetString()
+                        : null;
+                    if (string.IsNullOrWhiteSpace(name) || !placements.TryGetValue(name, out StepSilhouettePlacement placement))
+                        continue;
+                    if (!viewElement.TryGetProperty("Success", out JsonElement viewSuccessElement) || !viewSuccessElement.GetBoolean())
+                        throw new InvalidOperationException("OCCT vector HLR helper failed for view " + name + ": " + ReadOcctError(viewElement));
+                    if (!viewElement.TryGetProperty("Primitives", out JsonElement primitivesElement) || primitivesElement.ValueKind != JsonValueKind.Array)
+                        throw new InvalidDataException("OCCT vector HLR helper batch result does not contain primitives for view " + name + ".");
+
+                    results[name] = PlaceRawOcctPrimitives(
+                        ReadOcctVectorPrimitives(primitivesElement),
+                        placement.TargetBounds);
+                }
+
+                return results;
+            }
+        }
+
         private static List<StepSilhouettePrimitive> ReadOcctPrimitives(JsonElement primitivesElement)
         {
             var sourcePrimitives = new List<StepSilhouettePrimitive>();
@@ -480,9 +546,77 @@ namespace EasyEDA_Loader
                         primitiveElement.GetProperty("StartAngle").GetDouble(),
                         primitiveElement.GetProperty("EndAngle").GetDouble()));
                 }
+                else if (kind == "Polyline")
+                {
+                    if (TryReadVectorPoints(primitiveElement, out double[] points) && points.Length >= 4)
+                    {
+                        for (int index = 0; index + 3 < points.Length; index += 2)
+                            sourcePrimitives.Add(StepSilhouettePrimitive.Line(points[index], points[index + 1], points[index + 2], points[index + 3]));
+                    }
+                }
             }
 
             return sourcePrimitives;
+        }
+
+        private static List<StepSilhouettePrimitive> ReadOcctVectorPrimitives(JsonElement primitivesElement)
+        {
+            var sourcePrimitives = new List<StepSilhouettePrimitive>();
+            foreach (JsonElement primitiveElement in primitivesElement.EnumerateArray())
+            {
+                if (primitiveElement.TryGetProperty("Visibility", out JsonElement visibilityElement) &&
+                    string.Equals(visibilityElement.GetString(), "hidden", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                string kind = primitiveElement.TryGetProperty("Kind", out JsonElement kindElement)
+                    ? kindElement.GetString()
+                    : null;
+                if (string.Equals(kind, "line", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (TryReadVectorPoints(primitiveElement, out double[] points) && points.Length >= 4)
+                    {
+                        sourcePrimitives.Add(StepSilhouettePrimitive.Line(points[0], points[1], points[2], points[3]));
+                    }
+                }
+                else if (string.Equals(kind, "polyline", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (TryReadVectorPoints(primitiveElement, out double[] points) && points.Length >= 4)
+                    {
+                        for (int index = 0; index + 3 < points.Length; index += 2)
+                            sourcePrimitives.Add(StepSilhouettePrimitive.Line(points[index], points[index + 1], points[index + 2], points[index + 3]));
+                    }
+                }
+                else if (string.Equals(kind, "arc", StringComparison.OrdinalIgnoreCase))
+                {
+                    sourcePrimitives.Add(StepSilhouettePrimitive.Arc(
+                        primitiveElement.GetProperty("CenterX").GetDouble(),
+                        primitiveElement.GetProperty("CenterY").GetDouble(),
+                        primitiveElement.GetProperty("Radius").GetDouble(),
+                        primitiveElement.GetProperty("StartAngle").GetDouble(),
+                        primitiveElement.GetProperty("EndAngle").GetDouble()));
+                }
+            }
+
+            return sourcePrimitives;
+        }
+
+        private static bool TryReadVectorPoints(JsonElement primitiveElement, out double[] points)
+        {
+            points = Array.Empty<double>();
+            if (!primitiveElement.TryGetProperty("Points", out JsonElement pointsElement) ||
+                pointsElement.ValueKind != JsonValueKind.Array)
+            {
+                return false;
+            }
+
+            var values = new List<double>();
+            foreach (JsonElement pointElement in pointsElement.EnumerateArray())
+                values.Add(pointElement.GetDouble());
+
+            points = values.ToArray();
+            return true;
         }
 
         private static IReadOnlyList<StepSilhouettePrimitive> PlaceAndOptimizeOcctPrimitives(
