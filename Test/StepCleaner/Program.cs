@@ -269,6 +269,21 @@ namespace StepCleaner.Tests
             if (IsOption(args[0], "--marked-detection-parity-clean-text"))
                 return RunMarkedDetectionParityTests(true);
 
+            if (IsOption(args[0], "--marked-vector-detection-parity"))
+                return RunMarkedVectorDetectionParityTests(false);
+
+            if (IsOption(args[0], "--marked-vector-detection-parity-clean-text"))
+                return RunMarkedVectorDetectionParityTests(true);
+
+            if (IsOption(args[0], "--vector-text-detector-smoke"))
+                return RunVectorTextDetectorSmokeTests();
+
+            if (IsOption(args[0], "--vector-detection-dump"))
+                return RunVectorDetectionDump(args);
+
+            if (IsOption(args[0], "--vector-detection-report-contract"))
+                return RunVectorDetectionReportContractTests();
+
             if (IsOption(args[0], "--text-logo-cleanup-promotion"))
                 return RunTextLogoCleanupPromotionTests();
 
@@ -320,6 +335,7 @@ namespace StepCleaner.Tests
             Console.Error.WriteLine("Usage: StepCleaner.Tests --text-logo-detection");
             Console.Error.WriteLine("Usage: StepCleaner.Tests --marked-detection-parity");
             Console.Error.WriteLine("Usage: StepCleaner.Tests --marked-detection-parity-clean-text");
+            Console.Error.WriteLine("Usage: StepCleaner.Tests --vector-text-detector-smoke");
             Console.Error.WriteLine("Usage: StepCleaner.Tests --text-logo-cleanup-promotion");
             Console.Error.WriteLine("Usage: StepCleaner.Tests --text-logo-negative-classifier");
             Console.Error.WriteLine("Usage: StepCleaner.Tests --text-logo-verifier");
@@ -4909,6 +4925,486 @@ namespace StepCleaner.Tests
             return 0;
         }
 
+        private static int RunMarkedVectorDetectionParityTests(bool cleanText)
+        {
+            string dataRoot = FindDataRoot();
+            string originalDirectory = Path.Combine(dataRoot, "Original");
+            string markedDirectory = Path.Combine(dataRoot, "Marked");
+            var failures = new List<string>();
+
+            foreach (string markerPath in Directory.GetFiles(markedDirectory, "*.json").OrderBy(Path.GetFileName, StringComparer.OrdinalIgnoreCase))
+            {
+                if (!TryParseMarkedModelAndView(markerPath, out string modelName, out string viewName))
+                    continue;
+
+                List<MarkedRectI> markedRects = ReadMarkedRectangles(markerPath);
+                if (markedRects.Count == 0)
+                    continue;
+
+                string stepPath = Path.Combine(originalDirectory, modelName + ".step");
+                if (!File.Exists(stepPath))
+                {
+                    failures.Add("Missing original STEP for marked vector parity: " + stepPath);
+                    continue;
+                }
+
+                byte[] stepData = File.ReadAllBytes(stepPath);
+                StepVectorWatermarkDetectionInput vectorInput =
+                    StepProjectionRenderer.ProjectVectorWatermarkDetectionInput(stepData, modelName, viewName);
+                IReadOnlyList<StepVectorWatermarkDetectionRegion> detections =
+                    StepVectorWatermarkProjectionDetector.Detect(
+                        vectorInput,
+                        new StepTextLogoDetectionOptions { DetectArbitraryText = cleanText });
+
+                AssertMarkedVectorParity(modelName, viewName, markedRects, detections, failures);
+            }
+
+            if (failures.Count > 0)
+            {
+                Console.Error.WriteLine("Marked vector detection parity failed. cleanText=" + cleanText.ToString(CultureInfo.InvariantCulture));
+                foreach (string failure in failures)
+                    Console.Error.WriteLine("  " + failure);
+                return 1;
+            }
+
+            Console.WriteLine("Marked vector detection parity passed. cleanText=" + cleanText.ToString(CultureInfo.InvariantCulture));
+            return 0;
+        }
+
+        private static int RunVectorTextDetectorSmokeTests()
+        {
+            var failures = new List<string>();
+
+            StepVectorWatermarkDetectionInput knownInput = CreateTemplateVectorTextInput("EasyEDA", 90, 120, 180, 2.0);
+            IReadOnlyList<StepVectorWatermarkDetectionRegion> knownDetections =
+                StepVectorTextDetector.Detect(knownInput, new StepTextLogoDetectionOptions());
+            StepVectorWatermarkDetectionRegion known = knownDetections
+                .FirstOrDefault(detection => string.Equals(detection.Text, "EasyEDA", StringComparison.OrdinalIgnoreCase));
+            if (known == null)
+            {
+                failures.Add("Known EasyEDA template text was not detected.");
+            }
+            else
+            {
+                if (!string.Equals(known.Kind, "text", StringComparison.OrdinalIgnoreCase))
+                    failures.Add("Known text detection kind should be text, got " + known.Kind + ".");
+                if (known.OrientationDegrees != 90 || known.TextOrientationDegrees != 90)
+                    failures.Add("Known text orientation should be 90 degrees, got orientation=" + known.OrientationDegrees.ToString(CultureInfo.InvariantCulture) + " textOrientation=" + known.TextOrientationDegrees.ToString(CultureInfo.InvariantCulture) + ".");
+                if (known.X < 118 || known.Y < 178 || known.Width > 70 || known.Height > 205)
+                    failures.Add("Known text bounds are not tight enough: " + FormatBounds(known.X, known.Y, known.Width, known.Height) + ".");
+            }
+
+            StepVectorWatermarkDetectionInput arbitraryInput = CreateArbitraryVectorTextInput();
+            IReadOnlyList<StepVectorWatermarkDetectionRegion> withoutCleanText =
+                StepVectorTextDetector.Detect(arbitraryInput, new StepTextLogoDetectionOptions { DetectArbitraryText = false });
+            if (withoutCleanText.Count != 0)
+            {
+                failures.Add(
+                    "Arbitrary text should not be detected when DetectArbitraryText is false: " +
+                    string.Join(
+                        "; ",
+                        withoutCleanText.Select(detection =>
+                            detection.TemplateName +
+                            "/" +
+                            detection.Text +
+                            " score=" +
+                            detection.Score.ToString("0.000", CultureInfo.InvariantCulture))));
+            }
+
+            IReadOnlyList<StepVectorWatermarkDetectionRegion> arbitraryDetections =
+                StepVectorTextDetector.Detect(arbitraryInput, new StepTextLogoDetectionOptions { DetectArbitraryText = true });
+            StepVectorWatermarkDetectionRegion arbitrary = arbitraryDetections.FirstOrDefault();
+            if (arbitrary == null)
+            {
+                failures.Add("Arbitrary manufacturer-like text was not detected when DetectArbitraryText is true.");
+            }
+            else
+            {
+                if (!string.Equals(arbitrary.Kind, "text", StringComparison.OrdinalIgnoreCase))
+                    failures.Add("Arbitrary detection kind should be text, got " + arbitrary.Kind + ".");
+                if (arbitrary.TextOrientationDegrees != 0)
+                    failures.Add("Arbitrary text orientation should be 0 degrees, got " + arbitrary.TextOrientationDegrees.ToString(CultureInfo.InvariantCulture) + ".");
+            }
+
+            IReadOnlyList<StepVectorWatermarkDetectionRegion> pinRowDetections =
+                StepVectorTextDetector.Detect(CreatePinRowVectorInput(), new StepTextLogoDetectionOptions { DetectArbitraryText = true });
+            if (pinRowDetections.Count != 0)
+                failures.Add("Regular pin/contact row should be rejected, got " + pinRowDetections.Count.ToString(CultureInfo.InvariantCulture) + " detection(s).");
+
+            if (failures.Count > 0)
+            {
+                Console.Error.WriteLine("Vector text detector smoke tests failed.");
+                foreach (string failure in failures)
+                    Console.Error.WriteLine("  " + failure);
+                return 1;
+            }
+
+            Console.WriteLine("Vector text detector smoke tests passed.");
+            return 0;
+        }
+
+        private static int RunVectorDetectionDump(string[] args)
+        {
+            if (args.Length < 3)
+            {
+                Console.Error.WriteLine("Usage: StepCleaner.Tests --vector-detection-dump <model> <view> [--clean-text]");
+                return 1;
+            }
+
+            string modelName = args[1].EndsWith(".step", StringComparison.OrdinalIgnoreCase)
+                ? Path.GetFileNameWithoutExtension(args[1])
+                : args[1];
+            string viewName = args[2];
+            bool cleanText = args.Any(argument => IsOption(argument, "--clean-text"));
+            string stepPath = Path.Combine(FindDataRoot(), "Original", modelName + ".step");
+            if (!File.Exists(stepPath))
+            {
+                Console.Error.WriteLine("Missing original STEP: " + stepPath);
+                return 1;
+            }
+
+            StepVectorWatermarkDetectionInput input =
+                StepProjectionRenderer.ProjectVectorWatermarkDetectionInput(
+                    File.ReadAllBytes(stepPath),
+                    modelName,
+                    viewName);
+            IReadOnlyList<StepVectorWatermarkDetectionRegion> logo =
+                StepVectorLogoDetector.Detect(input, new StepTextLogoDetectionOptions { DetectArbitraryText = cleanText });
+            IReadOnlyList<StepVectorWatermarkDetectionRegion> text =
+                StepVectorTextDetector.Detect(input, new StepTextLogoDetectionOptions { DetectArbitraryText = cleanText });
+            IReadOnlyList<StepVectorWatermarkDetectionRegion> combined =
+                StepVectorWatermarkProjectionDetector.Detect(input, new StepTextLogoDetectionOptions { DetectArbitraryText = cleanText });
+
+            Console.WriteLine(
+                modelName +
+                " " +
+                viewName +
+                " primitives=" +
+                input.Primitives.Count.ToString(CultureInfo.InvariantCulture) +
+                " cleanText=" +
+                cleanText.ToString(CultureInfo.InvariantCulture));
+            DumpVectorRegions("logo", logo);
+            DumpVectorRegions("text", text);
+            DumpVectorRegions("facade", combined);
+            return 0;
+        }
+
+        private static int RunVectorDetectionReportContractTests()
+        {
+            string dataRoot = FindDataRoot();
+            string originalDirectory = Path.Combine(dataRoot, "Original");
+            string markedDirectory = Path.Combine(dataRoot, "Marked");
+            var failures = new List<string>();
+            var logoDetails = new List<string>();
+            int logoCount = 0;
+            var logoMarkedKeys = new HashSet<string>(
+                new[]
+                {
+                    "BUZ-SMD_4P-L7.5-W7.5-H2.5__x_plus",
+                    "BUZ-TH_D9.0-H5.5-P4.0__z_plus",
+                    "CONN-SMD_30P-P0.60_DF56C-30S-0.3V-51__z_plus",
+                    "CONN-SMD_DF56_40S_0.3V_51__x_plus",
+                    "CONN-TH_MR30PB-M30.A.G.Y__y_plus",
+                    "CONN-TH_MR30PW-M30-G-Y__z_plus",
+                    "HDMI-SMD_HDMI-001S__y_plus",
+                    "LED-SMD_XL-3838UV2SA06G3__y_minus",
+                    "LQFP-100_L14.0-W14.0-H1.4-LS16.0-P0.50__z_plus",
+                    "SOT-223-4P_L6.5-W3.5-H1.6-LS7.0-P2.30__z_plus",
+                    "SOT-89-3_L4.3-W2.5-H1.6-LS4.1-P1.50__x_plus",
+                    "TYPE-C-TH_TYPEC-215-ARP14__x_plus",
+                    "USB-A-SMD_USB-212-BCW__y_plus",
+                    "USB-A-TH_FUS264-FDSW3K__x_plus",
+                    "USB-B-TH_USB-B10-BRW__x_plus"
+                },
+                StringComparer.OrdinalIgnoreCase);
+
+            foreach (string markerPath in Directory.GetFiles(markedDirectory, "*.json").OrderBy(Path.GetFileName, StringComparer.OrdinalIgnoreCase))
+            {
+                if (!TryParseMarkedModelAndView(markerPath, out string modelName, out string viewName))
+                    continue;
+
+                string stepPath = Path.Combine(originalDirectory, modelName + ".step");
+                if (!File.Exists(stepPath))
+                {
+                    failures.Add("Missing original STEP: " + stepPath);
+                    continue;
+                }
+
+                StepVectorWatermarkDetectionInput input =
+                    StepProjectionRenderer.ProjectVectorWatermarkDetectionInput(
+                        File.ReadAllBytes(stepPath),
+                        modelName,
+                        viewName);
+                string key = modelName + "__" + viewName;
+                IReadOnlyList<StepVectorWatermarkDetectionRegion> detections =
+                    StepVectorWatermarkProjectionDetector.Detect(input, new StepTextLogoDetectionOptions());
+                if (logoMarkedKeys.Contains(key) && detections.Count > 0)
+                    logoCount++;
+                if (logoMarkedKeys.Contains(key))
+                {
+                    logoDetails.Add(
+                        modelName +
+                        " " +
+                        viewName +
+                        " detections=" +
+                        detections.Count.ToString(CultureInfo.InvariantCulture) +
+                        " " +
+                        string.Join("; ", detections.Select(detection =>
+                            FormatBounds(detection.X, detection.Y, detection.Width, detection.Height) +
+                            " score=" +
+                            detection.Score.ToString("0.000", CultureInfo.InvariantCulture))));
+                }
+            }
+
+            if (logoCount != 15)
+                failures.Add("Expected 15 detected logo-marked views, got " + logoCount.ToString(CultureInfo.InvariantCulture) + ".");
+
+            string usbCStepPath = Path.Combine(originalDirectory, "USB-C-SMD_TYPE-C-6PIN-2MD-073.step");
+            if (File.Exists(usbCStepPath))
+            {
+                StepVectorWatermarkDetectionInput usbCInput =
+                    StepProjectionRenderer.ProjectVectorWatermarkDetectionInput(
+                        File.ReadAllBytes(usbCStepPath),
+                        "USB-C-SMD_TYPE-C-6PIN-2MD-073",
+                        "z_minus");
+                IReadOnlyList<StepVectorWatermarkDetectionRegion> detections =
+                    StepVectorTextDetector.Detect(
+                        usbCInput,
+                        new StepTextLogoDetectionOptions { DetectArbitraryText = true });
+                StepVectorWatermarkDetectionRegion lceda = detections.FirstOrDefault(detection =>
+                    string.Equals(detection.Text, "LCEDA", StringComparison.OrdinalIgnoreCase));
+                if (lceda == null)
+                {
+                    failures.Add(
+                        "USB-C-SMD_TYPE-C-6PIN-2MD-073 z_minus should detect full LCEDA text, got [" +
+                        string.Join(
+                            "; ",
+                            detections.Select(detection =>
+                                detection.TemplateName +
+                                "/" +
+                                detection.Text +
+                                " " +
+                                FormatBounds(detection.X, detection.Y, detection.Width, detection.Height))) +
+                        "].");
+                }
+            }
+            else
+            {
+                failures.Add("Missing original STEP: " + usbCStepPath);
+            }
+
+            if (failures.Count > 0)
+            {
+                Console.Error.WriteLine("Vector detection report contract failed.");
+                foreach (string failure in failures)
+                    Console.Error.WriteLine("  " + failure);
+                foreach (string detail in logoDetails)
+                    Console.Error.WriteLine("  " + detail);
+                return 1;
+            }
+
+            Console.WriteLine("Vector detection report contract passed.");
+            return 0;
+        }
+
+        private static IReadOnlyList<StepVectorWatermarkDetectionRegion> FilterReportLogoDetections(
+            IReadOnlyList<StepVectorWatermarkDetectionRegion> logos,
+            IReadOnlyList<StepVectorWatermarkDetectionRegion> texts)
+        {
+            if (logos == null || logos.Count == 0)
+                return Array.Empty<StepVectorWatermarkDetectionRegion>();
+            if (texts == null || texts.Count == 0)
+                return logos;
+
+            return logos
+                .Where(logo => !texts.Any(text =>
+                    !string.IsNullOrWhiteSpace(text.Text) &&
+                    DetectionOverlapRatio(logo, text) >= 0.55))
+                .ToList();
+        }
+
+        private static double DetectionOverlapRatio(
+            StepVectorWatermarkDetectionRegion left,
+            StepVectorWatermarkDetectionRegion right)
+        {
+            int x0 = Math.Max(left.X, right.X);
+            int y0 = Math.Max(left.Y, right.Y);
+            int x1 = Math.Min(left.X + left.Width, right.X + right.Width);
+            int y1 = Math.Min(left.Y + left.Height, right.Y + right.Height);
+            int intersection = x1 <= x0 || y1 <= y0 ? 0 : (x1 - x0) * (y1 - y0);
+            int leftArea = Math.Max(1, left.Width * left.Height);
+            int rightArea = Math.Max(1, right.Width * right.Height);
+            return intersection / (double)Math.Min(leftArea, rightArea);
+        }
+
+        private static void DumpVectorRegions(
+            string label,
+            IReadOnlyList<StepVectorWatermarkDetectionRegion> detections)
+        {
+            Console.WriteLine(label + "=" + detections.Count.ToString(CultureInfo.InvariantCulture));
+            foreach (StepVectorWatermarkDetectionRegion detection in detections)
+            {
+                Console.WriteLine(
+                    "  " +
+                    detection.Kind +
+                    " template=" +
+                    detection.TemplateName +
+                    " text=" +
+                    detection.Text +
+                    " box=" +
+                    FormatBounds(detection.X, detection.Y, detection.Width, detection.Height) +
+                    " score=" +
+                    detection.Score.ToString("0.000", CultureInfo.InvariantCulture) +
+                    " chamfer=" +
+                    detection.ChamferDistance.ToString("0.000", CultureInfo.InvariantCulture) +
+                    " prims=" +
+                    detection.PrimitiveCount.ToString(CultureInfo.InvariantCulture) +
+                    " orient=" +
+                    detection.OrientationDegrees.ToString(CultureInfo.InvariantCulture) +
+                    " logoOrient=" +
+                    detection.LogoOrientationDegrees.ToString(CultureInfo.InvariantCulture) +
+                    " textOrient=" +
+                    detection.TextOrientationDegrees.ToString(CultureInfo.InvariantCulture));
+            }
+        }
+
+        private static StepVectorWatermarkDetectionInput CreateTemplateVectorTextInput(
+            string templateName,
+            int rotationDegrees,
+            double offsetX,
+            double offsetY,
+            double scale)
+        {
+            StepWatermarkTemplate template = StepWatermarkTemplateLibrary.GetKnownTemplates()
+                .First(candidate => string.Equals(candidate.Name, templateName, StringComparison.OrdinalIgnoreCase));
+            var primitives = new List<StepVectorWatermarkPrimitive>();
+            foreach (StepWatermarkTemplatePoint point in template.EdgePoints)
+            {
+                RotateTemplateSmokePoint(
+                    point.X * scale,
+                    point.Y * scale,
+                    (template.Width - 1) * scale,
+                    (template.Height - 1) * scale,
+                    rotationDegrees,
+                    out double x,
+                    out double y);
+                double px = offsetX + x;
+                double py = offsetY + y;
+                primitives.Add(CreateVectorPrimitive(
+                    new StepVectorWatermarkPoint(px, py),
+                    new StepVectorWatermarkPoint(px + 0.8, py)));
+            }
+
+            return CreateVectorInput("known-template-text", primitives);
+        }
+
+        private static StepVectorWatermarkDetectionInput CreateArbitraryVectorTextInput()
+        {
+            var primitives = new List<StepVectorWatermarkPrimitive>();
+            double x = 60;
+            double y = 80;
+            for (int glyph = 0; glyph < 6; glyph++)
+            {
+                double gx = x + glyph * 15;
+                primitives.Add(CreateVectorPrimitive(new StepVectorWatermarkPoint(gx, y), new StepVectorWatermarkPoint(gx, y + 24)));
+                primitives.Add(CreateVectorPrimitive(new StepVectorWatermarkPoint(gx, y), new StepVectorWatermarkPoint(gx + 8, y)));
+                primitives.Add(CreateVectorPrimitive(new StepVectorWatermarkPoint(gx, y + 12), new StepVectorWatermarkPoint(gx + 7, y + 12)));
+                primitives.Add(CreateVectorPrimitive(new StepVectorWatermarkPoint(gx, y + 24), new StepVectorWatermarkPoint(gx + 9, y + 24)));
+                if (glyph % 2 == 0)
+                    primitives.Add(CreateVectorPrimitive(new StepVectorWatermarkPoint(gx + 9, y + 2), new StepVectorWatermarkPoint(gx + 9, y + 22)));
+            }
+
+            return CreateVectorInput("arbitrary-text", primitives);
+        }
+
+        private static StepVectorWatermarkDetectionInput CreatePinRowVectorInput()
+        {
+            var primitives = new List<StepVectorWatermarkPrimitive>();
+            for (int index = 0; index < 12; index++)
+            {
+                double x = 40 + index * 12;
+                primitives.Add(CreateVectorPrimitive(
+                    new StepVectorWatermarkPoint(x, 160),
+                    new StepVectorWatermarkPoint(x, 196)));
+            }
+
+            return CreateVectorInput("pin-row", primitives);
+        }
+
+        private static StepVectorWatermarkDetectionInput CreateVectorInput(
+            string modelName,
+            IReadOnlyList<StepVectorWatermarkPrimitive> primitives)
+        {
+            return new StepVectorWatermarkDetectionInput
+            {
+                ModelName = modelName,
+                ViewName = "front",
+                ImageWidth = 400,
+                ImageHeight = 400,
+                Primitives = primitives
+            };
+        }
+
+        private static StepVectorWatermarkPrimitive CreateVectorPrimitive(params StepVectorWatermarkPoint[] points)
+        {
+            StepVectorWatermarkBounds bounds = CreateVectorSmokeBounds(points);
+            return new StepVectorWatermarkPrimitive
+            {
+                Kind = StepVectorWatermarkPrimitiveKind.Line,
+                Visibility = "visible",
+                Category = "visible",
+                SampledPoints = points,
+                SampledImagePoints = points,
+                Bounds = bounds,
+                ImageBounds = bounds
+            };
+        }
+
+        private static StepVectorWatermarkBounds CreateVectorSmokeBounds(IReadOnlyList<StepVectorWatermarkPoint> points)
+        {
+            return new StepVectorWatermarkBounds
+            {
+                Left = points.Min(point => point.X),
+                Right = points.Max(point => point.X),
+                Bottom = points.Min(point => point.Y),
+                Top = points.Max(point => point.Y)
+            };
+        }
+
+        private static void RotateTemplateSmokePoint(
+            double x,
+            double y,
+            double width,
+            double height,
+            int rotationDegrees,
+            out double rotatedX,
+            out double rotatedY)
+        {
+            if (rotationDegrees == 90)
+            {
+                rotatedX = height - y;
+                rotatedY = x;
+                return;
+            }
+
+            if (rotationDegrees == 180)
+            {
+                rotatedX = width - x;
+                rotatedY = height - y;
+                return;
+            }
+
+            if (rotationDegrees == 270)
+            {
+                rotatedX = y;
+                rotatedY = width - x;
+                return;
+            }
+
+            rotatedX = x;
+            rotatedY = y;
+        }
+
         private static bool TryParseMarkedModelAndView(string markerPath, out string modelName, out string viewName)
         {
             string name = Path.GetFileNameWithoutExtension(markerPath);
@@ -4970,6 +5466,42 @@ namespace StepCleaner.Tests
                     failures.Add(modelName + " " + viewName + " detection " + detected + " is not fully inside marked rectangle " + best + ".");
                 if (detected.Area >= best.Area)
                     failures.Add(modelName + " " + viewName + " detection " + detected + " should be smaller than marked rectangle " + best + ".");
+            }
+        }
+
+        private static void AssertMarkedVectorParity(
+            string modelName,
+            string viewName,
+            IReadOnlyList<MarkedRectI> markedRects,
+            IReadOnlyList<StepVectorWatermarkDetectionRegion> detections,
+            List<string> failures)
+        {
+            if (detections.Count != markedRects.Count)
+            {
+                failures.Add(
+                    modelName +
+                    " " +
+                    viewName +
+                    " expected " +
+                    markedRects.Count.ToString(CultureInfo.InvariantCulture) +
+                    " vector detections from marked data, got " +
+                    detections.Count.ToString(CultureInfo.InvariantCulture) +
+                    ".");
+                return;
+            }
+
+            var detectedRects = detections
+                .Select(detection => new MarkedRectI(detection.X, detection.Y, detection.Width, detection.Height))
+                .ToList();
+            foreach (MarkedRectI detected in detectedRects)
+            {
+                MarkedRectI best = markedRects
+                    .OrderByDescending(marked => IntersectArea(marked, detected))
+                    .First();
+                if (!IsInsideMarkedRectangle(detected, best))
+                    failures.Add(modelName + " " + viewName + " vector detection " + detected + " is not fully inside marked rectangle " + best + ".");
+                if (detected.Area >= best.Area)
+                    failures.Add(modelName + " " + viewName + " vector detection " + detected + " should be smaller than marked rectangle " + best + ".");
             }
         }
 

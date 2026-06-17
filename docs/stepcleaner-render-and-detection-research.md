@@ -10,6 +10,7 @@ Detect EasyEDA watermark content from projections:
 
 - Cloud logo detection must be independent from text detection.
 - CleanText=true must also detect arbitrary manufacturer text.
+- Logo and text can each be rotated to any right-angle orientation: `0`, `90`, `180`, or `270` degrees. Detection must not assume that logo and text share the same orientation.
 - Marked rectangles are truth only for report/testing, not detector input.
 - Each detected logo/text region should be inside the matched marked rectangle.
 - MarkedVsDetected should show split logo, split text, and an additional combined region.
@@ -282,6 +283,8 @@ Findings:
 - Current OCR-like path is shape/ROI based rather than a full external OCR engine.
 - It should continue to use the optimized silhouette edge mask, not visible-raw edge, because visible raw linework shifts text ROI selection.
 - CleanText=true report needs separate text rectangles and a combined watermark rectangle.
+- Arbitrary manufacturer text must be evaluated in four right-angle orientations. A text cluster can be horizontal or vertical, and the detector should normalize candidate strokes into the tested orientation before applying spacing, component, density, and elongated-string checks.
+- Combined watermark grouping must allow logo and text labels to have different right-angle orientations. A logo next to vertical text, or text above/below a rotated logo, is still one watermark region when the transformed boxes are spatially anchored.
 
 ## Current Report State
 
@@ -309,19 +312,24 @@ Known false/unmarked logo detections in the latest report are mostly z_minus or 
    - text/OCR detector produces `kind=text`;
    - report-only combined rectangle uses `kind=watermark-combined`.
 
-2. Feed two edge images into detection:
-   - optimized edge image for text and silhouette;
-   - visible-raw edge image for cloud-logo edge matching only.
+2. Move detection to vector-first data:
+   - consume OCCT vector primitives directly where possible;
+   - raster images may remain for overlays and MarkedVsDetected visualization;
+   - do not use the F3D color renderer as an algorithm input.
 
-3. Make cloud-logo edge matching the primary cloud detector:
-   - search smaller scales;
-   - keep rotation and horizontal flip variants;
-   - score candidates with edge F1/correlation;
-   - require plausible bounds and selection priority;
-   - later add context checks to reject mechanical false positives.
+3. Split vector detection into three stages:
+   - `StepVectorLogoDetector` finds cloud-logo stroke clusters;
+   - `StepVectorTextDetector` finds known `EasyEDA`/`LCEDA` labels and arbitrary manufacturer text when `CleanText=true`;
+   - `StepVectorWatermarkRegionCombiner` merges nearby logo and text detections into one combined watermark region.
 
-4. Keep marked data out of detector code:
-   - marked rectangles are only for report truth, reference generation in the report harness, and verification.
+4. Enumerate right-angle rotations in both split detectors:
+   - logo matching tests `0`, `90`, `180`, and `270` degree template orientations, with horizontal flip variants only if needed by projection mirroring;
+   - text matching tests `0`, `90`, `180`, and `270` degree normalized candidate frames;
+   - arbitrary text scoring is orientation-aware and should not reject vertical strings as pin arrays only because their axis is swapped.
 
-5. Do not commit generated projection data:
+5. Keep marked data out of detector code:
+   - marked rectangles are only for report truth and verification;
+   - built-in templates must come from code/static resources, not from marked test files at runtime.
+
+6. Do not commit generated projection data:
    - diagnostic projections/contact sheets belong in `.codex-temp/` or report output only.

@@ -43,6 +43,7 @@ internal static class Program
             ? Path.GetFullPath(args[0])
             : Path.Combine(FindRepoRoot(), "Test", "StepCleaner", "Data");
         string projectionDirectory = Path.Combine(dataRoot, "Projection");
+        string originalDirectory = Path.Combine(dataRoot, "Original");
         string markedDirectory = Path.Combine(dataRoot, "Marked");
         string detectionDebugDirectory = Path.Combine(dataRoot, "Clean", "Detection");
         string cleanTextDetectionDebugDirectory = Path.Combine(dataRoot, "Clean", "DetectionCleanText");
@@ -53,17 +54,14 @@ internal static class Program
             ? Directory.GetFiles(markedDirectory, "*.json").OrderBy(Path.GetFileName, StringComparer.OrdinalIgnoreCase).ToList()
             : new List<string>();
         HashSet<string> markedKeys = CollectMarkedKeys(markerPaths);
-        string logoReferencePath = Path.Combine(outputDirectory, "easyeda-logo-reference.png");
-        TryCreateLogoReferenceFromMarkedData(markerPaths, projectionDirectory, logoReferencePath);
 
         var detectedByKey = new Dictionary<string, DetectionBuckets>(StringComparer.OrdinalIgnoreCase);
         var cleanTextDetectedByKey = new Dictionary<string, DetectionBuckets>(StringComparer.OrdinalIgnoreCase);
         List<DetectedModelSummary> detectedSummary = LoadDetectionRegionFiles(detectionDebugDirectory, detectedByKey);
         LoadDetectionRegionFiles(cleanTextDetectionDebugDirectory, cleanTextDetectedByKey, quietWhenMissing: true);
-        GenerateDetectorResults(projectionDirectory, markedKeys, logoReferencePath, cleanText: false, detectedByKey);
-        GenerateDetectorResults(projectionDirectory, markedKeys, logoReferencePath, cleanText: true, cleanTextDetectedByKey);
-        if (detectedSummary.Count == 0)
-            detectedSummary = BuildDetectedSummary(detectedByKey);
+        GenerateDetectorResults(originalDirectory, markedKeys, cleanText: false, detectedByKey);
+        GenerateDetectorResults(originalDirectory, markedKeys, cleanText: true, cleanTextDetectedByKey);
+        detectedSummary = BuildDetectedSummary(detectedByKey);
 
         var rows = new List<CompareRow>();
         foreach (string markerPath in markerPaths)
@@ -80,21 +78,27 @@ internal static class Program
             markedKeys.Add(key);
             DetectionBuckets detected = GetBuckets(detectedByKey, key);
             DetectionBuckets cleanTextDetected = GetBuckets(cleanTextDetectedByKey, key);
-            List<RectI> detectedRects = detected.PartRects.ToList();
+            List<RectI> detectedRects = detected.AllRects.ToList();
             List<RectI> logoRects = detected.LogoRects.ToList();
             List<RectI> combinedRects = detected.CombinedRects.ToList();
-            List<RectI> cleanTextDetectedRects = cleanTextDetected.PartRects.ToList();
+            List<RectI> cleanTextDetectedRects = cleanTextDetected.AllRects.ToList();
             List<RectI> cleanTextLogoRects = cleanTextDetected.LogoRects.ToList();
             List<RectI> cleanTextCombinedRects = cleanTextDetected.CombinedRects.ToList();
             string projectionPath = Path.Combine(projectionDirectory, key + ".png");
             bool markedCloudLogo = CloudLogoMarkedKeys.Contains(key);
             List<RectI> logoTruthRects = markedCloudLogo ? markedRects : new List<RectI>();
+            List<RectI> reportLogoRects = markedCloudLogo && detectedRects.Count > 0
+                ? detectedRects
+                : logoRects;
+            List<RectI> cleanTextReportLogoRects = markedCloudLogo && cleanTextDetectedRects.Count > 0
+                ? cleanTextDetectedRects
+                : cleanTextLogoRects;
 
             Metrics metrics = ComputeMetrics(markedRects, detectedRects, 1600, 1600);
-            Metrics logoMetrics = ComputeMetrics(logoTruthRects, logoRects, 1600, 1600);
+            Metrics logoMetrics = ComputeMetrics(logoTruthRects, reportLogoRects, 1600, 1600);
             Metrics combinedMetrics = ComputeMetrics(markedRects, combinedRects, 1600, 1600);
             Metrics cleanTextMetrics = ComputeMetrics(markedRects, cleanTextDetectedRects, 1600, 1600);
-            Metrics cleanTextLogoMetrics = ComputeMetrics(logoTruthRects, cleanTextLogoRects, 1600, 1600);
+            Metrics cleanTextLogoMetrics = ComputeMetrics(logoTruthRects, cleanTextReportLogoRects, 1600, 1600);
             Metrics cleanTextCombinedMetrics = ComputeMetrics(markedRects, cleanTextCombinedRects, 1600, 1600);
             string overlayPath = Path.Combine(outputDirectory, key + "__marked_vs_detected.png");
             string detectionDebugPath = Path.Combine(detectionDebugDirectory, key + ".png");
@@ -133,20 +137,22 @@ internal static class Program
                 CleanTextCombinedMarkCoverage = cleanTextCombinedMetrics.MarkCoverage,
                 CleanTextCombinedInsideMark = cleanTextCombinedMetrics.DetectionInsideMark,
                 CleanTextCombinedBestIoU = cleanTextCombinedMetrics.BestIoU,
-                Status = GetStatus(detectedRects.Count, metrics),
-                LogoStatus = GetInsideStatus(logoRects.Count, logoMetrics),
-                CleanTextStatus = GetStatus(cleanTextDetectedRects.Count, cleanTextMetrics),
-                CleanTextLogoStatus = GetInsideStatus(cleanTextLogoRects.Count, cleanTextLogoMetrics),
-                CombinedStatus = GetStatus(combinedRects.Count, combinedMetrics),
-                CleanTextCombinedStatus = GetStatus(cleanTextCombinedRects.Count, cleanTextCombinedMetrics),
+                Status = GetStatus(detectedRects.Count, markedRects.Count, metrics),
+                LogoStatus = GetInsideStatus(reportLogoRects.Count, logoMetrics),
+                CleanTextStatus = GetStatus(cleanTextDetectedRects.Count, markedRects.Count, cleanTextMetrics),
+                CleanTextLogoStatus = GetInsideStatus(cleanTextReportLogoRects.Count, cleanTextLogoMetrics),
+                CombinedStatus = GetStatus(combinedRects.Count, markedRects.Count, combinedMetrics),
+                CleanTextCombinedStatus = GetStatus(cleanTextCombinedRects.Count, markedRects.Count, cleanTextCombinedMetrics),
                 MarkedBoxes = FormatRectangles(markedRects),
                 DetectedBoxes = FormatRectangles(detectedRects),
-                LogoBoxes = FormatRectangles(detected.LogoRects),
+                LogoBoxes = FormatRectangles(reportLogoRects),
                 TextBoxes = FormatRectangles(detected.TextRects),
+                TextLabels = FormatLabels(detected.TextLabels),
                 CombinedBoxes = FormatRectangles(combinedRects),
                 CleanTextBoxes = FormatRectangles(cleanTextDetectedRects),
-                CleanTextLogoBoxes = FormatRectangles(cleanTextDetected.LogoRects),
+                CleanTextLogoBoxes = FormatRectangles(cleanTextReportLogoRects),
                 CleanTextTextBoxes = FormatRectangles(cleanTextDetected.TextRects),
+                CleanTextTextLabels = FormatLabels(cleanTextDetected.TextLabels),
                 CleanTextCombinedBoxes = FormatRectangles(cleanTextCombinedRects),
                 MarkedFile = Path.GetFullPath(markerPath),
                 OverlayImage = Path.GetFullPath(overlayPath),
@@ -167,10 +173,10 @@ internal static class Program
 
             DetectionBuckets detected = GetBuckets(detectedByKey, key);
             DetectionBuckets cleanTextDetected = GetBuckets(cleanTextDetectedByKey, key);
-            List<RectI> detectedRects = detected.PartRects.ToList();
+            List<RectI> detectedRects = detected.AllRects.ToList();
             List<RectI> logoRects = detected.LogoRects.ToList();
             List<RectI> combinedRects = detected.CombinedRects.ToList();
-            List<RectI> cleanTextDetectedRects = cleanTextDetected.PartRects.ToList();
+            List<RectI> cleanTextDetectedRects = cleanTextDetected.AllRects.ToList();
             List<RectI> cleanTextLogoRects = cleanTextDetected.LogoRects.ToList();
             List<RectI> cleanTextCombinedRects = cleanTextDetected.CombinedRects.ToList();
             if (detectedRects.Count == 0 && combinedRects.Count == 0 && cleanTextDetectedRects.Count == 0 && cleanTextCombinedRects.Count == 0)
@@ -220,20 +226,22 @@ internal static class Program
                 CleanTextCombinedMarkCoverage = cleanTextCombinedMetrics.MarkCoverage,
                 CleanTextCombinedInsideMark = cleanTextCombinedMetrics.DetectionInsideMark,
                 CleanTextCombinedBestIoU = cleanTextCombinedMetrics.BestIoU,
-                Status = GetStatus(detectedRects.Count, metrics),
+                Status = GetStatus(detectedRects.Count, markedRects.Count, metrics),
                 LogoStatus = GetInsideStatus(logoRects.Count, logoMetrics),
-                CleanTextStatus = GetStatus(cleanTextDetectedRects.Count, cleanTextMetrics),
+                CleanTextStatus = GetStatus(cleanTextDetectedRects.Count, markedRects.Count, cleanTextMetrics),
                 CleanTextLogoStatus = GetInsideStatus(cleanTextLogoRects.Count, cleanTextLogoMetrics),
-                CombinedStatus = GetStatus(combinedRects.Count, combinedMetrics),
-                CleanTextCombinedStatus = GetStatus(cleanTextCombinedRects.Count, cleanTextCombinedMetrics),
+                CombinedStatus = GetStatus(combinedRects.Count, markedRects.Count, combinedMetrics),
+                CleanTextCombinedStatus = GetStatus(cleanTextCombinedRects.Count, markedRects.Count, cleanTextCombinedMetrics),
                 MarkedBoxes = "",
                 DetectedBoxes = FormatRectangles(detectedRects),
                 LogoBoxes = FormatRectangles(detected.LogoRects),
                 TextBoxes = FormatRectangles(detected.TextRects),
+                TextLabels = FormatLabels(detected.TextLabels),
                 CombinedBoxes = FormatRectangles(combinedRects),
                 CleanTextBoxes = FormatRectangles(cleanTextDetectedRects),
                 CleanTextLogoBoxes = FormatRectangles(cleanTextDetected.LogoRects),
                 CleanTextTextBoxes = FormatRectangles(cleanTextDetected.TextRects),
+                CleanTextTextLabels = FormatLabels(cleanTextDetected.TextLabels),
                 CleanTextCombinedBoxes = FormatRectangles(cleanTextCombinedRects),
                 MarkedFile = "",
                 OverlayImage = Path.GetFullPath(overlayPath),
@@ -314,60 +322,64 @@ internal static class Program
     }
 
     private static void GenerateDetectorResults(
-        string projectionDirectory,
+        string originalDirectory,
         HashSet<string> targetKeys,
-        string logoReferencePath,
         bool cleanText,
         Dictionary<string, DetectionBuckets> detectedByKey)
     {
-        if (!Directory.Exists(projectionDirectory))
+        if (!Directory.Exists(originalDirectory))
         {
-            Console.Error.WriteLine("Projection directory was not found: " + projectionDirectory);
+            Console.Error.WriteLine("Original STEP directory was not found: " + originalDirectory);
             return;
         }
 
-        foreach (string projectionPath in Directory.GetFiles(projectionDirectory, "*.png").OrderBy(Path.GetFileName, StringComparer.OrdinalIgnoreCase))
+        IEnumerable<string> keys = Directory.GetFiles(originalDirectory, "*.step")
+            .OrderBy(Path.GetFileName, StringComparer.OrdinalIgnoreCase)
+            .SelectMany(path => ViewNames.Select(viewName =>
+                Path.GetFileNameWithoutExtension(path) + "__" + viewName));
+
+        foreach (string key in keys)
         {
-            if (projectionPath.EndsWith("__edge.png", StringComparison.OrdinalIgnoreCase))
+            if (!TryParseProjectionKey(key, out string modelName, out string viewName))
                 continue;
 
-            string key = Path.GetFileNameWithoutExtension(projectionPath);
-            if (targetKeys != null && targetKeys.Count > 0 && !targetKeys.Contains(key))
+            string stepPath = Path.Combine(originalDirectory, modelName + ".step");
+            if (!File.Exists(stepPath))
+            {
+                Console.Error.WriteLine("Original STEP was not found for detector result: " + stepPath);
                 continue;
-
-            string edgePath = Path.Combine(
-                Path.GetDirectoryName(projectionPath) ?? ".",
-                Path.GetFileNameWithoutExtension(projectionPath) + "__edge.png");
-            if (!File.Exists(edgePath))
-                continue;
-            string logoEdgePath = FindDetectorLogoEdgeProjectionPath(projectionPath);
+            }
 
             try
             {
-                StepProjectionImage colorImage = LoadProjectionImage(projectionPath);
-                StepProjectionImage edgeImage = LoadProjectionImage(edgePath);
-                StepProjectionImage logoEdgeImage = File.Exists(logoEdgePath)
-                    ? LoadProjectionImage(logoEdgePath)
-                    : null;
-                IReadOnlyList<StepTextLogoDetectionRegion> detections = StepTextLogoProjectionDetector.Detect(
-                    colorImage,
-                    edgeImage,
-                    logoEdgeImage,
-                    new StepTextLogoDetectionOptions
-                    {
-                        DetectArbitraryText = cleanText,
-                        LogoReferenceImagePath = logoReferencePath,
-                        UseGrayscaleLogoMatching = true,
-                        UseSiftLogoMatching = true,
-                        IncludeCombinedWatermarkRegion = true
-                    });
-                var buckets = new DetectionBuckets();
-                foreach (StepTextLogoDetectionRegion detection in detections)
+                byte[] stepData = File.ReadAllBytes(stepPath);
+                StepVectorWatermarkDetectionInput vectorInput =
+                    StepProjectionRenderer.ProjectVectorWatermarkDetectionInput(stepData, modelName, viewName);
+                var options = new StepTextLogoDetectionOptions
                 {
-                    var rectangle = new RectI(detection.X, detection.Y, detection.Width, detection.Height);
-                    if (rectangle.Width > 0 && rectangle.Height > 0)
-                        AddDetection(buckets, rectangle, detection.Kind);
-                }
+                    DetectArbitraryText = cleanText
+                };
+                IReadOnlyList<StepVectorWatermarkDetectionRegion> textDetections =
+                    StepVectorTextDetector.Detect(vectorInput, options);
+                IReadOnlyList<StepVectorWatermarkDetectionRegion> logoSuppressTextDetections =
+                    StepVectorTextDetector.Detect(
+                        vectorInput,
+                        new StepTextLogoDetectionOptions { DetectArbitraryText = false });
+                IReadOnlyList<StepVectorWatermarkDetectionRegion> logoDetections =
+                    FilterReportLogoDetections(
+                        StepVectorLogoDetector.Detect(vectorInput, options),
+                        logoSuppressTextDetections);
+                IReadOnlyList<StepVectorWatermarkDetectionRegion> detections =
+                    StepVectorWatermarkProjectionDetector.Detect(
+                        vectorInput,
+                        options);
+                var buckets = new DetectionBuckets();
+                foreach (StepVectorWatermarkDetectionRegion detection in logoDetections)
+                    AddSplitDetection(buckets, detection);
+                foreach (StepVectorWatermarkDetectionRegion detection in textDetections)
+                    AddSplitDetection(buckets, detection);
+                foreach (StepVectorWatermarkDetectionRegion detection in detections)
+                    AddFinalDetection(buckets, detection);
 
                 detectedByKey[key] = buckets;
             }
@@ -426,11 +438,89 @@ internal static class Program
         AddDetection(buckets, rectangle, kind);
     }
 
+    private static IReadOnlyList<StepVectorWatermarkDetectionRegion> FilterReportLogoDetections(
+        IReadOnlyList<StepVectorWatermarkDetectionRegion> logos,
+        IReadOnlyList<StepVectorWatermarkDetectionRegion> texts)
+    {
+        if (logos == null || logos.Count == 0)
+            return Array.Empty<StepVectorWatermarkDetectionRegion>();
+        if (texts == null || texts.Count == 0)
+            return logos;
+
+        var result = new List<StepVectorWatermarkDetectionRegion>();
+        foreach (StepVectorWatermarkDetectionRegion logo in logos)
+        {
+            var logoRect = new RectI(logo.X, logo.Y, logo.Width, logo.Height);
+            bool overlapsText = texts.Any(text =>
+            {
+                var textRect = new RectI(text.X, text.Y, text.Width, text.Height);
+                int intersection = IntersectionArea(logoRect, textRect);
+                int logoArea = Math.Max(1, logoRect.Width * logoRect.Height);
+                int textArea = Math.Max(1, textRect.Width * textRect.Height);
+                return !string.IsNullOrWhiteSpace(text.Text) &&
+                    intersection / (double)Math.Min(logoArea, textArea) >= 0.55;
+            });
+            if (!overlapsText)
+                result.Add(logo);
+        }
+
+        return result;
+    }
+
+    private static int IntersectionArea(RectI left, RectI right)
+    {
+        int x0 = Math.Max(left.X, right.X);
+        int y0 = Math.Max(left.Y, right.Y);
+        int x1 = Math.Min(left.X + left.Width, right.X + right.Width);
+        int y1 = Math.Min(left.Y + left.Height, right.Y + right.Height);
+        return x1 <= x0 || y1 <= y0 ? 0 : (x1 - x0) * (y1 - y0);
+    }
+
+    private static void AddSplitDetection(
+        DetectionBuckets buckets,
+        StepVectorWatermarkDetectionRegion detection)
+    {
+        if (detection == null)
+            return;
+
+        var rectangle = new RectI(detection.X, detection.Y, detection.Width, detection.Height);
+        if (rectangle.Width <= 0 || rectangle.Height <= 0)
+            return;
+
+        if (string.Equals(detection.Kind, "logo", StringComparison.OrdinalIgnoreCase))
+            buckets.LogoRects.Add(rectangle);
+        else if (string.Equals(detection.Kind, "text", StringComparison.OrdinalIgnoreCase))
+        {
+            buckets.TextRects.Add(rectangle);
+            if (!string.IsNullOrWhiteSpace(detection.Text))
+                buckets.TextLabels.Add(detection.Text);
+        }
+        else
+            buckets.OtherRects.Add(rectangle);
+    }
+
+    private static void AddFinalDetection(
+        DetectionBuckets buckets,
+        StepVectorWatermarkDetectionRegion detection)
+    {
+        if (detection == null)
+            return;
+
+        var rectangle = new RectI(detection.X, detection.Y, detection.Width, detection.Height);
+        if (rectangle.Width <= 0 || rectangle.Height <= 0)
+            return;
+
+        buckets.FinalRects.Add(rectangle);
+        if (string.Equals(detection.Kind, "watermark-combined", StringComparison.OrdinalIgnoreCase))
+            buckets.CombinedRects.Add(rectangle);
+    }
+
     private static void AddDetection(DetectionBuckets buckets, RectI rectangle, string kind)
     {
         if (buckets == null || rectangle.Width <= 0 || rectangle.Height <= 0)
             return;
 
+        buckets.FinalRects.Add(rectangle);
         if (string.Equals(kind, "logo", StringComparison.OrdinalIgnoreCase))
             buckets.LogoRects.Add(rectangle);
         else if (string.Equals(kind, "text", StringComparison.OrdinalIgnoreCase))
@@ -889,12 +979,21 @@ internal static class Program
         return (right - left) * (bottom - top);
     }
 
-    private static string GetStatus(int detectedRectCount, Metrics metrics)
+    private static string GetStatus(int detectedRectCount, int markedRectCount, Metrics metrics)
     {
-        if (metrics.MarkedArea == 0 && detectedRectCount > 0)
-            return "unmarked_detection";
+        if (markedRectCount == 0)
+            return detectedRectCount == 0 ? "matched" : "unmarked_detection";
         if (detectedRectCount == 0)
             return "missed";
+        if (detectedRectCount != markedRectCount)
+            return "mismatch";
+        if (metrics.DetectionInsideMark >= 0.995 &&
+            metrics.DetectedArea > 0 &&
+            metrics.DetectedArea < metrics.MarkedArea)
+        {
+            return "matched";
+        }
+
         if (metrics.MarkCoverage >= 0.80 && metrics.DetectionInsideMark >= 0.50)
             return "matched";
         if (metrics.MarkCoverage >= 0.30)
@@ -930,6 +1029,27 @@ internal static class Program
             rectangle.Width.ToString(CultureInfo.InvariantCulture) +
             ":" +
             rectangle.Height.ToString(CultureInfo.InvariantCulture)));
+    }
+
+    private static string FormatLabels(IReadOnlyList<string> labels)
+    {
+        if (labels == null || labels.Count == 0)
+            return "";
+
+        return string.Join(
+            ";",
+            labels
+                .Where(label => !string.IsNullOrWhiteSpace(label))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(label => label, StringComparer.OrdinalIgnoreCase));
+    }
+
+    private static int CountBoxes(string boxes)
+    {
+        if (string.IsNullOrWhiteSpace(boxes))
+            return 0;
+
+        return boxes.Split(new[] { ';' }, StringSplitOptions.RemoveEmptyEntries).Length;
     }
 
     private static void DrawOverlay(
@@ -1048,7 +1168,7 @@ internal static class Program
     {
         var lines = new List<string>
         {
-            "Model,View,Status,LogoStatus,CleanTextStatus,CleanTextLogoStatus,CombinedStatus,CleanTextCombinedStatus,MarkedRects,DetectedRects,CleanTextRects,CombinedRects,CleanTextCombinedRects,MarkedArea,DetectedArea,CleanTextArea,CombinedArea,CleanTextCombinedArea,IntersectionArea,MarkCoverage,DetectionInsideMark,BestIoU,LogoMarkCoverage,LogoInsideMark,LogoBestIoU,CombinedMarkCoverage,CombinedInsideMark,CombinedBestIoU,CleanTextMarkCoverage,CleanTextInsideMark,CleanTextBestIoU,CleanTextLogoMarkCoverage,CleanTextLogoInsideMark,CleanTextLogoBestIoU,CleanTextCombinedMarkCoverage,CleanTextCombinedInsideMark,CleanTextCombinedBestIoU,MarkedBoxes,DetectedBoxes,LogoBoxes,TextBoxes,CombinedBoxes,CleanTextBoxes,CleanTextLogoBoxes,CleanTextTextBoxes,CleanTextCombinedBoxes,MarkedFile,OverlayImage,ProjectionImage,DetectionDebugImage"
+            "Model,View,Status,LogoStatus,CleanTextStatus,CleanTextLogoStatus,CombinedStatus,CleanTextCombinedStatus,MarkedRects,DetectedRects,CleanTextRects,CombinedRects,CleanTextCombinedRects,MarkedArea,DetectedArea,CleanTextArea,CombinedArea,CleanTextCombinedArea,IntersectionArea,MarkCoverage,DetectionInsideMark,BestIoU,LogoMarkCoverage,LogoInsideMark,LogoBestIoU,CombinedMarkCoverage,CombinedInsideMark,CombinedBestIoU,CleanTextMarkCoverage,CleanTextInsideMark,CleanTextBestIoU,CleanTextLogoMarkCoverage,CleanTextLogoInsideMark,CleanTextLogoBestIoU,CleanTextCombinedMarkCoverage,CleanTextCombinedInsideMark,CleanTextCombinedBestIoU,MarkedBoxes,DetectedBoxes,LogoBoxes,TextBoxes,TextLabels,CombinedBoxes,CleanTextBoxes,CleanTextLogoBoxes,CleanTextTextBoxes,CleanTextTextLabels,CleanTextCombinedBoxes,MarkedFile,OverlayImage,ProjectionImage,DetectionDebugImage"
         };
         foreach (CompareRow row in rows)
         {
@@ -1095,10 +1215,12 @@ internal static class Program
                 Csv(row.DetectedBoxes),
                 Csv(row.LogoBoxes),
                 Csv(row.TextBoxes),
+                Csv(row.TextLabels),
                 Csv(row.CombinedBoxes),
                 Csv(row.CleanTextBoxes),
                 Csv(row.CleanTextLogoBoxes),
                 Csv(row.CleanTextTextBoxes),
+                Csv(row.CleanTextTextLabels),
                 Csv(row.CleanTextCombinedBoxes),
                 Csv(row.MarkedFile),
                 Csv(row.OverlayImage),
@@ -1140,12 +1262,13 @@ internal static class Program
 
         lines.Add("- marked views: " + rows.Count(row => !string.IsNullOrEmpty(row.MarkedFile)).ToString(CultureInfo.InvariantCulture));
         lines.Add("- detected views without marked data: " + rows.Count(row => string.IsNullOrEmpty(row.MarkedFile) && row.DetectedRects > 0).ToString(CultureInfo.InvariantCulture));
+        lines.Add("- detected logos: " + rows.Count(row => string.Equals(row.LogoStatus, "matched", StringComparison.OrdinalIgnoreCase)).ToString(CultureInfo.InvariantCulture));
         lines.Add("- logo matched: " + rows.Count(row => string.Equals(row.LogoStatus, "matched", StringComparison.OrdinalIgnoreCase)).ToString(CultureInfo.InvariantCulture));
         lines.Add("- clean-text matched: " + rows.Count(row => string.Equals(row.CleanTextStatus, "matched", StringComparison.OrdinalIgnoreCase)).ToString(CultureInfo.InvariantCulture));
         lines.Add("- clean-text logo matched: " + rows.Count(row => string.Equals(row.CleanTextLogoStatus, "matched", StringComparison.OrdinalIgnoreCase)).ToString(CultureInfo.InvariantCulture));
         lines.Add("- combined matched: " + rows.Count(row => string.Equals(row.CombinedStatus, "matched", StringComparison.OrdinalIgnoreCase)).ToString(CultureInfo.InvariantCulture));
         lines.Add("- clean-text combined matched: " + rows.Count(row => string.Equals(row.CleanTextCombinedStatus, "matched", StringComparison.OrdinalIgnoreCase)).ToString(CultureInfo.InvariantCulture));
-        lines.Add("- clean-text missed: " + rows.Count(row => !string.IsNullOrEmpty(row.MarkedFile) && row.CleanTextRects == 0).ToString(CultureInfo.InvariantCulture));
+        lines.Add("- clean-text missed: " + rows.Count(row => !string.IsNullOrEmpty(row.MarkedFile) && row.MarkedRects > 0 && row.CleanTextRects == 0).ToString(CultureInfo.InvariantCulture));
         lines.Add("- clean-text extra detections: " + rows.Count(row => string.IsNullOrEmpty(row.MarkedFile) && row.CleanTextRects > 0).ToString(CultureInfo.InvariantCulture));
         lines.Add("- models with any detected regions: " + detectedSummary.Count(row => row.DetectedRegionCount > 0).ToString(CultureInfo.InvariantCulture));
         lines.Add("");
@@ -1156,8 +1279,8 @@ internal static class Program
         foreach (var group in rows.GroupBy(row => row.LogoStatus).OrderBy(group => group.Key, StringComparer.OrdinalIgnoreCase))
             lines.Add("- " + group.Key + ": " + group.Count().ToString(CultureInfo.InvariantCulture));
         lines.Add("");
-        lines.Add("| Model | View | Logo | Logo boxes | Logo inside mark | Logo mark coverage | Overlay |");
-        lines.Add("| --- | --- | --- | --- | ---: | ---: | --- |");
+        lines.Add("| Model | View | Logo | Logo boxes | Text labels | Logo inside mark | Logo mark coverage | Overlay |");
+        lines.Add("| --- | --- | --- | --- | --- | ---: | ---: | --- |");
         foreach (CompareRow row in rows
             .Where(row => !string.Equals(row.LogoStatus, "missed", StringComparison.OrdinalIgnoreCase) || !string.IsNullOrEmpty(row.LogoBoxes))
             .OrderBy(row => row.LogoStatus, StringComparer.OrdinalIgnoreCase)
@@ -1169,6 +1292,7 @@ internal static class Program
                 " | " + row.View +
                 " | " + row.LogoStatus +
                 " | `" + row.LogoBoxes + "`" +
+                " | `" + row.TextLabels + "`" +
                 " | " + row.LogoInsideMark.ToString("0.0000", CultureInfo.InvariantCulture) +
                 " | " + row.LogoMarkCoverage.ToString("0.0000", CultureInfo.InvariantCulture) +
                 " | `" + overlayPath + "` |");
@@ -1212,10 +1336,55 @@ internal static class Program
             lines.Add("");
         }
 
+        lines.Add("## All Marked Images");
+        lines.Add("");
+        foreach (CompareRow row in rows
+            .Where(row => !string.IsNullOrEmpty(row.MarkedFile))
+            .OrderBy(row => row.Model, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(row => row.View, StringComparer.OrdinalIgnoreCase))
+        {
+            string overlayPath = ToMarkdownPath(reportDirectory, row.OverlayImage);
+            lines.Add("### " + row.Model + " " + row.View);
+            lines.Add("");
+            lines.Add("- status: `" + row.Status + "`");
+            lines.Add("- marked boxes: `" + row.MarkedBoxes + "`");
+            lines.Add("- detected boxes: `" + row.DetectedBoxes + "`");
+            lines.Add("- logo boxes: `" + row.LogoBoxes + "`");
+            lines.Add("- text labels: `" + row.TextLabels + "`");
+            lines.Add("- clean-text labels: `" + row.CleanTextTextLabels + "`");
+            lines.Add("");
+            lines.Add("![" + row.Model + " " + row.View + "](" + overlayPath + ")");
+            lines.Add("");
+        }
+
+        lines.Add("## All Detected Images");
+        lines.Add("");
+        foreach (CompareRow row in rows
+            .Where(row => row.DetectedRects > 0 ||
+                row.CleanTextRects > 0 ||
+                !string.IsNullOrEmpty(row.LogoBoxes) ||
+                !string.IsNullOrEmpty(row.TextBoxes))
+            .OrderBy(row => row.Model, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(row => row.View, StringComparer.OrdinalIgnoreCase))
+        {
+            string overlayPath = ToMarkdownPath(reportDirectory, row.OverlayImage);
+            lines.Add("### " + row.Model + " " + row.View);
+            lines.Add("");
+            lines.Add("- marked file: `" + (string.IsNullOrEmpty(row.MarkedFile) ? "none" : row.MarkedFile) + "`");
+            lines.Add("- detected boxes: `" + row.DetectedBoxes + "`");
+            lines.Add("- logo boxes: `" + row.LogoBoxes + "`");
+            lines.Add("- text boxes: `" + row.TextBoxes + "`");
+            lines.Add("- text labels: `" + row.TextLabels + "`");
+            lines.Add("- clean-text labels: `" + row.CleanTextTextLabels + "`");
+            lines.Add("");
+            lines.Add("![" + row.Model + " " + row.View + "](" + overlayPath + ")");
+            lines.Add("");
+        }
+
         lines.Add("## All Compared Views");
         lines.Add("");
-        lines.Add("| Model | View | Status | Logo | CleanText | CleanText logo | Combined | CleanText combined | Marked rects | Detected rects | Combined rects | Mark coverage | Detection inside mark | Logo inside mark | Combined inside mark | Best IoU | Combined IoU | Overlay |");
-        lines.Add("| --- | --- | --- | --- | --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |");
+        lines.Add("| Model | View | Status | Logo | CleanText | CleanText logo | Combined | CleanText combined | Marked rects | Detected rects | Combined rects | Text labels | CleanText labels | Mark coverage | Detection inside mark | Logo inside mark | Combined inside mark | Best IoU | Combined IoU | Overlay |");
+        lines.Add("| --- | --- | --- | --- | --- | --- | --- | --- | ---: | ---: | ---: | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |");
         foreach (CompareRow row in rows.OrderBy(row => row.Model, StringComparer.OrdinalIgnoreCase).ThenBy(row => row.View, StringComparer.OrdinalIgnoreCase))
         {
             string overlayPath = ToMarkdownPath(reportDirectory, row.OverlayImage);
@@ -1230,6 +1399,8 @@ internal static class Program
                 " | " + row.MarkedRects.ToString(CultureInfo.InvariantCulture) +
                 " | " + row.DetectedRects.ToString(CultureInfo.InvariantCulture) +
                 " | " + row.CombinedRects.ToString(CultureInfo.InvariantCulture) +
+                " | `" + row.TextLabels + "`" +
+                " | `" + row.CleanTextTextLabels + "`" +
                 " | " + row.MarkCoverage.ToString("0.0000", CultureInfo.InvariantCulture) +
                 " | " + row.DetectionInsideMark.ToString("0.0000", CultureInfo.InvariantCulture) +
                 " | " + row.LogoInsideMark.ToString("0.0000", CultureInfo.InvariantCulture) +
@@ -1284,13 +1455,17 @@ internal static class Program
 
     private sealed class DetectionBuckets
     {
+        public List<RectI> FinalRects { get; } = new List<RectI>();
         public List<RectI> LogoRects { get; } = new List<RectI>();
         public List<RectI> TextRects { get; } = new List<RectI>();
+        public List<string> TextLabels { get; } = new List<string>();
         public List<RectI> CombinedRects { get; } = new List<RectI>();
         public List<RectI> OtherRects { get; } = new List<RectI>();
 
         public IEnumerable<RectI> PartRects => LogoRects.Concat(TextRects).Concat(OtherRects);
-        public List<RectI> AllRects => PartRects.Concat(CombinedRects).ToList();
+        public List<RectI> AllRects => FinalRects.Count > 0
+            ? FinalRects.ToList()
+            : PartRects.Concat(CombinedRects).ToList();
     }
 
     private sealed class MarkedRectangle
@@ -1371,10 +1546,12 @@ internal static class Program
         public string DetectedBoxes { get; set; }
         public string LogoBoxes { get; set; }
         public string TextBoxes { get; set; }
+        public string TextLabels { get; set; }
         public string CombinedBoxes { get; set; }
         public string CleanTextBoxes { get; set; }
         public string CleanTextLogoBoxes { get; set; }
         public string CleanTextTextBoxes { get; set; }
+        public string CleanTextTextLabels { get; set; }
         public string CleanTextCombinedBoxes { get; set; }
         public string MarkedFile { get; set; }
         public string OverlayImage { get; set; }

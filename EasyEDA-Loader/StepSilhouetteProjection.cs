@@ -196,6 +196,26 @@ namespace EasyEDA_Loader
             return ModelImportTrace.Measure("projection_vector_occt_hlr", null, () => ReadOcctVectorProjectionViewsJsonFromString(standardOutput, placements));
         }
 
+        public static IReadOnlyDictionary<string, IReadOnlyList<StepVectorWatermarkPrimitive>> GenerateVectorWatermarkViews(
+            byte[] stepData,
+            IReadOnlyDictionary<string, StepSilhouettePlacement> placements,
+            IReadOnlyDictionary<string, StepVectorWatermarkImageMapping> mappings)
+        {
+            if (stepData == null || stepData.Length == 0 || placements == null || placements.Count == 0)
+                return new Dictionary<string, IReadOnlyList<StepVectorWatermarkPrimitive>>(StringComparer.OrdinalIgnoreCase);
+
+            string standardOutput = RunOcctHelper("-", stepData, arguments =>
+            {
+                arguments.Add("--vector-views");
+                arguments.Add(string.Join(",", placements.Keys));
+            });
+
+            return ModelImportTrace.Measure(
+                "projection_vector_watermark_input",
+                null,
+                () => ReadOcctVectorWatermarkViewsJsonFromString(standardOutput, placements, mappings));
+        }
+
         public static IReadOnlyDictionary<string, IReadOnlyList<StepSilhouettePrimitive>> GenerateRawViews(
             byte[] stepData,
             IReadOnlyDictionary<string, StepSilhouettePlacement> placements)
@@ -523,6 +543,42 @@ namespace EasyEDA_Loader
             }
         }
 
+        private static IReadOnlyDictionary<string, IReadOnlyList<StepVectorWatermarkPrimitive>> ReadOcctVectorWatermarkViewsJsonFromString(
+            string json,
+            IReadOnlyDictionary<string, StepSilhouettePlacement> placements,
+            IReadOnlyDictionary<string, StepVectorWatermarkImageMapping> mappings)
+        {
+            using (JsonDocument document = JsonDocument.Parse(json))
+            {
+                JsonElement root = document.RootElement;
+                if (!root.TryGetProperty("Success", out JsonElement successElement) || !successElement.GetBoolean())
+                    throw new InvalidOperationException("OCCT vector HLR helper failed: " + ReadOcctError(root));
+                if (!root.TryGetProperty("Views", out JsonElement viewsElement) || viewsElement.ValueKind != JsonValueKind.Array)
+                    throw new InvalidDataException("OCCT vector HLR helper batch result does not contain a views array.");
+
+                var results = new Dictionary<string, IReadOnlyList<StepVectorWatermarkPrimitive>>(StringComparer.OrdinalIgnoreCase);
+                foreach (JsonElement viewElement in viewsElement.EnumerateArray())
+                {
+                    string name = viewElement.TryGetProperty("Name", out JsonElement nameElement)
+                        ? nameElement.GetString()
+                        : null;
+                    if (string.IsNullOrWhiteSpace(name) || !placements.TryGetValue(name, out StepSilhouettePlacement placement))
+                        continue;
+                    if (!viewElement.TryGetProperty("Success", out JsonElement viewSuccessElement) || !viewSuccessElement.GetBoolean())
+                        throw new InvalidOperationException("OCCT vector HLR helper failed for view " + name + ": " + ReadOcctError(viewElement));
+                    if (!viewElement.TryGetProperty("Primitives", out JsonElement primitivesElement) || primitivesElement.ValueKind != JsonValueKind.Array)
+                        throw new InvalidDataException("OCCT vector HLR helper batch result does not contain primitives for view " + name + ".");
+
+                    StepVectorWatermarkImageMapping mapping = null;
+                    if (mappings != null)
+                        mappings.TryGetValue(name, out mapping);
+                    results[name] = ReadPlacedVectorWatermarkPrimitives(primitivesElement, placement.TargetBounds, mapping);
+                }
+
+                return results;
+            }
+        }
+
         private static List<StepSilhouettePrimitive> ReadOcctPrimitives(JsonElement primitivesElement)
         {
             var sourcePrimitives = new List<StepSilhouettePrimitive>();
@@ -617,6 +673,224 @@ namespace EasyEDA_Loader
 
             points = values.ToArray();
             return true;
+        }
+
+        private static IReadOnlyList<StepVectorWatermarkPrimitive> ReadPlacedVectorWatermarkPrimitives(
+            JsonElement primitivesElement,
+            StepSilhouetteBounds targetBounds,
+            StepVectorWatermarkImageMapping mapping)
+        {
+            var raw = new List<RawVectorWatermarkPrimitive>();
+            foreach (JsonElement primitiveElement in primitivesElement.EnumerateArray())
+            {
+                string visibility = primitiveElement.TryGetProperty("Visibility", out JsonElement visibilityElement)
+                    ? visibilityElement.GetString()
+                    : "visible";
+                if (string.Equals(visibility, "hidden", StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                string kind = primitiveElement.TryGetProperty("Kind", out JsonElement kindElement)
+                    ? kindElement.GetString()
+                    : null;
+                var primitive = new RawVectorWatermarkPrimitive
+                {
+                    Kind = kind,
+                    Visibility = visibility,
+                    Category = primitiveElement.TryGetProperty("Category", out JsonElement categoryElement)
+                        ? categoryElement.GetString()
+                        : null,
+                    SourceIndex = primitiveElement.TryGetProperty("SourceIndex", out JsonElement sourceIndexElement)
+                        ? sourceIndexElement.GetInt32()
+                        : raw.Count,
+                    OriginalKind = primitiveElement.TryGetProperty("OriginalKind", out JsonElement originalKindElement)
+                        ? originalKindElement.GetString()
+                        : kind,
+                    CenterX = primitiveElement.TryGetProperty("CenterX", out JsonElement centerXElement)
+                        ? centerXElement.GetDouble()
+                        : 0.0,
+                    CenterY = primitiveElement.TryGetProperty("CenterY", out JsonElement centerYElement)
+                        ? centerYElement.GetDouble()
+                        : 0.0,
+                    Radius = primitiveElement.TryGetProperty("Radius", out JsonElement radiusElement)
+                        ? radiusElement.GetDouble()
+                        : 0.0,
+                    StartAngle = primitiveElement.TryGetProperty("StartAngle", out JsonElement startAngleElement)
+                        ? startAngleElement.GetDouble()
+                        : 0.0,
+                    EndAngle = primitiveElement.TryGetProperty("EndAngle", out JsonElement endAngleElement)
+                        ? endAngleElement.GetDouble()
+                        : 0.0
+                };
+                if (TryReadVectorPoints(primitiveElement, out double[] points))
+                    primitive.Points = points;
+                raw.Add(primitive);
+            }
+
+            if (raw.Count == 0)
+                return Array.Empty<StepVectorWatermarkPrimitive>();
+
+            StepSilhouetteBounds sourceBounds = BoundsForRawVectorWatermarkPrimitives(raw);
+            if (sourceBounds == null)
+                return Array.Empty<StepVectorWatermarkPrimitive>();
+
+            double sourceCenterX = sourceBounds.CenterX;
+            double sourceCenterY = sourceBounds.CenterY;
+            double targetCenterX = targetBounds.CenterX;
+            double targetCenterY = targetBounds.CenterY;
+            var result = new List<StepVectorWatermarkPrimitive>(raw.Count);
+            foreach (RawVectorWatermarkPrimitive primitive in raw)
+            {
+                StepVectorWatermarkPrimitive placed = PlaceVectorWatermarkPrimitive(
+                    primitive,
+                    sourceCenterX,
+                    sourceCenterY,
+                    targetCenterX,
+                    targetCenterY,
+                    mapping);
+                if (placed != null)
+                    result.Add(placed);
+            }
+
+            return result;
+        }
+
+        private static StepVectorWatermarkPrimitive PlaceVectorWatermarkPrimitive(
+            RawVectorWatermarkPrimitive primitive,
+            double sourceCenterX,
+            double sourceCenterY,
+            double targetCenterX,
+            double targetCenterY,
+            StepVectorWatermarkImageMapping mapping)
+        {
+            List<StepVectorWatermarkPoint> sampledPoints = SampleRawVectorWatermarkPoints(primitive)
+                .Select(point => MapVectorWatermarkPoint(point, sourceCenterX, sourceCenterY, targetCenterX, targetCenterY))
+                .ToList();
+            if (sampledPoints.Count < 2)
+                return null;
+
+            List<StepVectorWatermarkPoint> sampledImagePoints = mapping == null
+                ? new List<StepVectorWatermarkPoint>()
+                : sampledPoints
+                    .Select(point => new StepVectorWatermarkPoint(mapping.ProjectX(point.X), mapping.ProjectY(point.Y)))
+                    .ToList();
+
+            StepVectorWatermarkPoint center = MapVectorWatermarkPoint(
+                new StepVectorWatermarkPoint(primitive.CenterX, primitive.CenterY),
+                sourceCenterX,
+                sourceCenterY,
+                targetCenterX,
+                targetCenterY);
+
+            return new StepVectorWatermarkPrimitive
+            {
+                Kind = ParseVectorWatermarkPrimitiveKind(primitive.Kind),
+                Visibility = primitive.Visibility,
+                Category = primitive.Category,
+                SourceIndex = primitive.SourceIndex,
+                OriginalKind = primitive.OriginalKind,
+                CenterX = center.X,
+                CenterY = center.Y,
+                Radius = primitive.Radius,
+                StartAngle = primitive.StartAngle,
+                EndAngle = primitive.EndAngle,
+                SampledPoints = sampledPoints,
+                SampledImagePoints = sampledImagePoints,
+                Bounds = CreateVectorWatermarkBounds(sampledPoints),
+                ImageBounds = CreateVectorWatermarkBounds(sampledImagePoints)
+            };
+        }
+
+        private static StepVectorWatermarkPrimitiveKind ParseVectorWatermarkPrimitiveKind(string kind)
+        {
+            if (string.Equals(kind, "arc", StringComparison.OrdinalIgnoreCase))
+                return StepVectorWatermarkPrimitiveKind.Arc;
+            if (string.Equals(kind, "polyline", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(kind, "bspline", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(kind, "rational-bspline", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(kind, "ellipse", StringComparison.OrdinalIgnoreCase))
+            {
+                return StepVectorWatermarkPrimitiveKind.Polyline;
+            }
+
+            return StepVectorWatermarkPrimitiveKind.Line;
+        }
+
+        private static List<StepVectorWatermarkPoint> SampleRawVectorWatermarkPoints(RawVectorWatermarkPrimitive primitive)
+        {
+            if (ParseVectorWatermarkPrimitiveKind(primitive.Kind) == StepVectorWatermarkPrimitiveKind.Arc)
+            {
+                double sweep = PrimitiveArcSweepDegrees(primitive.StartAngle, primitive.EndAngle);
+                int segmentCount = Math.Max(4, Math.Min(48, (int)Math.Ceiling(Math.Abs(sweep) / 10.0)));
+                var points = new List<StepVectorWatermarkPoint>(segmentCount + 1);
+                for (int index = 0; index <= segmentCount; index++)
+                {
+                    double angle = DegreesToRadians(primitive.StartAngle + sweep * index / segmentCount);
+                    points.Add(new StepVectorWatermarkPoint(
+                        primitive.CenterX + primitive.Radius * Math.Cos(angle),
+                        primitive.CenterY + primitive.Radius * Math.Sin(angle)));
+                }
+
+                return points;
+            }
+
+            var result = new List<StepVectorWatermarkPoint>();
+            if (primitive.Points == null)
+                return result;
+            for (int index = 0; index + 1 < primitive.Points.Length; index += 2)
+                result.Add(new StepVectorWatermarkPoint(primitive.Points[index], primitive.Points[index + 1]));
+            return result;
+        }
+
+        private static StepVectorWatermarkPoint MapVectorWatermarkPoint(
+            StepVectorWatermarkPoint point,
+            double sourceCenterX,
+            double sourceCenterY,
+            double targetCenterX,
+            double targetCenterY)
+        {
+            return new StepVectorWatermarkPoint(
+                RoundCoord(targetCenterX + point.X - sourceCenterX),
+                RoundCoord(targetCenterY + point.Y - sourceCenterY));
+        }
+
+        private static StepVectorWatermarkBounds CreateVectorWatermarkBounds(IReadOnlyList<StepVectorWatermarkPoint> points)
+        {
+            if (points == null || points.Count == 0)
+                return new StepVectorWatermarkBounds();
+
+            return new StepVectorWatermarkBounds
+            {
+                Left = points.Min(point => point.X),
+                Bottom = points.Min(point => point.Y),
+                Right = points.Max(point => point.X),
+                Top = points.Max(point => point.Y)
+            };
+        }
+
+        private static StepSilhouetteBounds BoundsForRawVectorWatermarkPrimitives(IReadOnlyList<RawVectorWatermarkPrimitive> primitives)
+        {
+            var pointBounds = primitives
+                .Select(primitive => CreateVectorWatermarkBounds(SampleRawVectorWatermarkPoints(primitive)))
+                .Where(bounds => bounds.Width > 0.0 || bounds.Height > 0.0)
+                .ToList();
+            if (pointBounds.Count == 0)
+                return null;
+
+            return new StepSilhouetteBounds
+            {
+                Left = pointBounds.Min(bounds => bounds.Left),
+                Bottom = pointBounds.Min(bounds => bounds.Bottom),
+                Right = pointBounds.Max(bounds => bounds.Right),
+                Top = pointBounds.Max(bounds => bounds.Top)
+            };
+        }
+
+        private static double PrimitiveArcSweepDegrees(double startAngle, double endAngle)
+        {
+            double end = endAngle;
+            while (end < startAngle)
+                end += 360.0;
+            return end - startAngle;
         }
 
         private static IReadOnlyList<StepSilhouettePrimitive> PlaceAndOptimizeOcctPrimitives(
@@ -1390,6 +1664,21 @@ namespace EasyEDA_Loader
             public double NormalX { get; }
             public double NormalY { get; }
             public double Offset { get; }
+        }
+
+        private sealed class RawVectorWatermarkPrimitive
+        {
+            public string Kind { get; set; }
+            public string Visibility { get; set; }
+            public string Category { get; set; }
+            public int SourceIndex { get; set; }
+            public string OriginalKind { get; set; }
+            public double[] Points { get; set; }
+            public double CenterX { get; set; }
+            public double CenterY { get; set; }
+            public double Radius { get; set; }
+            public double StartAngle { get; set; }
+            public double EndAngle { get; set; }
         }
 
         private sealed class CircularContactClusterBuilder

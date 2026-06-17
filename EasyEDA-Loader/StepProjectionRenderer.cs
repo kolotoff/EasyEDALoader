@@ -95,7 +95,7 @@ namespace EasyEDA_Loader
         }
     }
 
-    public static class StepProjectionRenderer
+    public static partial class StepProjectionRenderer
     {
         private const double MarkedDetectionRegionPaddingRatio = 0.15;
         private const int MarkedDetectionRegionMinPaddingPixels = 3;

@@ -4502,47 +4502,40 @@ namespace EasyEDA_Loader
             var result = new List<StepWatermarkMarkedRegion>();
             byte[] stepData = Encoding.Latin1.GetBytes(stepText);
 
-            var colorOptions = CreateTemplateTextProjectionOptions(StepProjectionRenderMode.Color);
-            var edgeOptions = CreateTemplateTextProjectionOptions(StepProjectionRenderMode.Edge);
-            var logoEdgeOptions = CreateTemplateTextProjectionOptions(StepProjectionRenderMode.EdgeVisibleRaw);
-            IReadOnlyList<StepProjectionImage> colorImages = StepProjectionRenderer.ProjectFileImages(stepData, "clean-text", colorOptions);
-            IReadOnlyList<StepProjectionImage> edgeImages = StepProjectionRenderer.ProjectFileImages(stepData, "clean-text", edgeOptions);
-            IReadOnlyList<StepProjectionImage> logoEdgeImages = StepProjectionRenderer.ProjectFileImages(stepData, "clean-text", logoEdgeOptions);
-            var edgeByViewName = edgeImages.ToDictionary(image => image.ViewName, StringComparer.OrdinalIgnoreCase);
-            var logoEdgeByViewName = logoEdgeImages.ToDictionary(image => image.ViewName, StringComparer.OrdinalIgnoreCase);
-
-            foreach (StepProjectionImage colorImage in colorImages)
+            var projectionOptions = CreateTemplateTextProjectionOptions(StepProjectionRenderMode.EdgeVisibleRaw);
+            foreach (TextProjectionViewSpec view in TextProjectionViews)
             {
-                if (!edgeByViewName.TryGetValue(colorImage.ViewName, out StepProjectionImage edgeImage))
-                    continue;
-                logoEdgeByViewName.TryGetValue(colorImage.ViewName, out StepProjectionImage logoEdgeImage);
-
-                if (!TryFindTextProjectionView(colorImage.ViewName, out TextProjectionViewSpec view))
-                    continue;
-
                 TextProjectionMapping mapping = TextProjectionMapping.Create(
                     modelBounds,
                     view,
-                    colorImage.Width,
-                    colorImage.Height,
-                    colorOptions.PaddingPixels);
+                    projectionOptions.ImageSizePixels,
+                    projectionOptions.ImageSizePixels,
+                    projectionOptions.PaddingPixels);
 
-                foreach (StepTextLogoDetectionRegion detection in StepTextLogoProjectionDetector.Detect(
-                    colorImage,
-                    edgeImage,
-                    logoEdgeImage,
+                StepVectorWatermarkDetectionInput vectorInput =
+                    StepProjectionRenderer.ProjectVectorWatermarkDetectionInput(
+                        stepData,
+                        "clean-text",
+                        view.Name,
+                        projectionOptions);
+
+                foreach (StepVectorWatermarkDetectionRegion vectorDetection in StepVectorWatermarkProjectionDetector.Detect(
+                    vectorInput,
                     new StepTextLogoDetectionOptions { DetectArbitraryText = textOnly }))
                 {
-                    if (textOnly && !string.Equals(detection.Kind, "text", StringComparison.OrdinalIgnoreCase))
+                    if (textOnly &&
+                        !string.Equals(vectorDetection.Kind, "text", StringComparison.OrdinalIgnoreCase))
+                    {
+                        continue;
+                    }
+
+                    if (vectorDetection.Width <= 0 || vectorDetection.Height <= 0)
                         continue;
 
-                    if (detection.Width <= 0 || detection.Height <= 0)
+                    if (requireHighConfidence && !IsHighConfidenceVectorTemplateTextLogoDetection(vectorDetection))
                         continue;
 
-                    if (requireHighConfidence && !IsHighConfidenceTemplateTextLogoDetection(detection))
-                        continue;
-
-                    result.Add(mapping.ToMarkedRegion(detection));
+                    result.Add(mapping.ToMarkedRegion(ToTextLogoDetectionRegion(vectorDetection)));
                 }
             }
 
@@ -4598,6 +4591,42 @@ namespace EasyEDA_Loader
                 detection.Score >= 35.0 &&
                 detection.ChamferDistance <= 5.0 &&
                 detection.EdgePixelCount >= 120;
+        }
+
+        private static bool IsHighConfidenceVectorTemplateTextLogoDetection(
+            StepVectorWatermarkDetectionRegion detection)
+        {
+            if (detection == null)
+                return false;
+
+            if (string.Equals(detection.Kind, "watermark-combined", StringComparison.OrdinalIgnoreCase))
+                return detection.Score >= 45.0 && detection.PrimitiveCount >= 2;
+
+            if (string.Equals(detection.Kind, "text", StringComparison.OrdinalIgnoreCase))
+                return detection.Score >= 56.0 && detection.PrimitiveCount >= 2;
+
+            if (string.Equals(detection.Kind, "logo", StringComparison.OrdinalIgnoreCase))
+                return detection.Score >= 35.0 && detection.PrimitiveCount >= 2;
+
+            return false;
+        }
+
+        private static StepTextLogoDetectionRegion ToTextLogoDetectionRegion(
+            StepVectorWatermarkDetectionRegion detection)
+        {
+            return new StepTextLogoDetectionRegion
+            {
+                TemplateName = detection.TemplateName,
+                Kind = detection.Kind,
+                Text = detection.Text,
+                X = detection.X,
+                Y = detection.Y,
+                Width = detection.Width,
+                Height = detection.Height,
+                Score = detection.Score,
+                ChamferDistance = detection.ChamferDistance,
+                EdgePixelCount = detection.PrimitiveCount
+            };
         }
 
         private static StepProjectionOptions CreateTemplateTextProjectionOptions(StepProjectionRenderMode renderMode)
