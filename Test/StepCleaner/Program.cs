@@ -284,6 +284,9 @@ namespace StepCleaner.Tests
             if (IsOption(args[0], "--vector-detection-report-contract"))
                 return RunVectorDetectionReportContractTests();
 
+            if (IsOption(args[0], "--vector-detection-quality-contract"))
+                return RunVectorDetectionQualityContractTests();
+
             if (IsOption(args[0], "--text-logo-cleanup-promotion"))
                 return RunTextLogoCleanupPromotionTests();
 
@@ -5159,6 +5162,42 @@ namespace StepCleaner.Tests
             if (logoCount != 15)
                 failures.Add("Expected 15 detected logo-marked views, got " + logoCount.ToString(CultureInfo.InvariantCulture) + ".");
 
+            string reportCsvPath = Path.Combine(dataRoot, "CleanRunReport", "MarkedVsDetected", "marked-vs-detected.csv");
+            if (File.Exists(reportCsvPath))
+            {
+                string[] reportLines = File.ReadAllLines(reportCsvPath);
+                if (reportLines.Length > 1)
+                {
+                    string[] headerColumns = ParseCsvLine(reportLines[0]).ToArray();
+                    int markedRectsIndex = Array.IndexOf(headerColumns, "MarkedRects");
+                    int cleanTextCombinedStatusIndex = Array.IndexOf(headerColumns, "CleanTextCombinedStatus");
+                    int cleanTextCombinedBoxesIndex = Array.IndexOf(headerColumns, "CleanTextCombinedBoxes");
+                    if (markedRectsIndex < 0 || cleanTextCombinedStatusIndex < 0 || cleanTextCombinedBoxesIndex < 0)
+                    {
+                        failures.Add("MarkedVsDetected CSV should include marked rects, CleanText combined status, and CleanText combined boxes columns.");
+                    }
+                    else
+                    {
+                        foreach (string line in reportLines.Skip(1))
+                        {
+                            string[] columns = ParseCsvLine(line).ToArray();
+                            if (columns.Length <= Math.Max(cleanTextCombinedStatusIndex, cleanTextCombinedBoxesIndex))
+                                continue;
+                            if (!int.TryParse(columns[markedRectsIndex], NumberStyles.Integer, CultureInfo.InvariantCulture, out int markedRects) ||
+                                markedRects <= 0)
+                            {
+                                continue;
+                            }
+
+                            if (!string.Equals(columns[cleanTextCombinedStatusIndex], "matched", StringComparison.OrdinalIgnoreCase))
+                                failures.Add("MarkedVsDetected CleanText combined status should be matched for all marked rows, got `" + columns[cleanTextCombinedStatusIndex] + "` in `" + line + "`.");
+                            if (string.IsNullOrWhiteSpace(columns[cleanTextCombinedBoxesIndex]))
+                                failures.Add("MarkedVsDetected CleanText combined boxes should not be empty in `" + line + "`.");
+                        }
+                    }
+                }
+            }
+
             string usbCStepPath = Path.Combine(originalDirectory, "USB-C-SMD_TYPE-C-6PIN-2MD-073.step");
             if (File.Exists(usbCStepPath))
             {
@@ -5205,6 +5244,181 @@ namespace StepCleaner.Tests
 
             Console.WriteLine("Vector detection report contract passed.");
             return 0;
+        }
+
+        private static List<string> ParseCsvLine(string line)
+        {
+            var columns = new List<string>();
+            if (line == null)
+                return columns;
+
+            var current = new StringBuilder();
+            bool inQuotes = false;
+            for (int i = 0; i < line.Length; i++)
+            {
+                char ch = line[i];
+                if (ch == '"')
+                {
+                    if (inQuotes && i + 1 < line.Length && line[i + 1] == '"')
+                    {
+                        current.Append('"');
+                        i++;
+                    }
+                    else
+                    {
+                        inQuotes = !inQuotes;
+                    }
+                }
+                else if (ch == ',' && !inQuotes)
+                {
+                    columns.Add(current.ToString());
+                    current.Clear();
+                }
+                else
+                {
+                    current.Append(ch);
+                }
+            }
+
+            columns.Add(current.ToString());
+            return columns;
+        }
+
+        private static int RunVectorDetectionQualityContractTests()
+        {
+            string dataRoot = FindDataRoot();
+            string originalDirectory = Path.Combine(dataRoot, "Original");
+            var failures = new List<string>();
+
+            StepVectorWatermarkDetectionRegion buz =
+                SingleVectorWatermark(originalDirectory, "BUZ-TH_D9.0-H5.5-P4.0", "z_plus", failures);
+            if (buz != null)
+            {
+                if (buz.Y > 670 || buz.Height < 320)
+                    failures.Add("BUZ-TH_D9.0-H5.5-P4.0 z_plus should include the stacked logo/text vector support, got " + FormatBounds(buz.X, buz.Y, buz.Width, buz.Height) + ".");
+            }
+
+            AssertVectorTextLabels(originalDirectory, "CONN-TH_MR30PW-M30-G-Y", "z_plus", failures);
+            AssertVectorTextLabels(originalDirectory, "SOT-89-3_L4.3-W2.5-H1.6-LS4.1-P1.50", "x_plus", failures);
+            AssertVectorTextLabels(originalDirectory, "LED-SMD_XL-3838UV2SA06G3", "y_minus", failures);
+
+            StepVectorWatermarkDetectionRegion usbC =
+                SingleVectorWatermark(originalDirectory, "USB-C-SMD_TYPE-C-6PIN-2MD-073", "z_minus", failures);
+            if (usbC != null)
+            {
+                if (!string.Equals(usbC.Text, "LCEDA", StringComparison.OrdinalIgnoreCase))
+                    failures.Add("USB-C-SMD_TYPE-C-6PIN-2MD-073 z_minus should expose LCEDA text, got `" + usbC.Text + "`.");
+                if (usbC.X > 470 || usbC.Y > 550 || usbC.Height > 195)
+                    failures.Add("USB-C-SMD_TYPE-C-6PIN-2MD-073 z_minus should include the A stroke without connector geometry, got " + FormatBounds(usbC.X, usbC.Y, usbC.Width, usbC.Height) + ".");
+            }
+
+            IReadOnlyList<StepVectorWatermarkDetectionRegion> hdmiZPlus =
+                DetectVectorWatermarks(originalDirectory, "HDMI-SMD_HDMI-001S", "z_plus", cleanText: true);
+            if (hdmiZPlus.Count != 0)
+            {
+                failures.Add(
+                    "HDMI-SMD_HDMI-001S z_plus should not have vector watermark detections, got " +
+                    string.Join(
+                        "; ",
+                        hdmiZPlus.Select(detection =>
+                            detection.Kind +
+                            "/" +
+                            detection.TemplateName +
+                            " " +
+                            FormatBounds(detection.X, detection.Y, detection.Width, detection.Height) +
+                            " score=" +
+                            detection.Score.ToString("0.000", CultureInfo.InvariantCulture))) +
+                    ".");
+            }
+
+            if (failures.Count > 0)
+            {
+                Console.Error.WriteLine("Vector detection quality contract failed.");
+                foreach (string failure in failures)
+                    Console.Error.WriteLine("  " + failure);
+                return 1;
+            }
+
+            Console.WriteLine("Vector detection quality contract passed.");
+            return 0;
+        }
+
+        private static StepVectorWatermarkDetectionRegion SingleVectorWatermark(
+            string originalDirectory,
+            string modelName,
+            string viewName,
+            List<string> failures)
+        {
+            IReadOnlyList<StepVectorWatermarkDetectionRegion> detections =
+                DetectVectorWatermarks(originalDirectory, modelName, viewName, cleanText: true);
+            if (detections.Count != 1)
+            {
+                failures.Add(
+                    modelName +
+                    " " +
+                    viewName +
+                    " expected one CleanText vector detection, got " +
+                    detections.Count.ToString(CultureInfo.InvariantCulture) +
+                    ".");
+                return null;
+            }
+
+            return detections[0];
+        }
+
+        private static void AssertVectorTextLabels(
+            string originalDirectory,
+            string modelName,
+            string viewName,
+            List<string> failures)
+        {
+            StepVectorWatermarkDetectionInput input = ProjectVectorWatermarkInput(originalDirectory, modelName, viewName);
+            IReadOnlyList<StepVectorWatermarkDetectionRegion> textDetections =
+                StepVectorTextDetector.Detect(
+                    input,
+                    new StepTextLogoDetectionOptions { DetectArbitraryText = true });
+            var labels = new HashSet<string>(
+                textDetections
+                    .Select(detection => detection.Text)
+                    .Where(text => !string.IsNullOrWhiteSpace(text)),
+                StringComparer.OrdinalIgnoreCase);
+            if (!labels.Contains("EasyEDA") || !labels.Contains("LCEDA"))
+            {
+                failures.Add(
+                    modelName +
+                    " " +
+                    viewName +
+                    " should expose EasyEDA and LCEDA text labels, got [" +
+                    string.Join("; ", labels.OrderBy(label => label, StringComparer.OrdinalIgnoreCase)) +
+                    "].");
+            }
+        }
+
+        private static IReadOnlyList<StepVectorWatermarkDetectionRegion> DetectVectorWatermarks(
+            string originalDirectory,
+            string modelName,
+            string viewName,
+            bool cleanText)
+        {
+            StepVectorWatermarkDetectionInput input = ProjectVectorWatermarkInput(originalDirectory, modelName, viewName);
+            return StepVectorWatermarkProjectionDetector.Detect(
+                input,
+                new StepTextLogoDetectionOptions { DetectArbitraryText = cleanText });
+        }
+
+        private static StepVectorWatermarkDetectionInput ProjectVectorWatermarkInput(
+            string originalDirectory,
+            string modelName,
+            string viewName)
+        {
+            string stepPath = Path.Combine(originalDirectory, modelName + ".step");
+            if (!File.Exists(stepPath))
+                throw new FileNotFoundException("Missing original STEP for vector detection.", stepPath);
+
+            return StepProjectionRenderer.ProjectVectorWatermarkDetectionInput(
+                File.ReadAllBytes(stepPath),
+                modelName,
+                viewName);
         }
 
         private static IReadOnlyList<StepVectorWatermarkDetectionRegion> FilterReportLogoDetections(

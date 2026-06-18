@@ -293,3 +293,27 @@ Acceptance:
 ## Recommended Next Step
 
 Commit the current Task 7/8 validation and cleanup slice after review. Then decide whether Task 4 needs deeper managed-API/native-helper probing; do not start a native helper unless a new validation fixture proves the managed vector path is insufficient.
+
+## Current Detection Follow-Up, 2026-06-18
+
+- [x] Add vector-only detector quality contract for the user-reported cases:
+  `BUZ-TH_D9.0-H5.5-P4.0 z_plus`,
+  `CONN-TH_MR30PW-M30-G-Y z_plus`,
+  `SOT-89-3_L4.3-W2.5-H1.6-LS4.1-P1.50 x_plus`,
+  `LED-SMD_XL-3838UV2SA06G3 y_minus`,
+  `USB-C-SMD_TYPE-C-6PIN-2MD-073 z_minus`,
+  and `HDMI-SMD_HDMI-001S z_plus`.
+- [x] Reject false logo matches with a vector chamfer-distance guard.
+- [x] Expand CleanText combined regions only from detected vector support primitives, without marked-data input to runtime detector code.
+- [x] Keep normal detection parity unchanged while allowing CleanText arbitrary/manufacturer text regions to include all relevant strokes.
+- [x] Speed up `MarkedVsDetected` report generation by batching all six vector views per model, sharing normal/CleanText detector work, processing models in parallel, and retrying failed batch projections with serial per-view fallback.
+- [x] Generate `MarkedVsDetected` report with all marked images and all detected images.
+- [x] Verify detector count target: `detected logos: 15`, `logo_matched=15`, `matched=26`.
+- [x] Fix report bucketing so final text-only, logo-only, and logo+text facade regions all appear in combined/final report columns: `combined matched: 26`, `clean-text combined matched: 26`.
+- [x] Run focused verification:
+  `--vector-detection-quality-contract`,
+  `--vector-detection-report-contract`,
+  `--marked-vector-detection-parity`,
+  and `--marked-vector-detection-parity-clean-text`.
+
+Report timing after optimization: about 4 minutes on the current machine, compared with about 60 minutes before batching/parallelization.

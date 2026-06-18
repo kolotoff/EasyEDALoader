@@ -1,13 +1,16 @@
-using EasyEDA_Loader;
-using OpenCvSharp;
-using SkiaSharp;
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Text;
 using System.Text.Json;
+using System.Threading.Tasks;
+using EasyEDA_Loader;
+using OpenCvSharp;
+using SkiaSharp;
 
 internal static class Program
 {
@@ -59,8 +62,7 @@ internal static class Program
         var cleanTextDetectedByKey = new Dictionary<string, DetectionBuckets>(StringComparer.OrdinalIgnoreCase);
         List<DetectedModelSummary> detectedSummary = LoadDetectionRegionFiles(detectionDebugDirectory, detectedByKey);
         LoadDetectionRegionFiles(cleanTextDetectionDebugDirectory, cleanTextDetectedByKey, quietWhenMissing: true);
-        GenerateDetectorResults(originalDirectory, markedKeys, cleanText: false, detectedByKey);
-        GenerateDetectorResults(originalDirectory, markedKeys, cleanText: true, cleanTextDetectedByKey);
+        GenerateDetectorResults(originalDirectory, detectedByKey, cleanTextDetectedByKey);
         detectedSummary = BuildDetectedSummary(detectedByKey);
 
         var rows = new List<CompareRow>();
@@ -323,9 +325,8 @@ internal static class Program
 
     private static void GenerateDetectorResults(
         string originalDirectory,
-        HashSet<string> targetKeys,
-        bool cleanText,
-        Dictionary<string, DetectionBuckets> detectedByKey)
+        Dictionary<string, DetectionBuckets> detectedByKey,
+        Dictionary<string, DetectionBuckets> cleanTextDetectedByKey)
     {
         if (!Directory.Exists(originalDirectory))
         {
@@ -333,67 +334,202 @@ internal static class Program
             return;
         }
 
-        IEnumerable<string> keys = Directory.GetFiles(originalDirectory, "*.step")
+        string[] stepPaths = Directory.GetFiles(originalDirectory, "*.step")
             .OrderBy(Path.GetFileName, StringComparer.OrdinalIgnoreCase)
-            .SelectMany(path => ViewNames.Select(viewName =>
-                Path.GetFileNameWithoutExtension(path) + "__" + viewName));
-
-        foreach (string key in keys)
+            .ToArray();
+        var modelResults = new ConcurrentBag<ModelDetectorResults>();
+        var parallelOptions = new ParallelOptions
         {
-            if (!TryParseProjectionKey(key, out string modelName, out string viewName))
-                continue;
+            MaxDegreeOfParallelism = GetReportGenerationParallelism()
+        };
 
-            string stepPath = Path.Combine(originalDirectory, modelName + ".step");
-            if (!File.Exists(stepPath))
-            {
-                Console.Error.WriteLine("Original STEP was not found for detector result: " + stepPath);
-                continue;
-            }
-
+        Parallel.ForEach(stepPaths, parallelOptions, stepPath =>
+        {
+            string modelName = Path.GetFileNameWithoutExtension(stepPath);
+            var stopwatch = Stopwatch.StartNew();
             try
             {
-                byte[] stepData = File.ReadAllBytes(stepPath);
-                StepVectorWatermarkDetectionInput vectorInput =
-                    StepProjectionRenderer.ProjectVectorWatermarkDetectionInput(stepData, modelName, viewName);
-                var options = new StepTextLogoDetectionOptions
-                {
-                    DetectArbitraryText = cleanText
-                };
-                IReadOnlyList<StepVectorWatermarkDetectionRegion> textDetections =
-                    StepVectorTextDetector.Detect(vectorInput, options);
-                IReadOnlyList<StepVectorWatermarkDetectionRegion> logoSuppressTextDetections =
-                    StepVectorTextDetector.Detect(
-                        vectorInput,
-                        new StepTextLogoDetectionOptions { DetectArbitraryText = false });
-                IReadOnlyList<StepVectorWatermarkDetectionRegion> logoDetections =
-                    FilterReportLogoDetections(
-                        StepVectorLogoDetector.Detect(vectorInput, options),
-                        logoSuppressTextDetections);
-                IReadOnlyList<StepVectorWatermarkDetectionRegion> detections =
-                    StepVectorWatermarkProjectionDetector.Detect(
-                        vectorInput,
-                        options);
-                var buckets = new DetectionBuckets();
-                foreach (StepVectorWatermarkDetectionRegion detection in logoDetections)
-                    AddSplitDetection(buckets, detection);
-                foreach (StepVectorWatermarkDetectionRegion detection in textDetections)
-                    AddSplitDetection(buckets, detection);
-                foreach (StepVectorWatermarkDetectionRegion detection in detections)
-                    AddFinalDetection(buckets, detection);
-
-                detectedByKey[key] = buckets;
+                ModelDetectorResults result = GenerateModelDetectorResults(stepPath, modelName);
+                modelResults.Add(result);
+                stopwatch.Stop();
+                Console.Error.WriteLine(
+                    "Generated vector detector regions for " +
+                    modelName +
+                    " in " +
+                    stopwatch.Elapsed.TotalSeconds.ToString("0.0", CultureInfo.InvariantCulture) +
+                    "s.");
             }
             catch (Exception ex)
             {
                 Console.Error.WriteLine(
-                    "Could not generate " +
-                    (cleanText ? "CleanText" : "normal") +
-                    " detector regions for " +
-                    key +
+                    "Could not generate vector detector regions for " +
+                    modelName +
+                    ": " +
+                    ex.Message);
+            }
+        });
+
+        foreach (ModelDetectorResults result in modelResults)
+        {
+            foreach (KeyValuePair<string, DetectionBuckets> item in result.NormalByKey)
+                detectedByKey[item.Key] = item.Value;
+            foreach (KeyValuePair<string, DetectionBuckets> item in result.CleanTextByKey)
+                cleanTextDetectedByKey[item.Key] = item.Value;
+        }
+    }
+
+    private static ModelDetectorResults GenerateModelDetectorResults(string stepPath, string modelName)
+    {
+        byte[] stepData = File.ReadAllBytes(stepPath);
+        try
+        {
+            IReadOnlyDictionary<string, StepVectorWatermarkDetectionInput> inputsByView =
+                StepProjectionRenderer.ProjectVectorWatermarkDetectionInputs(stepData, modelName, ViewNames);
+            return CreateModelDetectorResults(modelName, inputsByView);
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine(
+                "Batch vector detector projection failed for " +
+                modelName +
+                "; retrying serial views: " +
+                ex.Message);
+        }
+
+        var result = new ModelDetectorResults();
+        foreach (string viewName in ViewNames)
+        {
+            try
+            {
+                StepVectorWatermarkDetectionInput vectorInput =
+                    StepProjectionRenderer.ProjectVectorWatermarkDetectionInput(stepData, modelName, viewName);
+                AddDetectorBuckets(result, modelName, viewName, vectorInput);
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine(
+                    "Could not generate vector detector regions for " +
+                    modelName +
+                    " " +
+                    viewName +
                     ": " +
                     ex.Message);
             }
         }
+
+        return result;
+    }
+
+    private static ModelDetectorResults CreateModelDetectorResults(
+        string modelName,
+        IReadOnlyDictionary<string, StepVectorWatermarkDetectionInput> inputsByView)
+    {
+        var result = new ModelDetectorResults();
+        foreach (string viewName in ViewNames)
+        {
+            if (!inputsByView.TryGetValue(viewName, out StepVectorWatermarkDetectionInput vectorInput))
+                continue;
+
+            AddDetectorBuckets(result, modelName, viewName, vectorInput);
+        }
+
+        return result;
+    }
+
+    private static void AddDetectorBuckets(
+        ModelDetectorResults result,
+        string modelName,
+        string viewName,
+        StepVectorWatermarkDetectionInput vectorInput)
+    {
+        string key = modelName + "__" + viewName;
+        CreateDetectorBuckets(vectorInput, out DetectionBuckets normalBuckets, out DetectionBuckets cleanTextBuckets);
+        result.NormalByKey[key] = normalBuckets;
+        result.CleanTextByKey[key] = cleanTextBuckets;
+    }
+
+    private static int GetReportGenerationParallelism()
+    {
+        string configured = Environment.GetEnvironmentVariable("MARKED_VS_DETECTED_PARALLELISM");
+        if (int.TryParse(configured, NumberStyles.Integer, CultureInfo.InvariantCulture, out int value) && value > 0)
+            return value;
+
+        return Math.Max(1, Math.Min(8, Environment.ProcessorCount / 2));
+    }
+
+    private static void CreateDetectorBuckets(
+        StepVectorWatermarkDetectionInput vectorInput,
+        out DetectionBuckets normalBuckets,
+        out DetectionBuckets cleanTextBuckets)
+    {
+        var normalOptions = new StepTextLogoDetectionOptions
+        {
+            DetectArbitraryText = false
+        };
+        var cleanTextOptions = new StepTextLogoDetectionOptions
+        {
+            DetectArbitraryText = true
+        };
+        var fallbackOptions = new StepTextLogoDetectionOptions
+        {
+            DetectArbitraryText = true,
+            MinimumArbitraryTextScore = Math.Max(0.70, normalOptions.MinimumArbitraryTextScore)
+        };
+
+        IReadOnlyList<StepVectorWatermarkDetectionRegion> knownTextDetections =
+            StepVectorTextDetector.Detect(vectorInput, normalOptions);
+        IReadOnlyList<StepVectorWatermarkDetectionRegion> cleanTextDetections =
+            StepVectorTextDetector.Detect(vectorInput, cleanTextOptions);
+        IReadOnlyList<StepVectorWatermarkDetectionRegion> logoRawDetections =
+            StepVectorLogoDetector.Detect(vectorInput, normalOptions);
+        IReadOnlyList<StepVectorWatermarkDetectionRegion> logoDetections =
+            FilterReportLogoDetections(
+                logoRawDetections,
+                knownTextDetections);
+        IReadOnlyList<StepVectorWatermarkDetectionRegion> normalFinalDetections =
+            StepVectorWatermarkRegionCombiner.Combine(logoRawDetections, knownTextDetections, vectorInput, normalOptions);
+        if (normalFinalDetections.Count == 0)
+        {
+            IReadOnlyList<StepVectorWatermarkDetectionRegion> fallbackText = cleanTextDetections
+                .Where(IsHighConfidenceManufacturerFallback)
+                .ToList();
+            normalFinalDetections =
+                StepVectorWatermarkRegionCombiner.Combine(
+                    Array.Empty<StepVectorWatermarkDetectionRegion>(),
+                    fallbackText,
+                    vectorInput,
+                    fallbackOptions);
+        }
+
+        IReadOnlyList<StepVectorWatermarkDetectionRegion> cleanTextFinalDetections =
+            StepVectorWatermarkRegionCombiner.Combine(logoRawDetections, cleanTextDetections, vectorInput, cleanTextOptions);
+
+        normalBuckets = new DetectionBuckets();
+        foreach (StepVectorWatermarkDetectionRegion detection in logoDetections)
+            AddSplitDetection(normalBuckets, detection);
+        foreach (StepVectorWatermarkDetectionRegion detection in knownTextDetections)
+            AddSplitDetection(normalBuckets, detection);
+        foreach (StepVectorWatermarkDetectionRegion detection in normalFinalDetections)
+            AddFinalDetection(normalBuckets, detection);
+
+        cleanTextBuckets = new DetectionBuckets();
+        foreach (StepVectorWatermarkDetectionRegion detection in logoDetections)
+            AddSplitDetection(cleanTextBuckets, detection);
+        foreach (StepVectorWatermarkDetectionRegion detection in cleanTextDetections)
+            AddSplitDetection(cleanTextBuckets, detection);
+        foreach (StepVectorWatermarkDetectionRegion detection in cleanTextFinalDetections)
+            AddFinalDetection(cleanTextBuckets, detection);
+    }
+
+    private static bool IsHighConfidenceManufacturerFallback(StepVectorWatermarkDetectionRegion detection)
+    {
+        return detection != null &&
+            string.Equals(detection.Kind, "text", StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(detection.TemplateName, "vector-arbitrary-text", StringComparison.OrdinalIgnoreCase) &&
+            detection.Score >= 70.0 &&
+            detection.Width <= 460 &&
+            detection.Height <= 230 &&
+            detection.PrimitiveCount >= 8;
     }
 
     private static string FindDetectorLogoEdgeProjectionPath(string projectionPath)
@@ -511,8 +647,7 @@ internal static class Program
             return;
 
         buckets.FinalRects.Add(rectangle);
-        if (string.Equals(detection.Kind, "watermark-combined", StringComparison.OrdinalIgnoreCase))
-            buckets.CombinedRects.Add(rectangle);
+        buckets.CombinedRects.Add(rectangle);
     }
 
     private static void AddDetection(DetectionBuckets buckets, RectI rectangle, string kind)
@@ -529,6 +664,20 @@ internal static class Program
             buckets.CombinedRects.Add(rectangle);
         else
             buckets.OtherRects.Add(rectangle);
+    }
+
+    private static bool HasExpectedLogoDetection(CompareRow row)
+    {
+        if (row == null || string.IsNullOrWhiteSpace(row.LogoBoxes))
+            return false;
+        if (string.Equals(row.LogoStatus, "not_expected", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(row.LogoStatus, "unmarked_detection", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(row.LogoStatus, "missed", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        return true;
     }
 
     private static bool HasMarkedCloudLogo(
@@ -1251,7 +1400,7 @@ internal static class Program
             "",
             "Generated: " + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss zzz", CultureInfo.InvariantCulture),
             "",
-            "Blue rectangles are human marked regions. Red rectangles are logo detector regions. Purple rectangles are text detector regions. Green rectangles are CleanText detector regions. Orange rectangles are combined logo+text regions.",
+            "Blue rectangles are human marked regions. Red rectangles are logo detector regions. Purple rectangles are text detector regions. Green rectangles are CleanText detector regions. Orange rectangles are final facade regions.",
             "",
             "## Summary",
             ""
@@ -1262,7 +1411,7 @@ internal static class Program
 
         lines.Add("- marked views: " + rows.Count(row => !string.IsNullOrEmpty(row.MarkedFile)).ToString(CultureInfo.InvariantCulture));
         lines.Add("- detected views without marked data: " + rows.Count(row => string.IsNullOrEmpty(row.MarkedFile) && row.DetectedRects > 0).ToString(CultureInfo.InvariantCulture));
-        lines.Add("- detected logos: " + rows.Count(row => string.Equals(row.LogoStatus, "matched", StringComparison.OrdinalIgnoreCase)).ToString(CultureInfo.InvariantCulture));
+        lines.Add("- detected logos: " + rows.Count(HasExpectedLogoDetection).ToString(CultureInfo.InvariantCulture));
         lines.Add("- logo matched: " + rows.Count(row => string.Equals(row.LogoStatus, "matched", StringComparison.OrdinalIgnoreCase)).ToString(CultureInfo.InvariantCulture));
         lines.Add("- clean-text matched: " + rows.Count(row => string.Equals(row.CleanTextStatus, "matched", StringComparison.OrdinalIgnoreCase)).ToString(CultureInfo.InvariantCulture));
         lines.Add("- clean-text logo matched: " + rows.Count(row => string.Equals(row.CleanTextLogoStatus, "matched", StringComparison.OrdinalIgnoreCase)).ToString(CultureInfo.InvariantCulture));
@@ -1564,5 +1713,13 @@ internal static class Program
         public string Model { get; set; }
         public int DetectedRegionCount { get; set; }
         public string DetectedViews { get; set; }
+    }
+
+    private sealed class ModelDetectorResults
+    {
+        public Dictionary<string, DetectionBuckets> NormalByKey { get; } =
+            new Dictionary<string, DetectionBuckets>(StringComparer.OrdinalIgnoreCase);
+        public Dictionary<string, DetectionBuckets> CleanTextByKey { get; } =
+            new Dictionary<string, DetectionBuckets>(StringComparer.OrdinalIgnoreCase);
     }
 }

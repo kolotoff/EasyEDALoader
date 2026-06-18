@@ -10,6 +10,7 @@ namespace EasyEDA_Loader
         private static readonly int[] LogoOrientations = { 0, 90, 180, 270 };
         private const int MaximumReturnedDetections = 1;
         private const double MinimumLogoScore = 0.58;
+        private const double MaximumLogoChamferPixels = 18.0;
 
         public static IReadOnlyList<StepVectorWatermarkDetectionRegion> Detect(
             StepVectorWatermarkDetectionInput input,
@@ -54,6 +55,8 @@ namespace EasyEDA_Loader
 
                 LogoClusterScore best = ScoreCluster(cluster, logoTemplate);
                 if (best.Score < minimumScore)
+                    continue;
+                if (best.ChamferDistance > MaximumLogoChamferPixels)
                     continue;
 
                 detections.Add(ToRegion(cluster, logoTemplate, best, input));

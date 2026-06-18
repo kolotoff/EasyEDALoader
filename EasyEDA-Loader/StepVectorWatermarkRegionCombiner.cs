@@ -29,6 +29,7 @@ namespace EasyEDA_Loader
             List<List<StepVectorWatermarkDetectionRegion>> clusters = BuildClusters(parts, input);
             List<StepVectorWatermarkDetectionRegion> regions = clusters
                 .Select(cluster => CreateRegion(cluster, input))
+                .Select(region => ExpandRegionToNearbySupport(region, input, options))
                 .Where(region => region != null && region.Width > 0 && region.Height > 0)
                 .Where(region => IsAcceptedOutput(region, options))
                 .OrderByDescending(OutputPriority)
@@ -192,6 +193,147 @@ namespace EasyEDA_Loader
             };
         }
 
+        private static StepVectorWatermarkDetectionRegion ExpandRegionToNearbySupport(
+            StepVectorWatermarkDetectionRegion region,
+            StepVectorWatermarkDetectionInput input,
+            StepTextLogoDetectionOptions options)
+        {
+            if (region == null || input == null || input.Primitives == null || input.Primitives.Count == 0)
+                return region;
+            if (options == null || !options.DetectArbitraryText)
+                return region;
+            if (!ShouldExpandRegionSupport(region))
+                return region;
+
+            int imageWidth = Math.Max(1, input.ImageWidth);
+            int imageHeight = Math.Max(1, input.ImageHeight);
+            bool logoOnly = IsLogo(region);
+            double maxWidth = Math.Min(
+                imageWidth * 0.50,
+                logoOnly
+                    ? Math.Max(region.Width + 220.0, region.Width * 2.45)
+                    : region.Width + 120.0);
+            double maxHeight = Math.Min(
+                imageHeight * 0.35,
+                logoOnly
+                    ? Math.Max(region.Height + 280.0, region.Height * 2.85)
+                    : region.Height + 105.0);
+            double marginX = logoOnly
+                ? Math.Min(190.0, Math.Max(95.0, region.Width * 1.05))
+                : Math.Min(80.0, Math.Max(46.0, region.Width * 0.14));
+            double marginY = logoOnly
+                ? Math.Min(260.0, Math.Max(90.0, region.Height * 1.35))
+                : Math.Min(72.0, Math.Max(38.0, region.Height * 0.36));
+
+            RectD expanded = RectD.FromRegion(region);
+            bool changed;
+            do
+            {
+                changed = false;
+                foreach (StepVectorWatermarkPrimitive primitive in input.Primitives)
+                {
+                    if (!IsPlausibleWatermarkSupportPrimitive(primitive, input))
+                        continue;
+
+                    RectD primitiveRect = RectD.FromBounds(primitive.ImageBounds);
+                    if (!IsNear(expanded, primitiveRect, marginX, marginY, logoOnly))
+                        continue;
+
+                    RectD union = RectD.Union(expanded, primitiveRect);
+                    if (union.Width > maxWidth || union.Height > maxHeight)
+                        continue;
+
+                    if (expanded.Contains(primitiveRect))
+                        continue;
+
+                    expanded = union;
+                    changed = true;
+                }
+            }
+            while (changed);
+
+            int left = Math.Max(0, (int)Math.Floor(expanded.Left));
+            int top = Math.Max(0, (int)Math.Floor(expanded.Top));
+            int right = Math.Min(imageWidth, (int)Math.Ceiling(expanded.Right));
+            int bottom = Math.Min(imageHeight, (int)Math.Ceiling(expanded.Bottom));
+            if (right <= left || bottom <= top)
+                return region;
+
+            return new StepVectorWatermarkDetectionRegion
+            {
+                TemplateName = region.TemplateName,
+                Kind = region.Kind,
+                Text = region.Text,
+                X = left,
+                Y = top,
+                Width = Math.Max(1, right - left),
+                Height = Math.Max(1, bottom - top),
+                OrientationDegrees = region.OrientationDegrees,
+                LogoOrientationDegrees = region.LogoOrientationDegrees,
+                TextOrientationDegrees = region.TextOrientationDegrees,
+                Score = region.Score,
+                ChamferDistance = region.ChamferDistance,
+                PrimitiveCount = region.PrimitiveCount
+            };
+        }
+
+        private static bool ShouldExpandRegionSupport(StepVectorWatermarkDetectionRegion region)
+        {
+            if (region == null)
+                return false;
+            if (IsLogo(region))
+                return region.Height >= 90 && region.Width >= 60;
+
+            string templateName = region.TemplateName ?? string.Empty;
+            return templateName.IndexOf("vector-arbitrary-text", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                templateName.IndexOf("LCEDA-full-vector-fallback", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        private static bool IsPlausibleWatermarkSupportPrimitive(
+            StepVectorWatermarkPrimitive primitive,
+            StepVectorWatermarkDetectionInput input)
+        {
+            if (primitive == null || primitive.ImageBounds == null)
+                return false;
+            if (!string.IsNullOrWhiteSpace(primitive.Visibility) &&
+                primitive.Visibility.IndexOf("hidden", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                return false;
+            }
+
+            double width = primitive.ImageBounds.Width;
+            double height = primitive.ImageBounds.Height;
+            if (width <= 0.0 && height <= 0.0)
+                return false;
+
+            double imageLong = Math.Max(1.0, Math.Max(input.ImageWidth, input.ImageHeight));
+            double longDimension = Math.Max(width, height);
+            double shortDimension = Math.Min(width, height);
+            if (longDimension > Math.Max(260.0, imageLong * 0.24))
+                return false;
+            if (longDimension > imageLong * 0.16 && shortDimension <= 3.0)
+                return false;
+
+            return true;
+        }
+
+        private static bool IsNear(RectD left, RectD right, double marginX, double marginY, bool logoOnly)
+        {
+            double gapX = Math.Max(0.0, Math.Max(left.Left, right.Left) - Math.Min(left.Right, right.Right));
+            double gapY = Math.Max(0.0, Math.Max(left.Top, right.Top) - Math.Min(left.Bottom, right.Bottom));
+            if (!logoOnly &&
+                gapY > 28.0 &&
+                OverlapLength(left.Top, left.Bottom, right.Top, right.Bottom) <= 0.0)
+            {
+                return false;
+            }
+
+            if (!logoOnly && gapX > 24.0 && gapY > 20.0)
+                return false;
+
+            return gapX <= marginX && gapY <= marginY;
+        }
+
         private static bool IsAcceptedOutput(StepVectorWatermarkDetectionRegion region, StepTextLogoDetectionOptions options)
         {
             if (region == null || region.Width <= 0 || region.Height <= 0)
@@ -260,6 +402,11 @@ namespace EasyEDA_Loader
             return Math.Max(0, Math.Min(leftEnd, rightEnd) - Math.Max(leftStart, rightStart));
         }
 
+        private static double OverlapLength(double leftStart, double leftEnd, double rightStart, double rightEnd)
+        {
+            return Math.Max(0.0, Math.Min(leftEnd, rightEnd) - Math.Max(leftStart, rightStart));
+        }
+
         private static double IntersectionOverUnion(
             StepVectorWatermarkDetectionRegion left,
             StepVectorWatermarkDetectionRegion right)
@@ -271,6 +418,57 @@ namespace EasyEDA_Loader
             int intersection = x1 <= x0 || y1 <= y0 ? 0 : (x1 - x0) * (y1 - y0);
             int union = left.Width * left.Height + right.Width * right.Height - intersection;
             return union <= 0 ? 0.0 : intersection / (double)union;
+        }
+
+        private struct RectD
+        {
+            public double Left { get; private set; }
+            public double Top { get; private set; }
+            public double Right { get; private set; }
+            public double Bottom { get; private set; }
+            public double Width => Math.Max(0.0, Right - Left);
+            public double Height => Math.Max(0.0, Bottom - Top);
+
+            public static RectD FromRegion(StepVectorWatermarkDetectionRegion region)
+            {
+                return new RectD
+                {
+                    Left = region.X,
+                    Top = region.Y,
+                    Right = region.X + region.Width,
+                    Bottom = region.Y + region.Height
+                };
+            }
+
+            public static RectD FromBounds(StepVectorWatermarkBounds bounds)
+            {
+                return new RectD
+                {
+                    Left = Math.Min(bounds.Left, bounds.Right),
+                    Top = Math.Min(bounds.Bottom, bounds.Top),
+                    Right = Math.Max(bounds.Left, bounds.Right),
+                    Bottom = Math.Max(bounds.Bottom, bounds.Top)
+                };
+            }
+
+            public static RectD Union(RectD left, RectD right)
+            {
+                return new RectD
+                {
+                    Left = Math.Min(left.Left, right.Left),
+                    Top = Math.Min(left.Top, right.Top),
+                    Right = Math.Max(left.Right, right.Right),
+                    Bottom = Math.Max(left.Bottom, right.Bottom)
+                };
+            }
+
+            public bool Contains(RectD other)
+            {
+                return other.Left >= Left &&
+                    other.Top >= Top &&
+                    other.Right <= Right &&
+                    other.Bottom <= Bottom;
+            }
         }
     }
 }
