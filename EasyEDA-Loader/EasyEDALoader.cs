@@ -552,6 +552,8 @@ namespace EasyEDA_Loader
                                 {
                                     Box = ee_footprint.BoundingBox,
                                     Layers = ee_footprint.Layers,
+                                    OriginX = ee_footprint.Head?.X,
+                                    OriginY = ee_footprint.Head?.Y,
                                     CancelToken = ctx.Token,
                                     Exception = (Exception ex) =>
                                     {

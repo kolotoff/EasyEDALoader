@@ -388,6 +388,8 @@ namespace EasyEDA_Loader
                         {
                             Box = eeFootprint.BoundingBox,
                             Layers = eeFootprint.Layers,
+                            OriginX = eeFootprint.Head?.X,
+                            OriginY = eeFootprint.Head?.Y,
                             CancelToken = cancellationToken,
                             Exception = null,
                         };

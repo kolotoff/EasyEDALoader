@@ -10168,6 +10168,16 @@ namespace StepCleaner.Tests
             AssertNear(1.2, explicitModelCenter.XMm, 0.00001, "explicit non-zero model X offset must be preserved", failures);
             AssertNear(-0.4, explicitModelCenter.YMm, 0.00001, "explicit non-zero model Y offset must be preserved", failures);
 
+            FootprintModelMove explicitEasyEdaOrigin = FootprintModelPlacement.ResolveFootprintOriginMm(10.0, 20.0, 4.0, 6.0, 12.0, 23.0);
+            AssertNear(10.0, explicitEasyEdaOrigin.XMm, 0.00001, "EasyEDA footprint head X should define the Altium footprint origin", failures);
+            AssertNear(20.0, explicitEasyEdaOrigin.YMm, 0.00001, "EasyEDA footprint head Y should define the Altium footprint origin", failures);
+            AssertNear(2.0, FootprintModelPlacement.ConvertFootprintXToAltiumMm(12.0, explicitEasyEdaOrigin.XMm), 0.00001, "footprint X conversion should be relative to EasyEDA head X", failures);
+            AssertNear(-3.0, FootprintModelPlacement.ConvertFootprintYToAltiumMm(23.0, explicitEasyEdaOrigin.YMm), 0.00001, "footprint Y conversion should invert around EasyEDA head Y", failures);
+
+            FootprintModelMove fallbackBBoxOrigin = FootprintModelPlacement.ResolveFootprintOriginMm(null, null, 4.0, 6.0, 12.0, 23.0);
+            AssertNear(10.0, fallbackBBoxOrigin.XMm, 0.00001, "missing EasyEDA footprint head X should fall back to BBox center X", failures);
+            AssertNear(17.5, fallbackBBoxOrigin.YMm, 0.00001, "missing EasyEDA footprint head Y should fall back to BBox center Y", failures);
+
             if (failures.Count > 0)
             {
                 Console.Error.WriteLine("Footprint placement regression test failed.");

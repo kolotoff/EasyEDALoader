@@ -24,6 +24,8 @@ namespace EasyEDA_Loader
         public string CachePartNumber { get; set; }
         public string Description { get; set; }
         public double HeightMm { get; set; }
+        public double? OriginX { get; set; }
+        public double? OriginY { get; set; }
         public Vec3 ModelOffset { get; set; }
         public bool Has3dBodyProjection { get; set; }
         internal List<StepSilhouettePrimitive> ProjectionPrimitives { get; } = new List<StepSilhouettePrimitive>();
@@ -47,17 +49,30 @@ namespace EasyEDA_Loader
 
         public static double ConvertX(double x, EeFootprintContext ctx)
         {
-            return x - ctx.Box.X - (ctx.Box.Width / 2);
+            FootprintModelMove origin = ResolveOrigin(ctx);
+            return FootprintModelPlacement.ConvertFootprintXToAltiumMm(x, origin.XMm);
         }
 
         public static double ConvertY(double y, EeFootprintContext ctx)
         {
-            return ctx.Box.Height - (y - ctx.Box.Y) - (ctx.Box.Height / 2);
+            FootprintModelMove origin = ResolveOrigin(ctx);
+            return FootprintModelPlacement.ConvertFootprintYToAltiumMm(y, origin.YMm);
         }
 
         public static double ConvertAngle(double rot, EeFootprintContext ctx)
         {
             return (360 - rot) % 360;
+        }
+
+        private static FootprintModelMove ResolveOrigin(EeFootprintContext ctx)
+        {
+            return FootprintModelPlacement.ResolveFootprintOriginMm(
+                ctx.OriginX,
+                ctx.OriginY,
+                ctx.Box.X,
+                ctx.Box.Y,
+                ctx.Box.Width,
+                ctx.Box.Height);
         }
     }
 

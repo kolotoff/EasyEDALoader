@@ -63,6 +63,29 @@ namespace EasyEDA_Loader
             return new FootprintModelMove(productCenterX.Value, productCenterY.Value);
         }
 
+        public static FootprintModelMove ResolveFootprintOriginMm(
+            double? headOriginX,
+            double? headOriginY,
+            double boundingBoxX,
+            double boundingBoxY,
+            double boundingBoxWidth,
+            double boundingBoxHeight)
+        {
+            double originX = headOriginX ?? boundingBoxX + boundingBoxWidth / 2.0;
+            double originY = headOriginY ?? boundingBoxY + boundingBoxHeight / 2.0;
+            return new FootprintModelMove(originX, originY);
+        }
+
+        public static double ConvertFootprintXToAltiumMm(double x, double originX)
+        {
+            return x - originX;
+        }
+
+        public static double ConvertFootprintYToAltiumMm(double y, double originY)
+        {
+            return originY - y;
+        }
+
         public static FootprintModelRotation ResolveAltiumModelRotationDeg(
             double easyEdaRotationX,
             double easyEdaRotationY,
