@@ -645,6 +645,7 @@ namespace EasyEDA_Loader
             model.BuildIndexes();
             var drawingModel = ProjectionModel.Build(model);
             var highlights = BuildDetectionHighlights(model, detectionReport, drawingModel.Bounds);
+            var directRegions = GetDirectDetectionRegions(modelName, detectionReport, options);
             var compatibleMarkedRegions = GetCompatibleMarkedRegions(markedRegions);
             if (compatibleMarkedRegions.Count > 0)
                 highlights = FilterHighlightsByMarkedRegions(highlights, compatibleMarkedRegions);
@@ -653,6 +654,8 @@ namespace EasyEDA_Loader
 
             foreach (ViewSpec view in GetSelectedViews(options))
             {
+                result.AddRange(directRegions.Where(region => string.Equals(region.ViewName, view.Name, StringComparison.OrdinalIgnoreCase)));
+
                 var viewHighlights = highlights
                     .Where(highlight => string.Equals(highlight.ViewName, view.Name, StringComparison.OrdinalIgnoreCase))
                     .ToList();
@@ -683,6 +686,59 @@ namespace EasyEDA_Loader
             }
 
             return result;
+        }
+
+        private static List<StepProjectionDetectionRegion> GetDirectDetectionRegions(
+            string modelName,
+            StepWatermarkDetectionReport detectionReport,
+            StepProjectionOptions options)
+        {
+            var result = new List<StepProjectionDetectionRegion>();
+            if (detectionReport.Regions == null || detectionReport.Regions.Count == 0)
+                return result;
+
+            int imageWidth = GetImageWidthPixels(options);
+            int imageHeight = GetImageHeightPixels(options);
+            foreach (StepWatermarkRegionDetection region in detectionReport.Regions)
+            {
+                if (!HasDirectRectangle(region))
+                    continue;
+
+                int sourceWidth = region.ImageWidth.GetValueOrDefault(imageWidth);
+                int sourceHeight = region.ImageHeight.GetValueOrDefault(imageHeight);
+                double xScale = sourceWidth > 0 ? imageWidth / (double)sourceWidth : 1.0;
+                double yScale = sourceHeight > 0 ? imageHeight / (double)sourceHeight : 1.0;
+                int left = (int)Math.Round(region.RectangleX.Value * xScale, MidpointRounding.AwayFromZero);
+                int top = (int)Math.Round(region.RectangleY.Value * yScale, MidpointRounding.AwayFromZero);
+                int width = Math.Max(1, (int)Math.Round(region.RectangleWidth.Value * xScale, MidpointRounding.AwayFromZero));
+                int height = Math.Max(1, (int)Math.Round(region.RectangleHeight.Value * yScale, MidpointRounding.AwayFromZero));
+
+                result.Add(new StepProjectionDetectionRegion
+                {
+                    InputPath = modelName,
+                    ModelName = modelName,
+                    ViewName = region.ViewName,
+                    RectangleX = Math.Max(0, Math.Min(imageWidth - 1, left)),
+                    RectangleY = Math.Max(0, Math.Min(imageHeight - 1, top)),
+                    RectangleWidth = Math.Max(1, Math.Min(imageWidth - Math.Max(0, Math.Min(imageWidth - 1, left)), width)),
+                    RectangleHeight = Math.Max(1, Math.Min(imageHeight - Math.Max(0, Math.Min(imageHeight - 1, top)), height)),
+                    EntityId = region.EntityId,
+                    Kind = region.Kind
+                });
+            }
+
+            return result;
+        }
+
+        private static bool HasDirectRectangle(StepWatermarkRegionDetection region)
+        {
+            return region.RectangleX.HasValue &&
+                region.RectangleY.HasValue &&
+                region.RectangleWidth.HasValue &&
+                region.RectangleHeight.HasValue &&
+                region.RectangleWidth.Value > 0 &&
+                region.RectangleHeight.Value > 0 &&
+                !string.IsNullOrEmpty(region.ViewName);
         }
 
         private static void RenderProjection(

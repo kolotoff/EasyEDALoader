@@ -122,16 +122,6 @@ namespace EasyEDA_Loader
                 result.Failures.Add(failure);
             bool verifyRetainedEdgeDetail = residualTopology.Failures.Count > 0;
 
-            StepWatermarkVisualResidualResult visualResidual = StepWatermarkVisualOracle.VerifyKnownWatermarkRemoved(
-                originalStep,
-                cleanStep,
-                modelName);
-            if (visualResidual.OriginalDetections.Count > 0)
-            {
-                foreach (string failure in visualResidual.Failures)
-                    result.Failures.Add(failure);
-            }
-
             var verifiedDetectionReport = StepWatermarkCleaner.CreateVerifiedCleanupDetectionReport(detectionReport);
             var detectionRegions = StepProjectionRenderer.ProjectDetectionRegions(
                     originalStep,
@@ -145,6 +135,22 @@ namespace EasyEDA_Loader
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .OrderBy(viewName => viewName, StringComparer.OrdinalIgnoreCase)
                 .ToArray();
+
+            IReadOnlyCollection<string> visualViewNames = detectedViewNames.Length == 0
+                ? StepProjectionRenderer.ViewNames
+                : detectedViewNames;
+            IReadOnlyList<StepWatermarkVisualDetection> originalVisualDetections =
+                StepWatermarkVisualOracle.CreateOriginalDetections(detectionReport, visualViewNames);
+            StepWatermarkVisualResidualResult visualResidual = StepWatermarkVisualOracle.VerifyKnownWatermarkRemoved(
+                originalVisualDetections,
+                cleanStep,
+                modelName,
+                visualViewNames);
+            if (visualResidual.OriginalDetections.Count > 0)
+            {
+                foreach (string failure in visualResidual.Failures)
+                    result.Failures.Add(failure);
+            }
 
             if (detectedViewNames.Length == 0)
             {
@@ -306,6 +312,10 @@ namespace EasyEDA_Loader
                 }
 
                 foreach (StepProjectionDetectionRegion region in detectionRegions)
+                {
+                    if (!IsVisualDetectionRegion(region))
+                        continue;
+
                     VerifyCleanedRegionFlatness(
                         fileName,
                         viewName,
@@ -315,6 +325,7 @@ namespace EasyEDA_Loader
                         cleanProjection,
                         region,
                         result);
+                }
             }
         }
 
@@ -412,6 +423,12 @@ namespace EasyEDA_Loader
                 RightLabel = "Clean",
                 RightImage = cleanProjection
             });
+        }
+
+        private static bool IsVisualDetectionRegion(StepProjectionDetectionRegion region)
+        {
+            return region != null &&
+                string.Equals(region.Kind, "visual", StringComparison.OrdinalIgnoreCase);
         }
 
         private static void VerifyTextLogoEdgeRegions(

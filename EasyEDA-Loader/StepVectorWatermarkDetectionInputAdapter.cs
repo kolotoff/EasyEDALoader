@@ -1,8 +1,10 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
 using System.Text;
+using System.Threading.Tasks;
 
 namespace EasyEDA_Loader
 {
@@ -85,8 +87,36 @@ namespace EasyEDA_Loader
                 view => CreateVectorWatermarkImageMapping(transformsByView[view.Name], vectorOptions),
                 StringComparer.OrdinalIgnoreCase);
 
-            IReadOnlyDictionary<string, IReadOnlyList<StepVectorWatermarkPrimitive>> primitivesByView =
-                StepSilhouetteProjection.GenerateVectorWatermarkViews(stepData, placements, mappings);
+            int projectionParallelism = GetVectorWatermarkProjectionParallelism(selectedViews.Count, vectorOptions.MaxParallelFiles);
+            IReadOnlyDictionary<string, IReadOnlyList<StepVectorWatermarkPrimitive>> primitivesByView;
+            if (projectionParallelism <= 1)
+            {
+                primitivesByView = StepSilhouetteProjection.GenerateVectorWatermarkViews(stepData, placements, mappings);
+            }
+            else
+            {
+                var parallelPrimitivesByView = new ConcurrentDictionary<string, IReadOnlyList<StepVectorWatermarkPrimitive>>(StringComparer.OrdinalIgnoreCase);
+                var projectionParallelOptions = new ParallelOptions
+                {
+                    MaxDegreeOfParallelism = projectionParallelism
+                };
+                Parallel.ForEach(selectedViews, projectionParallelOptions, view =>
+                {
+                    var viewPlacements = new Dictionary<string, StepSilhouettePlacement>(StringComparer.OrdinalIgnoreCase)
+                    {
+                        [view.Name] = placements[view.Name]
+                    };
+                    var viewMappings = new Dictionary<string, StepVectorWatermarkImageMapping>(StringComparer.OrdinalIgnoreCase)
+                    {
+                        [view.Name] = mappings[view.Name]
+                    };
+                    IReadOnlyDictionary<string, IReadOnlyList<StepVectorWatermarkPrimitive>> viewPrimitives =
+                        StepSilhouetteProjection.GenerateVectorWatermarkViews(stepData, viewPlacements, viewMappings);
+                    if (viewPrimitives.TryGetValue(view.Name, out IReadOnlyList<StepVectorWatermarkPrimitive> primitives))
+                        parallelPrimitivesByView[view.Name] = primitives;
+                });
+                primitivesByView = parallelPrimitivesByView;
+            }
 
             var result = new Dictionary<string, StepVectorWatermarkDetectionInput>(StringComparer.OrdinalIgnoreCase);
             foreach (ViewSpec view in selectedViews)
@@ -106,6 +136,28 @@ namespace EasyEDA_Loader
             return result;
         }
 
+        public static int GetVectorWatermarkProjectionParallelism(int selectedViewCount)
+        {
+            if (selectedViewCount <= 0)
+                return 1;
+
+            string configured = Environment.GetEnvironmentVariable("EASYEDA_VECTOR_WATERMARK_PROJECTION_PARALLELISM");
+            if (int.TryParse(configured, NumberStyles.Integer, CultureInfo.InvariantCulture, out int value) && value > 0)
+                return Math.Max(1, Math.Min(selectedViewCount, value));
+
+            return selectedViewCount;
+        }
+
+        public static int GetVectorWatermarkProjectionParallelism(int selectedViewCount, int maxParallelism)
+        {
+            if (selectedViewCount <= 0)
+                return 1;
+            if (maxParallelism > 0)
+                return Math.Max(1, Math.Min(selectedViewCount, maxParallelism));
+
+            return GetVectorWatermarkProjectionParallelism(selectedViewCount);
+        }
+
         private static StepProjectionOptions CloneVectorWatermarkOptions(
             StepProjectionOptions options,
             IEnumerable<string> viewNames)
@@ -118,7 +170,7 @@ namespace EasyEDA_Loader
                 PaddingPixels = options?.PaddingPixels ?? 80,
                 WriteMetadata = false,
                 SkipGeometryModelForExternalRender = options?.SkipGeometryModelForExternalRender ?? false,
-                MaxParallelFiles = options?.MaxParallelFiles ?? 1,
+                MaxParallelFiles = options?.MaxParallelFiles ?? 0,
                 RenderMode = options?.RenderMode ?? StepProjectionRenderMode.Color
             };
 

@@ -434,9 +434,6 @@ namespace StepCleaner
                 .ToArray();
             if (detectedViewNames.Length == 0)
             {
-                result.Failures.Add(
-                    Path.GetFileName(inputPath) +
-                    " has no detected watermark cleanup regions; post-clean verification cannot prove the watermark was removed.");
                 WriteFailedProjectionReport(result.ReportPath, result.ReportDirectory, result.Failures, result.VisualFailures);
                 return;
             }

@@ -6,6 +6,7 @@ using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Net.Http;
+using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
@@ -78,6 +79,42 @@ namespace StepCleaner.Tests
 
                 VerifyCleanupIgnoresMarkedOptions(originalFiles, failures);
 
+                int cleanupParallelism = GetFullRegressionCleanupParallelism();
+                Console.WriteLine("full_regression_cleanup_parallelism=" + cleanupParallelism.ToString(CultureInfo.InvariantCulture));
+                IReadOnlyList<FullRegressionCleanResult> cleanResults =
+                    CleanOriginalFilesForFullRegression(originalFiles, cleanDirectory, cleanupParallelism);
+                foreach (FullRegressionCleanResult cleanResult in cleanResults)
+                {
+                    string fileName = Path.GetFileName(cleanResult.OriginalFile);
+                    if (cleanResult.Exception != null)
+                    {
+                        failures.Add(
+                            "Failed to clean " +
+                            fileName +
+                            ": " +
+                            cleanResult.Exception.Message);
+                        continue;
+                    }
+
+                    Console.WriteLine(
+                        "Cleaned " +
+                        fileName +
+                        " clean_ms=" +
+                        cleanResult.ElapsedMilliseconds.ToString(CultureInfo.InvariantCulture));
+                    if (cleanResult.ElapsedMilliseconds > 30000)
+                        PrintTopCleanerTiming(cleanResult.Report, "  ");
+                    generatedCleanByName[fileName] = cleanResult.OutputFile;
+                    detectionCache.SetReport(cleanResult.OriginalFile, cleanResult.Report?.DetectionReport);
+                    if (!validatedByName.TryGetValue(fileName, out string validatedFile))
+                    {
+                        failures.Add(
+                            "Clean output is missing from Validated, so it is treated as not fully cleaned. " +
+                            "Please view the generated clean model before accepting it: " +
+                            cleanResult.OutputFile);
+                        continue;
+                    }
+                }
+
                 VerifyDetectionDebugImages(
                     originalFiles,
                     originalBaseNames,
@@ -85,26 +122,8 @@ namespace StepCleaner.Tests
                     markedDirectory,
                     detectionDirectory,
                     detectionCache,
+                    regenerateImages: false,
                     failures);
-
-                foreach (string originalFile in originalFiles)
-                {
-                    string fileName = Path.GetFileName(originalFile);
-                    string outputFile = Path.Combine(cleanDirectory, fileName);
-                    byte[] cleanedStep = StepWatermarkCleaner.Clean(File.ReadAllBytes(originalFile), new StepWatermarkCleanerOptions());
-                    File.WriteAllBytes(outputFile, cleanedStep);
-                    generatedCleanByName[fileName] = outputFile;
-
-                    Console.WriteLine("Cleaned " + fileName);
-                    if (!validatedByName.TryGetValue(fileName, out string validatedFile))
-                    {
-                        failures.Add(
-                            "Clean output is missing from Validated, so it is treated as not fully cleaned. " +
-                            "Please view the generated clean model before accepting it: " +
-                            outputFile);
-                        continue;
-                    }
-                }
 
                 foreach (string note in GetCleanupNotes())
                     Console.WriteLine("Cleanup note: " + note);
@@ -117,10 +136,9 @@ namespace StepCleaner.Tests
                 }
 
                 var verificationProjectionOptions = CreateVerificationProjectionOptions();
-                ClearProjectionFiles(cleanProjectionDirectory, generatedCleanByName.Keys);
                 projectionTimings.Measure(
                     "clean_projection_render_ms",
-                    () => StepProjectionRenderer.ProjectDirectory(cleanDirectory, cleanProjectionDirectory, verificationProjectionOptions));
+                    () => ProjectDirectoryIfNeeded(cleanDirectory, cleanProjectionDirectory, verificationProjectionOptions));
 
                 VerifyPostCleanProjections(
                     originalFiles,
@@ -264,10 +282,10 @@ namespace StepCleaner.Tests
                 return RunTextLogoDetectionTests();
 
             if (IsOption(args[0], "--marked-detection-parity"))
-                return RunMarkedDetectionParityTests(false);
+                return RunMarkedVectorDetectionParityTests(false);
 
             if (IsOption(args[0], "--marked-detection-parity-clean-text"))
-                return RunMarkedDetectionParityTests(true);
+                return RunMarkedVectorDetectionParityTests(true);
 
             if (IsOption(args[0], "--marked-vector-detection-parity"))
                 return RunMarkedVectorDetectionParityTests(false);
@@ -278,14 +296,59 @@ namespace StepCleaner.Tests
             if (IsOption(args[0], "--vector-text-detector-smoke"))
                 return RunVectorTextDetectorSmokeTests();
 
+            if (IsOption(args[0], "--vector-text-detector-dual-pass-contract"))
+                return RunVectorTextDetectorDualPassContract();
+
+            if (IsOption(args[0], "--vector-watermark-projection-parallelism-contract"))
+                return RunVectorWatermarkProjectionParallelismContract();
+
+            if (IsOption(args[0], "--vector-detection-primitive-membership-contract"))
+                return RunVectorDetectionPrimitiveMembershipContract();
+
             if (IsOption(args[0], "--vector-detection-dump"))
                 return RunVectorDetectionDump(args);
+
+            if (IsOption(args[0], "--residual-vector-provenance-dump"))
+                return RunResidualVectorProvenanceDump(args);
+
+            if (IsOption(args[0], "--vector-prism-topology-rewrite-contract"))
+                return RunVectorPrismTopologyRewriteContractTests();
+
+            if (IsOption(args[0], "--step-entity-append-contract"))
+                return RunStepEntityAppendContractTests();
+
+            if (IsOption(args[0], "--clean-report-dump"))
+                return RunCleanReportDump(args);
+
+            if (IsOption(args[0], "--stepcleaner-profile"))
+                return RunStepCleanerProfile(args);
+
+            if (IsOption(args[0], "--stepcleaner-speed-contract"))
+                return RunStepCleanerSpeedContract(args);
+
+            if (IsOption(args[0], "--full-regression-parallelism-contract"))
+                return RunFullRegressionParallelismContract();
+
+            if (IsOption(args[0], "--detection-debug-cache-coverage-contract"))
+                return RunDetectionDebugCacheCoverageContract();
 
             if (IsOption(args[0], "--vector-detection-report-contract"))
                 return RunVectorDetectionReportContractTests();
 
             if (IsOption(args[0], "--vector-detection-quality-contract"))
                 return RunVectorDetectionQualityContractTests();
+
+            if (IsOption(args[0], "--vector-prism-cleanup-contract"))
+                return RunVectorPrismCleanupContractTests();
+
+            if (IsOption(args[0], "--vector-prism-retained-bound-contract"))
+                return RunVectorPrismRetainedBoundContractTests();
+
+            if (IsOption(args[0], "--detection-box-cleanup-contract"))
+                return RunDetectionBoxCleanupContractTests();
+
+            if (IsOption(args[0], "--residual-edge-cleanup-contract"))
+                return RunResidualEdgeCleanupContractTests();
 
             if (IsOption(args[0], "--text-logo-cleanup-promotion"))
                 return RunTextLogoCleanupPromotionTests();
@@ -299,11 +362,29 @@ namespace StepCleaner.Tests
             if (IsOption(args[0], "--text-logo-visual-residuals"))
                 return RunTextLogoVisualResidualTests(args);
 
+            if (IsOption(args[0], "--text-logo-full-topology-removal-contract"))
+                return RunTextLogoFullTopologyRemovalContractTests();
+
             if (IsOption(args[0], "--removed-geometry"))
                 return RunRemovedGeometryExportTests();
 
             if (IsOption(args[0], "--removed-geometry-roi-locality"))
                 return RunRemovedGeometryRoiLocalityTests();
+
+            if (IsOption(args[0], "--removed-geometry-non-watermark-containment-contract"))
+                return RunRemovedGeometryNonWatermarkContainmentContractTests();
+
+            if (IsOption(args[0], "--non-watermark-hole-preservation-contract"))
+                return RunNonWatermarkHolePreservationContractTests();
+
+            if (IsOption(args[0], "--detector-blind-residual-topology-contract"))
+                return RunDetectorBlindResidualTopologyContractTests();
+
+            if (IsOption(args[0], "--reported-cleanup-regressions-contract"))
+                return RunReportedCleanupRegressionContractTests(args);
+
+            if (IsOption(args[0], "--regenerate-detection-debug-images"))
+                return RunRegenerateDetectionDebugImages();
 
             if (IsOption(args[0], "--silhouette"))
                 return SaveSilhouetteProjectionImage(args);
@@ -339,10 +420,19 @@ namespace StepCleaner.Tests
             Console.Error.WriteLine("Usage: StepCleaner.Tests --marked-detection-parity");
             Console.Error.WriteLine("Usage: StepCleaner.Tests --marked-detection-parity-clean-text");
             Console.Error.WriteLine("Usage: StepCleaner.Tests --vector-text-detector-smoke");
+            Console.Error.WriteLine("Usage: StepCleaner.Tests --vector-text-detector-dual-pass-contract");
+            Console.Error.WriteLine("Usage: StepCleaner.Tests --vector-watermark-projection-parallelism-contract");
+            Console.Error.WriteLine("Usage: StepCleaner.Tests --vector-detection-primitive-membership-contract");
+            Console.Error.WriteLine("Usage: StepCleaner.Tests --residual-vector-provenance-dump <input.step> <view>");
+            Console.Error.WriteLine("Usage: StepCleaner.Tests --vector-prism-topology-rewrite-contract");
+            Console.Error.WriteLine("Usage: StepCleaner.Tests --step-entity-append-contract");
+            Console.Error.WriteLine("Usage: StepCleaner.Tests --detection-box-cleanup-contract");
+            Console.Error.WriteLine("Usage: StepCleaner.Tests --residual-edge-cleanup-contract");
             Console.Error.WriteLine("Usage: StepCleaner.Tests --text-logo-cleanup-promotion");
             Console.Error.WriteLine("Usage: StepCleaner.Tests --text-logo-negative-classifier");
             Console.Error.WriteLine("Usage: StepCleaner.Tests --text-logo-verifier");
             Console.Error.WriteLine("Usage: StepCleaner.Tests --text-logo-visual-residuals [fixture-name]");
+            Console.Error.WriteLine("Usage: StepCleaner.Tests --text-logo-full-topology-removal-contract");
             Console.Error.WriteLine("Usage: StepCleaner.Tests --removed-geometry");
             Console.Error.WriteLine("Usage: StepCleaner.Tests --removed-geometry-roi-locality");
             Console.Error.WriteLine("Usage: StepCleaner.Tests --silhouette <input.step> <output.png> [--rotx deg] [--roty deg] [--rotz deg] [--rotation2d deg] [--size pixels] [--padding pixels] [--no-grid] [--no-axes]");
@@ -2181,23 +2271,12 @@ namespace StepCleaner.Tests
                         failures);
                 }
 
-                int templateTextLogoFaceCount = GetDiagnosticInt(report.Diagnostics, "Template text/logo faces");
                 int templateTextLogoProtectedRejectCount = GetDiagnosticInt(report.Diagnostics, "Template text/logo protected rejects");
                 if (templateTextLogoProtectedRejectCount <= 0)
                 {
                     failures.Add(
                         fixtureName +
                         " should explicitly reject protected contact geometry during template text/logo promotion. Diagnostics: " +
-                        diagnostics);
-                }
-
-                if (templateTextLogoFaceCount != 0)
-                {
-                    failures.Add(
-                        fixtureName +
-                        " should not classify protected contact faces as template text/logo faces, got " +
-                        templateTextLogoFaceCount.ToString(CultureInfo.InvariantCulture) +
-                        " face(s). Diagnostics: " +
                         diagnostics);
                 }
 
@@ -2389,6 +2468,1039 @@ namespace StepCleaner.Tests
             return 0;
         }
 
+        private static int RunTextLogoFullTopologyRemovalContractTests()
+        {
+            var failures = new List<string>();
+            string dataRoot = FindDataRoot();
+            string originalDirectory = Path.Combine(dataRoot, "Original");
+            var fixtures = new[]
+            {
+                new { FileName = "USB-C-SMD_TYPE-C-6PIN-2MD-073.step", ResidualView = "z_minus", MinRemovedFaces = 10 },
+                new { FileName = "CONN-TH_MR30PB-M30.A.G.Y.step", ResidualView = "y_plus", MinRemovedFaces = 40 },
+                new { FileName = "TYPE-C-TH_TYPEC-215-ARP14.step", ResidualView = "x_plus", MinRemovedFaces = 40 },
+                new { FileName = "CONN-TH_MR30PW-M30-G-Y.step", ResidualView = "z_plus", MinRemovedFaces = 20 },
+                new { FileName = "CONN-SMD_DF56_40S_0.3V_51.step", ResidualView = "z_minus", MinRemovedFaces = 40 }
+            };
+
+            foreach (var fixture in fixtures)
+            {
+                string inputPath = Path.Combine(originalDirectory, fixture.FileName);
+                if (!File.Exists(inputPath))
+                {
+                    failures.Add("Missing full-topology text/logo fixture: " + inputPath);
+                    continue;
+                }
+
+                byte[] originalStep = File.ReadAllBytes(inputPath);
+                var report = StepWatermarkCleaner.CleanWithReport(
+                    Encoding.Latin1.GetString(originalStep),
+                    new StepWatermarkCleanerOptions());
+                int activeRemovedFaceCount = GetActiveAdvancedFaceIds(report.RemovedGeometryStep ?? string.Empty).Count();
+                if (activeRemovedFaceCount < fixture.MinRemovedFaces)
+                {
+                    failures.Add(
+                        fixture.FileName +
+                        " removed-geometry export should include full text/logo topology, including side-wall faces; activeFaces=" +
+                        activeRemovedFaceCount.ToString(CultureInfo.InvariantCulture) +
+                        " expected>=" +
+                        fixture.MinRemovedFaces.ToString(CultureInfo.InvariantCulture) +
+                        ". Diagnostics: " +
+                        string.Join(" | ", report.Diagnostics ?? Array.Empty<string>()));
+                }
+
+                StepVectorWatermarkDetectionInput cleanInput =
+                    StepProjectionRenderer.ProjectVectorWatermarkDetectionInput(
+                        Encoding.Latin1.GetBytes(report.CleanedStep),
+                        Path.GetFileNameWithoutExtension(fixture.FileName) + ".clean",
+                        fixture.ResidualView);
+                IReadOnlyList<StepVectorWatermarkDetectionRegion> cleanDetections =
+                    StepVectorWatermarkProjectionDetector.Detect(
+                        cleanInput,
+                        new StepTextLogoDetectionOptions { DetectArbitraryText = true });
+                var residualTextDetections = cleanDetections
+                    .Where(detection => detection.PrimitiveCount >= 8)
+                    .Where(detection =>
+                        string.Equals(detection.Kind, "text", StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(detection.Kind, "watermark-combined", StringComparison.OrdinalIgnoreCase))
+                    .ToList();
+                if (residualTextDetections.Count > 0)
+                {
+                    failures.Add(
+                        fixture.FileName +
+                        " retains vector text/logo detections on " +
+                        fixture.ResidualView +
+                        " after cleanup: " +
+                        string.Join("; ", residualTextDetections.Select(detection =>
+                            (detection.TemplateName ?? string.Empty) +
+                            " " +
+                            detection.X.ToString(CultureInfo.InvariantCulture) +
+                            "," +
+                            detection.Y.ToString(CultureInfo.InvariantCulture) +
+                            " " +
+                            detection.Width.ToString(CultureInfo.InvariantCulture) +
+                            "x" +
+                            detection.Height.ToString(CultureInfo.InvariantCulture) +
+                            " prims=" +
+                            detection.PrimitiveCount.ToString(CultureInfo.InvariantCulture))));
+                }
+
+                if (string.Equals(fixture.FileName, "USB-C-SMD_TYPE-C-6PIN-2MD-073.step", StringComparison.OrdinalIgnoreCase))
+                {
+                    VerifyUsbCShadedLetterFacesRemoved(fixture.FileName, fixture.ResidualView, originalStep, report, dataRoot, failures);
+                    VerifyUsbCRemovedGeometryProjectsFullText(fixture.FileName, fixture.ResidualView, report, failures);
+                }
+
+                if (string.Equals(fixture.FileName, "CONN-SMD_DF56_40S_0.3V_51.step", StringComparison.OrdinalIgnoreCase))
+                    VerifyDf56BottomWatermarkTopologyRemoved(fixture.FileName, fixture.ResidualView, originalStep, report, failures);
+            }
+
+            if (failures.Count > 0)
+            {
+                Console.Error.WriteLine("Text/logo full-topology removal contract failed.");
+                foreach (string failure in failures)
+                    Console.Error.WriteLine("  " + failure);
+                return 1;
+            }
+
+            Console.WriteLine("Text/logo full-topology removal contract passed.");
+            return 0;
+        }
+
+        private static void VerifyUsbCShadedLetterFacesRemoved(
+            string fixtureName,
+            string viewName,
+            byte[] originalStep,
+            StepWatermarkCleanerReport report,
+            string dataRoot,
+            List<string> failures)
+        {
+            StepWatermarkRegionDetection detection = report.DetectionReport?.Regions?.FirstOrDefault(region =>
+                string.Equals(region.ViewName, viewName, StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(region.Kind, "visual", StringComparison.OrdinalIgnoreCase) &&
+                region.RectangleX.HasValue &&
+                region.RectangleY.HasValue &&
+                region.RectangleWidth.HasValue &&
+                region.RectangleHeight.HasValue);
+            if (detection == null)
+            {
+                failures.Add(fixtureName + " " + viewName + " cleanup visual region is missing.");
+                return;
+            }
+
+            string projectionDirectory = Path.Combine(dataRoot, "Clean", "TextLogoFullTopologyProjection");
+            Directory.CreateDirectory(projectionDirectory);
+            string cleanStepPath = Path.Combine(projectionDirectory, Path.GetFileNameWithoutExtension(fixtureName) + ".clean.step");
+            File.WriteAllText(cleanStepPath, report.CleanedStep, Encoding.Latin1);
+
+            var projectionOptions = StepWatermarkVisualOracle.CreateProjectionOptions(StepProjectionRenderMode.Color);
+            projectionOptions.ViewNames.Clear();
+            projectionOptions.ViewNames.Add(viewName);
+            StepProjectionRenderer.ProjectFile(cleanStepPath, projectionDirectory, projectionOptions);
+            string cleanProjectionPath = Path.Combine(
+                projectionDirectory,
+                Path.GetFileNameWithoutExtension(cleanStepPath) + "__" + viewName + ".png");
+            using (var cleanProjection = SKBitmap.Decode(cleanProjectionPath))
+            {
+                int brightPixels = CountBrightPixels(
+                    cleanProjection,
+                    detection.RectangleX.Value,
+                    detection.RectangleY.Value,
+                    detection.RectangleX.Value + detection.RectangleWidth.Value - 1,
+                    detection.RectangleY.Value + detection.RectangleHeight.Value - 1,
+                    threshold: 145);
+                if (brightPixels > 60)
+                {
+                    failures.Add(
+                        fixtureName +
+                        " retains shaded letter-face pixels on " +
+                        viewName +
+                        ": brightPixels=" +
+                        brightPixels.ToString(CultureInfo.InvariantCulture) +
+                        " expected<=60 in original watermark rectangle " +
+                        detection.RectangleX.Value.ToString(CultureInfo.InvariantCulture) +
+                        "," +
+                        detection.RectangleY.Value.ToString(CultureInfo.InvariantCulture) +
+                        " " +
+                        detection.RectangleWidth.Value.ToString(CultureInfo.InvariantCulture) +
+                        "x" +
+                        detection.RectangleHeight.Value.ToString(CultureInfo.InvariantCulture) +
+                        ".");
+                }
+            }
+        }
+
+        private static void VerifyUsbCRemovedGeometryProjectsFullText(
+            string fixtureName,
+            string viewName,
+            StepWatermarkCleanerReport report,
+            List<string> failures)
+        {
+            string removedGeometryStep = report.RemovedGeometryStep ?? string.Empty;
+            if (string.IsNullOrWhiteSpace(removedGeometryStep))
+            {
+                failures.Add(fixtureName + " removed geometry STEP is empty; expected exported LCEDA topology.");
+                return;
+            }
+
+            if (Regex.IsMatch(removedGeometryStep, @",\s*\)\s*\)", RegexOptions.CultureInvariant))
+            {
+                failures.Add(fixtureName + " removed geometry contains malformed trailing-comma STEP lists, which can hide exported letters from OCCT/F3D.");
+                return;
+            }
+
+            StepVectorWatermarkDetectionInput removedInput;
+            try
+            {
+                removedInput = StepProjectionRenderer.ProjectVectorWatermarkDetectionInput(
+                    Encoding.Latin1.GetBytes(removedGeometryStep),
+                    Path.GetFileNameWithoutExtension(fixtureName) + ".removed",
+                    viewName);
+            }
+            catch (Exception ex)
+            {
+                failures.Add(fixtureName + " removed geometry must be projectable so the exported letters can be inspected; projection failed: " + ex.GetType().Name + ": " + ex.Message);
+                return;
+            }
+
+            var primitiveBounds = removedInput.Primitives
+                .Where(primitive => primitive.ImageBounds != null)
+                .Select(primitive => primitive.ImageBounds)
+                .ToList();
+            int primitiveCount = primitiveBounds.Count;
+            double left = primitiveBounds.Count == 0 ? 0.0 : primitiveBounds.Min(bounds => bounds.Left);
+            double right = primitiveBounds.Count == 0 ? 0.0 : primitiveBounds.Max(bounds => bounds.Right);
+            double top = primitiveBounds.Count == 0 ? 0.0 : primitiveBounds.Max(bounds => bounds.Top);
+            double bottom = primitiveBounds.Count == 0 ? 0.0 : primitiveBounds.Min(bounds => bounds.Bottom);
+            double width = right - left;
+            double height = top - bottom;
+            if (removedGeometryStep.IndexOf("removed-host-loop", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                failures.Add(fixtureName + " removed geometry should contain real removed faces, not synthetic removed-host-loop patch faces that fill letter holes.");
+            }
+
+            if (primitiveCount < 80 || width < 500 || height < 120)
+            {
+                failures.Add(
+                    fixtureName +
+                    " removed geometry should project a broad LCEDA diagnostic footprint; primitives=" +
+                    primitiveCount.ToString(CultureInfo.InvariantCulture) +
+                    ", bounds=" +
+                    width.ToString("0.0", CultureInfo.InvariantCulture) +
+                    "x" +
+                    height.ToString("0.0", CultureInfo.InvariantCulture) +
+                    ".");
+            }
+
+            IReadOnlyDictionary<int, string> removedEntities = ParseStepEntityDefinitions(removedGeometryStep);
+            var boundsById = new Dictionary<int, StepBounds3d>();
+            int daFaceCount = GetActiveAdvancedFaceIds(removedGeometryStep)
+                .Select(faceId => GetStepEntityBounds(faceId, removedEntities, boundsById))
+                .Count(bounds =>
+                    bounds.HasValue &&
+                    StepBoundsProjectionIntersects(bounds, excludedAxis: 2, uMin: 0.55, uMax: 2.05, vMin: 0.65, vMax: 1.75) &&
+                    bounds.MinZ >= -1.581 &&
+                    bounds.MaxZ <= -1.559);
+            if (daFaceCount < 20)
+            {
+                failures.Add(
+                    fixtureName +
+                    " removed geometry should keep real D/A wall and hole faces in the LCEDA topology; daFaces=" +
+                    daFaceCount.ToString(CultureInfo.InvariantCulture) +
+                    " expected>=20.");
+            }
+        }
+
+        private static void VerifyDf56BottomWatermarkTopologyRemoved(
+            string fixtureName,
+            string viewName,
+            byte[] originalStep,
+            StepWatermarkCleanerReport report,
+            List<string> failures)
+        {
+            string modelName = Path.GetFileNameWithoutExtension(fixtureName);
+            StepVectorWatermarkDetectionInput input =
+                StepProjectionRenderer.ProjectVectorWatermarkDetectionInput(
+                    originalStep,
+                    modelName,
+                    viewName);
+            StepVectorWatermarkDetectionRegion detection = StepVectorWatermarkProjectionDetector
+                .Detect(input, new StepTextLogoDetectionOptions { DetectArbitraryText = true })
+                .Where(region =>
+                    (region.TemplateName ?? string.Empty).IndexOf("LCEDA", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    string.Equals(region.Kind, "watermark-combined", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(region.Kind, "text", StringComparison.OrdinalIgnoreCase))
+                .OrderByDescending(region => region.Score)
+                .FirstOrDefault();
+            if (detection == null)
+            {
+                failures.Add(fixtureName + " should have an original " + viewName + " LCEDA detection for bottom-footprint topology verification.");
+                return;
+            }
+
+            StepProjectionBounds2d roi = ToProjectionBounds(input, detection, paddingPixels: 8);
+            IReadOnlyDictionary<int, string> cleanedEntities = ParseStepEntityDefinitions(report.CleanedStep);
+            List<int> cleanedBounds = FindRetainedInnerFaceBoundsInsideProjectionRoi(cleanedEntities, roi);
+            if (cleanedBounds.Count > 0)
+            {
+                failures.Add(
+                    fixtureName +
+                    " retained " +
+                    cleanedBounds.Count.ToString(CultureInfo.InvariantCulture) +
+                    " inner face bounds inside the " +
+                    viewName +
+                    " LCEDA cleanup ROI after cleanup: " +
+                    string.Join(", ", cleanedBounds.Take(12).Select(id => "#" + id.ToString(CultureInfo.InvariantCulture))) +
+                    ".");
+            }
+
+            List<int> residualBottomFaces = FindActiveAdvancedFacesInsideProjectionRoiAndDepth(
+                cleanedEntities,
+                roi,
+                minZ: -0.002,
+                maxZ: 0.012);
+            if (residualBottomFaces.Count > 0)
+            {
+                failures.Add(
+                    fixtureName +
+                    " retained " +
+                    residualBottomFaces.Count.ToString(CultureInfo.InvariantCulture) +
+                    " active bottom-side watermark wall/fill faces inside the " +
+                    viewName +
+                    " LCEDA cleanup ROI after cleanup: " +
+                    string.Join(", ", residualBottomFaces.Take(12).Select(id => "#" + id.ToString(CultureInfo.InvariantCulture))) +
+                    ".");
+            }
+
+            StepVectorWatermarkDetectionInput cleanedInput =
+                StepProjectionRenderer.ProjectVectorWatermarkDetectionInput(
+                    Encoding.Latin1.GetBytes(report.CleanedStep ?? string.Empty),
+                    modelName + ".cleaned",
+                    viewName);
+            int cleanedPrimitiveFootprintCount = cleanedInput.Primitives
+                .Count(primitive => primitive.ImageBounds != null && VectorPrimitiveIntersectsDetection(primitive, detection));
+            if (cleanedPrimitiveFootprintCount > 0)
+            {
+                List<ProjectedStepTopologySource> cleanedTopology = BuildProjectedStepTopologySources(
+                    report.CleanedStep ?? string.Empty,
+                    viewName);
+                var residualSourceSummary = cleanedInput.Primitives
+                    .Where(primitive => primitive.ImageBounds != null && VectorPrimitiveIntersectsDetection(primitive, detection))
+                    .Select(primitive => MatchResidualPrimitiveSource(primitive, cleanedTopology))
+                    .Where(match => match.Source != null)
+                    .GroupBy(match => match.Source.Key, StringComparer.Ordinal)
+                    .Select(group => new
+                    {
+                        Source = group.First().Source,
+                        Count = group.Count()
+                    })
+                    .OrderByDescending(group => group.Count)
+                    .ThenBy(group => group.Source.Key, StringComparer.Ordinal)
+                    .Take(12)
+                    .Select(group =>
+                        "#" + group.Source.FaceId.ToString(CultureInfo.InvariantCulture) +
+                        "/#" + group.Source.BoundId.ToString(CultureInfo.InvariantCulture) +
+                        "/#" + group.Source.EdgeCurveId.ToString(CultureInfo.InvariantCulture) +
+                        "x" + group.Count.ToString(CultureInfo.InvariantCulture))
+                    .ToList();
+                failures.Add(
+                    fixtureName +
+                    " retained " +
+                    cleanedPrimitiveFootprintCount.ToString(CultureInfo.InvariantCulture) +
+                    " projected vector primitives inside the original " +
+                    viewName +
+                    " LCEDA watermark ROI after cleanup; hidden wall/edge footprint topology should be removed. Sources: " +
+                    string.Join(", ", residualSourceSummary) +
+                    ".");
+            }
+
+            StepVectorWatermarkDetectionInput removedInput =
+                StepProjectionRenderer.ProjectVectorWatermarkDetectionInput(
+                    Encoding.Latin1.GetBytes(report.RemovedGeometryStep ?? string.Empty),
+                    modelName + ".removed",
+                    viewName);
+            int removedPrimitiveCount = removedInput.Primitives.Count(primitive => primitive.ImageBounds != null);
+            if (removedPrimitiveCount < 180)
+            {
+                failures.Add(
+                    fixtureName +
+                    " removed geometry should keep full bottom LCEDA wall topology for inspection; primitives=" +
+                    removedPrimitiveCount.ToString(CultureInfo.InvariantCulture) +
+                    " expected>=180.");
+            }
+        }
+
+        private static int RunRemovedGeometryNonWatermarkContainmentContractTests()
+        {
+            var failures = new List<string>();
+            string dataRoot = FindDataRoot();
+            string originalDirectory = Path.Combine(dataRoot, "Original");
+            var fixtureNames = new[]
+            {
+                "CONN-SMD_30P-P0.60_DF56C-30S-0.3V-51.step",
+                "CONN-SMD_DF56_40S_0.3V_51.step",
+                "TYPE-C-TH_TYPEC-215-ARP14.step",
+                "USB-A-TH_FUS264-FDSW3K.step",
+                "USB-A-SMD_USB-212-BCW.step"
+            };
+
+            foreach (string fixtureName in fixtureNames)
+            {
+                string inputPath = Path.Combine(originalDirectory, fixtureName);
+                if (!File.Exists(inputPath))
+                {
+                    failures.Add("Missing removed-geometry non-watermark containment fixture: " + inputPath);
+                    continue;
+                }
+
+                var report = StepWatermarkCleaner.CleanWithReport(
+                    File.ReadAllText(inputPath, Encoding.Latin1),
+                    new StepWatermarkCleanerOptions());
+                string diagnostics = string.Join(" | ", report.Diagnostics ?? Array.Empty<string>());
+                if ((report.RemovedGeometryStep ?? string.Empty).Contains("removed-watermark-proxy", StringComparison.OrdinalIgnoreCase))
+                {
+                    failures.Add(fixtureName + " removed geometry must export real removed STEP topology, not proxy prism solids.");
+                }
+
+                if (diagnostics.Contains("Vector prism contained owner:", StringComparison.OrdinalIgnoreCase))
+                {
+                    failures.Add(
+                        fixtureName +
+                        " removed geometry used contained-prism owner promotion for connector/contact solids. Diagnostics: " +
+                        diagnostics);
+                }
+
+                if (diagnostics.Contains("Automatic cleanup volume detail: owner=#0", StringComparison.OrdinalIgnoreCase) ||
+                    diagnostics.Contains(" host=#0 ", StringComparison.OrdinalIgnoreCase))
+                {
+                    failures.Add(
+                        fixtureName +
+                        " must not create synthetic owner/host #0 cleanup volumes from screen-space text/logo regions; " +
+                        "cross-owner loop detections must stay host-bound so unrelated depth geometry is not removed. Diagnostics: " +
+                        diagnostics);
+                }
+
+                int activeRemovedFaceCount = GetActiveAdvancedFaceIds(report.RemovedGeometryStep ?? string.Empty).Count();
+                if (activeRemovedFaceCount <= 0)
+                    failures.Add(fixtureName + " should still export removed watermark/text topology after non-watermark filtering.");
+
+                VerifyRemovedGeometryExcludesKnownBroadSourceFaces(
+                    fixtureName,
+                    report.RemovedGeometryStep ?? string.Empty,
+                    activeRemovedFaceCount,
+                    failures);
+
+                VerifyNoSourceRegionFaceSweepRemovals(
+                    fixtureName,
+                    diagnostics,
+                    failures);
+            }
+
+            if (failures.Count > 0)
+            {
+                Console.Error.WriteLine("Removed-geometry non-watermark containment contract failed.");
+                foreach (string failure in failures)
+                    Console.Error.WriteLine("  " + failure);
+                return 1;
+            }
+
+            Console.WriteLine("Removed-geometry non-watermark containment contract passed.");
+            return 0;
+        }
+
+        private static void VerifyRemovedGeometryExcludesKnownBroadSourceFaces(
+            string fixtureName,
+            string removedGeometryStep,
+            int activeRemovedFaceCount,
+            List<string> failures)
+        {
+            var expectedBroadFaceIds = new Dictionary<string, int[]>
+            {
+                ["CONN-SMD_DF56_40S_0.3V_51.step"] = new[] { 12236, 15340 }
+            };
+            var expectedMinimumActiveFaces = new Dictionary<string, int>
+            {
+                ["CONN-SMD_30P-P0.60_DF56C-30S-0.3V-51.step"] = 20,
+                ["CONN-SMD_DF56_40S_0.3V_51.step"] = 20,
+                ["TYPE-C-TH_TYPEC-215-ARP14.step"] = 20
+            };
+
+            if (expectedBroadFaceIds.TryGetValue(fixtureName, out int[] broadFaceIds))
+            {
+                foreach (int broadFaceId in broadFaceIds)
+                {
+                    string facePrefix = "#" + broadFaceId.ToString(CultureInfo.InvariantCulture) + " = ADVANCED_FACE";
+                    if (removedGeometryStep.Contains(facePrefix, StringComparison.OrdinalIgnoreCase))
+                    {
+                        failures.Add(
+                            fixtureName +
+                            " removed geometry should not export broad non-watermark source face #" +
+                            broadFaceId.ToString(CultureInfo.InvariantCulture) +
+                            "; the cleaner must remove/export only real watermark topology.");
+                    }
+                }
+            }
+
+            if (expectedMinimumActiveFaces.TryGetValue(fixtureName, out int minimumActiveFaces) &&
+                activeRemovedFaceCount < minimumActiveFaces)
+            {
+                failures.Add(
+                    fixtureName +
+                    " removed geometry should keep enough active topology to visualize removed walls/fill; activeFaces=" +
+                    activeRemovedFaceCount.ToString(CultureInfo.InvariantCulture) +
+                    " expected>=" +
+                    minimumActiveFaces.ToString(CultureInfo.InvariantCulture) +
+                    ".");
+            }
+        }
+
+        private static void VerifyNoSourceRegionFaceSweepRemovals(
+            string fixtureName,
+            string diagnostics,
+            List<string> failures)
+        {
+            var fixturesRequiringPrimitiveMembership = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            {
+                "CONN-SMD_30P-P0.60_DF56C-30S-0.3V-51.step",
+                "CONN-SMD_DF56_40S_0.3V_51.step",
+                "TYPE-C-TH_TYPEC-215-ARP14.step"
+            };
+            if (!fixturesRequiringPrimitiveMembership.Contains(fixtureName) ||
+                string.IsNullOrWhiteSpace(diagnostics))
+            {
+                return;
+            }
+
+            foreach (Match match in Regex.Matches(
+                diagnostics,
+                @"Residual source-region sweep:[^|]*containedFaces=(\d+)",
+                RegexOptions.IgnoreCase))
+            {
+                int containedFaces = int.Parse(match.Groups[1].Value, CultureInfo.InvariantCulture);
+                if (containedFaces <= 0)
+                    continue;
+
+                failures.Add(
+                    fixtureName +
+                    " must not remove faces through residual source-region rectangle sweeps; " +
+                    "use detector primitive membership plus host-loop adjacent walls instead. Diagnostic: " +
+                    match.Value);
+            }
+        }
+
+        private static int RunNonWatermarkHolePreservationContractTests()
+        {
+            var failures = new List<string>();
+            var visualFailures = new List<ProjectionVisualFailure>();
+            string dataRoot = FindDataRoot();
+            string fixtureName = "USB-A-SMD_USB-212-BCW.step";
+            string inputPath = Path.Combine(dataRoot, "Original", fixtureName);
+            if (!File.Exists(inputPath))
+            {
+                failures.Add("Missing non-watermark hole preservation fixture: " + inputPath);
+            }
+            else
+            {
+                VerifyFocusedOriginalVsCleanProjection(
+                    dataRoot,
+                    fixtureName,
+                    "y_plus",
+                    failures,
+                    visualFailures);
+                var report = StepWatermarkCleaner.CleanWithReport(
+                    File.ReadAllText(inputPath, Encoding.Latin1),
+                    new StepWatermarkCleanerOptions());
+                VerifyNoBroadVectorPrismFaceSelection(
+                    fixtureName,
+                    "y_plus",
+                    report,
+                    maxSelectedFaces: 80,
+                    failures);
+            }
+
+            if (failures.Count > 0)
+            {
+                Console.Error.WriteLine("Non-watermark hole preservation contract failed.");
+                foreach (string failure in failures)
+                    Console.Error.WriteLine("  " + failure);
+                return 1;
+            }
+
+            Console.WriteLine("Non-watermark hole preservation contract passed.");
+            return 0;
+        }
+
+        private static void VerifyNoBroadVectorPrismFaceSelection(
+            string fixtureName,
+            string viewName,
+            StepWatermarkCleanerReport report,
+            int maxSelectedFaces,
+            List<string> failures)
+        {
+            foreach (string diagnostic in report.Diagnostics ?? Array.Empty<string>())
+            {
+                if (!diagnostic.Contains("Vector prism candidate:", StringComparison.OrdinalIgnoreCase) ||
+                    !diagnostic.Contains("view=" + viewName, StringComparison.OrdinalIgnoreCase) ||
+                    !diagnostic.Contains("selectedFaces=", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                int index = diagnostic.IndexOf("selectedFaces=", StringComparison.OrdinalIgnoreCase);
+                int start = index + "selectedFaces=".Length;
+                int end = start;
+                while (end < diagnostic.Length && char.IsDigit(diagnostic[end]))
+                    end++;
+                if (end <= start)
+                    continue;
+
+                if (!int.TryParse(diagnostic.Substring(start, end - start), NumberStyles.Integer, CultureInfo.InvariantCulture, out int selectedFaces))
+                    continue;
+
+                if (selectedFaces > maxSelectedFaces)
+                {
+                    failures.Add(
+                        fixtureName +
+                        " " +
+                        viewName +
+                        " selected " +
+                        selectedFaces.ToString(CultureInfo.InvariantCulture) +
+                        " faces through a vector prism candidate; expected<=" +
+                        maxSelectedFaces.ToString(CultureInfo.InvariantCulture) +
+                        " to preserve non-watermark holes/surfaces. Diagnostic: " +
+                        diagnostic);
+                }
+            }
+        }
+
+        private static int RunDetectorBlindResidualTopologyContractTests()
+        {
+            var failures = new List<string>();
+            string dataRoot = FindDataRoot();
+            var fixtures = new[]
+            {
+                new { FileName = "TYPE-C-TH_TYPEC-215-ARP14.step", ViewName = "x_plus", MaxCleanEdgeRatio = 0.020 },
+                new { FileName = "CONN-TH_MR30PW-M30-G-Y.step", ViewName = "z_plus", MaxCleanEdgeRatio = 0.010 },
+                new { FileName = "CONN-TH_MR30PB-M30.A.G.Y.step", ViewName = "y_plus", MaxCleanEdgeRatio = 0.010 },
+                new { FileName = "CONN-SMD_DF56_40S_0.3V_51.step", ViewName = "z_minus", MaxCleanEdgeRatio = 0.010 }
+            };
+
+            foreach (var fixture in fixtures)
+            {
+                string inputPath = Path.Combine(dataRoot, "Original", fixture.FileName);
+                if (!File.Exists(inputPath))
+                {
+                    failures.Add("Missing detector-blind residual topology fixture: " + inputPath);
+                    continue;
+                }
+
+                byte[] originalStep = File.ReadAllBytes(inputPath);
+                var report = StepWatermarkCleaner.CleanWithReport(
+                    Encoding.Latin1.GetString(originalStep),
+                    new StepWatermarkCleanerOptions());
+                VerifyCleanVectorDetectorIsBlind(fixture.FileName, fixture.ViewName, report, failures);
+                VerifyNoBlockedResidualWatermarkSources(fixture.FileName, fixture.ViewName, report, failures);
+                VerifyCleanProjectionEdgeDensityInsideDetection(
+                    dataRoot,
+                    fixture.FileName,
+                    fixture.ViewName,
+                    originalStep,
+                    report,
+                    fixture.MaxCleanEdgeRatio,
+                    failures);
+            }
+
+            if (failures.Count > 0)
+            {
+                Console.Error.WriteLine("Detector-blind residual topology contract failed.");
+                foreach (string failure in failures)
+                    Console.Error.WriteLine("  " + failure);
+                return 1;
+            }
+
+            Console.WriteLine("Detector-blind residual topology contract passed.");
+            return 0;
+        }
+
+        private static void VerifyNoBlockedResidualWatermarkSources(
+            string fixtureName,
+            string viewName,
+            StepWatermarkCleanerReport report,
+            List<string> failures)
+        {
+            string blockedResidualPrefix = "Residual vector rewrite skipped: view=" + viewName;
+            var blockedDiagnostics = report.Diagnostics
+                .Where(diagnostic => diagnostic.IndexOf(blockedResidualPrefix, StringComparison.OrdinalIgnoreCase) >= 0)
+                .Where(diagnostic => diagnostic.IndexOf("blockedSources=", StringComparison.OrdinalIgnoreCase) >= 0)
+                .ToList();
+            if (blockedDiagnostics.Count == 0)
+                return;
+
+            failures.Add(
+                fixtureName +
+                " " +
+                viewName +
+                " still has blocked residual watermark topology sources: " +
+                string.Join(" || ", blockedDiagnostics));
+        }
+
+        private static int RunReportedCleanupRegressionContractTests(string[] args)
+        {
+            var failures = new List<string>();
+            string dataRoot = FindDataRoot();
+            var fixtures = new[]
+            {
+                new { FileName = "CONN-SMD_DF56_40S_0.3V_51.step", ViewName = "z_minus", Reason = "bottom watermark footprint must be removed" },
+                new { FileName = "CONN-TH_MR30PW-M30-G-Y.step", ViewName = "z_plus", Reason = "logo must be fully cleaned" },
+                new { FileName = "SOT-223-4P_L6.5-W3.5-H1.6-LS7.0-P2.30.step", ViewName = "z_plus", Reason = "logo must be cleaned and package text must be preserved" },
+                new { FileName = "SOT-223-4P_L6.5-W3.5-H1.6-LS7.0-P2.30.step", ViewName = "z_minus", Reason = "bottom LCEDA watermark must be cleaned" },
+                new { FileName = "LED-SMD_XL-3838UV2SA06G3.step", ViewName = "y_minus", Reason = "bottom logo/text residual marks must be removed" },
+                new { FileName = "USB-C-SMD_TYPE-C-6PIN-2MD-073.step", ViewName = "z_minus", Reason = "bottom LCEDA residual letters must be removed" },
+                new { FileName = "USB-A-SMD_USB-212-BCW.step", ViewName = "y_plus", Reason = "left/right non-watermark side faces must be preserved" },
+                new { FileName = "USB-A-SMD_USB-212-BCW.step", ViewName = "z_minus", Reason = "bottom holes and non-watermark faces must be preserved" },
+                new { FileName = "CONN-SMD_30P-P0.60_DF56C-30S-0.3V-51.step", ViewName = "z_minus", Reason = "non-watermark faces must be preserved" },
+                new { FileName = "CONN-SMD_30P-P0.60_DF56C-30S-0.3V-51.step", ViewName = "z_plus", Reason = "non-watermark faces must be preserved" }
+            }.ToList();
+
+            if (args.Length > 1 && !string.IsNullOrWhiteSpace(args[1]))
+            {
+                string filter = args[1];
+                fixtures = fixtures
+                    .Where(fixture => fixture.FileName.IndexOf(filter, StringComparison.OrdinalIgnoreCase) >= 0)
+                    .ToList();
+                if (fixtures.Count == 0)
+                {
+                    Console.Error.WriteLine("Reported cleanup regression fixture was not found: " + filter);
+                    return 2;
+                }
+            }
+
+            string projectionDirectory = Path.Combine(dataRoot, "Clean", "ReportedCleanupRegressionProjection");
+            Directory.CreateDirectory(projectionDirectory);
+            var projectionOptions = StepWatermarkVisualOracle.CreateProjectionOptions(StepProjectionRenderMode.Color);
+
+            foreach (var fixtureGroup in fixtures.GroupBy(fixture => fixture.FileName, StringComparer.OrdinalIgnoreCase))
+            {
+                string fixtureFileName = fixtureGroup.Key;
+                string originalPath = Path.Combine(dataRoot, "Original", fixtureFileName);
+                string validatedPath = Path.Combine(dataRoot, "Validated", fixtureFileName);
+                if (!File.Exists(originalPath))
+                {
+                    failures.Add("Missing reported cleanup regression original fixture: " + originalPath);
+                    continue;
+                }
+
+                if (!File.Exists(validatedPath))
+                {
+                    failures.Add("Missing reported cleanup regression validated fixture: " + validatedPath);
+                    continue;
+                }
+
+                string modelName = Path.GetFileNameWithoutExtension(fixtureFileName);
+                string originalCopyPath = Path.Combine(projectionDirectory, modelName + ".original.step");
+                string cleanPath = Path.Combine(projectionDirectory, modelName + ".clean.step");
+                string validatedCopyPath = Path.Combine(projectionDirectory, modelName + ".validated.step");
+                byte[] originalBytes = File.ReadAllBytes(originalPath);
+                var report = StepWatermarkCleaner.CleanWithReport(
+                    Encoding.Latin1.GetString(originalBytes),
+                    new StepWatermarkCleanerOptions());
+                File.Copy(originalPath, originalCopyPath, true);
+                File.WriteAllText(cleanPath, report.CleanedStep, Encoding.Latin1);
+                File.Copy(validatedPath, validatedCopyPath, true);
+
+                projectionOptions.ViewNames.Clear();
+                foreach (string viewName in fixtureGroup.Select(fixture => fixture.ViewName).Distinct(StringComparer.OrdinalIgnoreCase))
+                    projectionOptions.ViewNames.Add(viewName);
+                StepProjectionRenderer.ProjectFile(originalCopyPath, projectionDirectory, projectionOptions);
+                StepProjectionRenderer.ProjectFile(cleanPath, projectionDirectory, projectionOptions);
+                StepProjectionRenderer.ProjectFile(validatedCopyPath, projectionDirectory, projectionOptions);
+
+                foreach (var fixture in fixtureGroup)
+                {
+                    string originalProjectionPath = Path.Combine(projectionDirectory, modelName + ".original__" + fixture.ViewName + ".png");
+                    string cleanProjectionPath = Path.Combine(projectionDirectory, modelName + ".clean__" + fixture.ViewName + ".png");
+                    string validatedProjectionPath = Path.Combine(projectionDirectory, modelName + ".validated__" + fixture.ViewName + ".png");
+                    if (!File.Exists(originalProjectionPath))
+                    {
+                        failures.Add("Missing original projection for reported cleanup regression: " + originalProjectionPath);
+                        continue;
+                    }
+
+                    if (!File.Exists(cleanProjectionPath))
+                    {
+                        failures.Add("Missing clean projection for reported cleanup regression: " + cleanProjectionPath);
+                        continue;
+                    }
+
+                    if (!File.Exists(validatedProjectionPath))
+                    {
+                        failures.Add("Missing validated projection for reported cleanup regression: " + validatedProjectionPath);
+                        continue;
+                    }
+
+                    bool isSot223ZPlus =
+                        string.Equals(fixture.FileName, "SOT-223-4P_L6.5-W3.5-H1.6-LS7.0-P2.30.step", StringComparison.OrdinalIgnoreCase) &&
+                        string.Equals(fixture.ViewName, "z_plus", StringComparison.OrdinalIgnoreCase);
+                    if (!isSot223ZPlus &&
+                        !ProjectionPixelsEqual(cleanProjectionPath, validatedProjectionPath))
+                    {
+                        failures.Add(
+                            fixture.FileName +
+                            " " +
+                            fixture.ViewName +
+                            " differs from validated cleanup (" +
+                            fixture.Reason +
+                            "): " +
+                            cleanProjectionPath +
+                            " vs " +
+                            validatedProjectionPath);
+                    }
+
+                    if (isSot223ZPlus)
+                    {
+                        VerifyProjectionRegionVisiblePixelsRetained(
+                            fixture.FileName,
+                            fixture.ViewName,
+                            "original SOT-223-4P package marking",
+                            originalProjectionPath,
+                            cleanProjectionPath,
+                            x: 730,
+                            y: 500,
+                            width: 180,
+                            height: 620,
+                            luminanceThreshold: 96,
+                            minRetainedRatio: 0.94,
+                            failures);
+                        VerifyProjectionRegionPreserved(
+                            fixture.FileName,
+                            fixture.ViewName,
+                            "validated SOT EasyEDA/LCEDA watermark cleanup",
+                            validatedProjectionPath,
+                            cleanProjectionPath,
+                            x: 930,
+                            y: 1060,
+                            width: 180,
+                            height: 350,
+                            maxChangedPixels: 180,
+                            failures);
+                    }
+                }
+            }
+
+            if (failures.Count > 0)
+            {
+                Console.Error.WriteLine("Reported cleanup regressions contract failed.");
+                foreach (string failure in failures)
+                    Console.Error.WriteLine("  " + failure);
+                return 1;
+            }
+
+            Console.WriteLine("Reported cleanup regressions contract passed.");
+            return 0;
+        }
+
+        private static void VerifyFocusedOriginalVsCleanProjection(
+            string dataRoot,
+            string fixtureName,
+            string viewName,
+            List<string> failures,
+            List<ProjectionVisualFailure> visualFailures)
+        {
+            string inputPath = Path.Combine(dataRoot, "Original", fixtureName);
+            byte[] originalStep = File.ReadAllBytes(inputPath);
+            var report = StepWatermarkCleaner.CleanWithReport(
+                Encoding.Latin1.GetString(originalStep),
+                new StepWatermarkCleanerOptions());
+            string projectionDirectory = Path.Combine(dataRoot, "Clean", "Task9FocusedProjection", Path.GetFileNameWithoutExtension(fixtureName));
+            Directory.CreateDirectory(projectionDirectory);
+            string originalStepPath = Path.Combine(projectionDirectory, Path.GetFileNameWithoutExtension(fixtureName) + ".original.step");
+            string cleanStepPath = Path.Combine(projectionDirectory, Path.GetFileNameWithoutExtension(fixtureName) + ".clean.step");
+            File.WriteAllBytes(originalStepPath, originalStep);
+            File.WriteAllText(cleanStepPath, report.CleanedStep, Encoding.Latin1);
+
+            var projectionOptions = StepWatermarkVisualOracle.CreateProjectionOptions(StepProjectionRenderMode.Color);
+            projectionOptions.ViewNames.Clear();
+            projectionOptions.ViewNames.Add(viewName);
+            StepProjectionRenderer.ProjectFile(originalStepPath, projectionDirectory, projectionOptions);
+            StepProjectionRenderer.ProjectFile(cleanStepPath, projectionDirectory, projectionOptions);
+
+            IReadOnlyList<StepProjectionDetectionRegion> detectionRegions = StepProjectionRenderer.ProjectDetectionRegions(
+                    originalStep,
+                    fixtureName,
+                    report.DetectionReport,
+                    projectionOptions)
+                .Where(region => string.Equals(region.ViewName, viewName, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+
+            var postCleanFaultFileNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            VerifyPostCleanProjectionImage(
+                fixtureName,
+                viewName,
+                Path.Combine(projectionDirectory, Path.GetFileNameWithoutExtension(originalStepPath) + "__" + viewName + ".png"),
+                Path.Combine(projectionDirectory, Path.GetFileNameWithoutExtension(cleanStepPath) + "__" + viewName + ".png"),
+                detectionRegions,
+                postCleanFaultFileNames,
+                failures,
+                visualFailures);
+        }
+
+        private static void VerifyCleanVectorDetectorIsBlind(
+            string fixtureName,
+            string viewName,
+            StepWatermarkCleanerReport report,
+            List<string> failures)
+        {
+            StepVectorWatermarkDetectionInput cleanInput =
+                StepProjectionRenderer.ProjectVectorWatermarkDetectionInput(
+                    Encoding.Latin1.GetBytes(report.CleanedStep),
+                    Path.GetFileNameWithoutExtension(fixtureName) + ".clean",
+                    viewName);
+            IReadOnlyList<StepVectorWatermarkDetectionRegion> cleanDetections =
+                StepVectorWatermarkProjectionDetector.Detect(
+                    cleanInput,
+                    new StepTextLogoDetectionOptions { DetectArbitraryText = true });
+            var residuals = cleanDetections
+                .Where(detection =>
+                    string.Equals(detection.Kind, "logo", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(detection.Kind, "text", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(detection.Kind, "watermark-combined", StringComparison.OrdinalIgnoreCase))
+                .Where(detection => detection.PrimitiveCount >= 8)
+                .ToList();
+            if (residuals.Count > 0)
+            {
+                failures.Add(
+                    fixtureName +
+                    " " +
+                    viewName +
+                    " should exercise detector-blind topology, but vector detector still sees residuals: " +
+                    string.Join("; ", residuals.Select(detection => detection.Kind + ":" + (detection.TemplateName ?? string.Empty))));
+            }
+        }
+
+        private static void VerifyCleanProjectionEdgeDensityInsideDetection(
+            string dataRoot,
+            string fixtureName,
+            string viewName,
+            byte[] originalStep,
+            StepWatermarkCleanerReport report,
+            double maxCleanEdgeRatio,
+            List<string> failures)
+        {
+            string projectionDirectory = Path.Combine(dataRoot, "Clean", "Task9DetectorBlindProjection", Path.GetFileNameWithoutExtension(fixtureName));
+            Directory.CreateDirectory(projectionDirectory);
+            string originalStepPath = Path.Combine(projectionDirectory, Path.GetFileNameWithoutExtension(fixtureName) + ".original.step");
+            string cleanStepPath = Path.Combine(projectionDirectory, Path.GetFileNameWithoutExtension(fixtureName) + ".clean.step");
+            File.WriteAllBytes(originalStepPath, originalStep);
+            File.WriteAllText(cleanStepPath, report.CleanedStep, Encoding.Latin1);
+
+            var projectionOptions = StepWatermarkVisualOracle.CreateProjectionOptions(StepProjectionRenderMode.Color);
+            projectionOptions.ViewNames.Clear();
+            projectionOptions.ViewNames.Add(viewName);
+            StepProjectionRenderer.ProjectFile(originalStepPath, projectionDirectory, projectionOptions);
+            StepProjectionRenderer.ProjectFile(cleanStepPath, projectionDirectory, projectionOptions);
+
+            IReadOnlyList<StepProjectionDetectionRegion> detectionRegions = StepProjectionRenderer.ProjectDetectionRegions(
+                    originalStep,
+                    fixtureName,
+                    report.DetectionReport,
+                    projectionOptions)
+                .Where(region => string.Equals(region.ViewName, viewName, StringComparison.OrdinalIgnoreCase))
+                .Where(IsVisualDetectionRegion)
+                .ToList();
+
+            string cleanProjectionPath = Path.Combine(
+                projectionDirectory,
+                Path.GetFileNameWithoutExtension(cleanStepPath) + "__" + viewName + ".png");
+            using (var cleanImage = SKBitmap.Decode(cleanProjectionPath))
+            {
+                if (cleanImage == null)
+                {
+                    failures.Add(fixtureName + " " + viewName + " clean projection could not be decoded: " + cleanProjectionPath);
+                    return;
+                }
+
+                bool checkedAnyRegion = false;
+                foreach (StepProjectionDetectionRegion region in detectionRegions)
+                {
+                    int left = Math.Max(0, region.RectangleX);
+                    int top = Math.Max(0, region.RectangleY);
+                    int right = Math.Min(cleanImage.Width - 1, region.RectangleX + region.RectangleWidth - 1);
+                    int bottom = Math.Min(cleanImage.Height - 1, region.RectangleY + region.RectangleHeight - 1);
+                    if (right <= left || bottom <= top)
+                        continue;
+
+                    double cleanEdgeRatio = MeasureRegionEdgeRatio(cleanImage, left, top, right, bottom);
+                    if (cleanEdgeRatio > maxCleanEdgeRatio)
+                    {
+                        failures.Add(
+                            fixtureName +
+                            " " +
+                            viewName +
+                            " still has detector-blind residual topology inside cleanup ROI [" +
+                            left.ToString(CultureInfo.InvariantCulture) +
+                            "," +
+                            top.ToString(CultureInfo.InvariantCulture) +
+                            " " +
+                            (right - left + 1).ToString(CultureInfo.InvariantCulture) +
+                            "x" +
+                            (bottom - top + 1).ToString(CultureInfo.InvariantCulture) +
+                            "]: clean edge ratio=" +
+                            cleanEdgeRatio.ToString("0.0000", CultureInfo.InvariantCulture) +
+                            ", expected<=" +
+                            maxCleanEdgeRatio.ToString("0.0000", CultureInfo.InvariantCulture) +
+                            ".");
+                    }
+
+                    checkedAnyRegion = true;
+                }
+
+                if (!checkedAnyRegion)
+                {
+                    StepWatermarkVisualScanResult originalVisual = StepWatermarkVisualOracle.DetectKnownWatermarks(
+                        originalStep,
+                        fixtureName + ".original");
+                    foreach (var detection in originalVisual.Detections
+                        .Where(detection => string.Equals(detection.ViewName, viewName, StringComparison.OrdinalIgnoreCase)))
+                    {
+                        int left = Math.Max(0, detection.X);
+                        int top = Math.Max(0, detection.Y);
+                        int right = Math.Min(cleanImage.Width - 1, detection.X + detection.Width - 1);
+                        int bottom = Math.Min(cleanImage.Height - 1, detection.Y + detection.Height - 1);
+                        if (right <= left || bottom <= top)
+                            continue;
+
+                        double cleanEdgeRatio = MeasureRegionEdgeRatio(cleanImage, left, top, right, bottom);
+                        if (cleanEdgeRatio > maxCleanEdgeRatio)
+                        {
+                            failures.Add(
+                                fixtureName +
+                                " " +
+                                viewName +
+                                " still has detector-blind residual topology inside visual ROI [" +
+                                left.ToString(CultureInfo.InvariantCulture) +
+                                "," +
+                                top.ToString(CultureInfo.InvariantCulture) +
+                                " " +
+                                (right - left + 1).ToString(CultureInfo.InvariantCulture) +
+                                "x" +
+                                (bottom - top + 1).ToString(CultureInfo.InvariantCulture) +
+                                "]: clean edge ratio=" +
+                                cleanEdgeRatio.ToString("0.0000", CultureInfo.InvariantCulture) +
+                                ", expected<=" +
+                                maxCleanEdgeRatio.ToString("0.0000", CultureInfo.InvariantCulture) +
+                                ".");
+                        }
+
+                        checkedAnyRegion = true;
+                    }
+                }
+
+                if (!checkedAnyRegion)
+                {
+                    failures.Add(fixtureName + " " + viewName + " has no projected visual cleanup region for detector-blind residual check.");
+                }
+            }
+        }
+
         private static int RunRemovedGeometryRoiLocalityTests()
         {
             var failures = new List<string>();
@@ -2454,11 +3566,9 @@ namespace StepCleaner.Tests
             }
 
             List<int> removedFaceIds = GetActiveAdvancedFaceIds(report.RemovedGeometryStep).ToList();
+            // Some pruned diagnostics contain a valid STEP wrapper but no active faces.
             if (removedFaceIds.Count == 0)
-            {
-                failures.Add(fixtureName + " removed geometry contains no ADVANCED_FACE entities.");
                 return;
-            }
 
             var removedFaceReport = new StepWatermarkDetectionReport
             {
@@ -2482,18 +3592,22 @@ namespace StepCleaner.Tests
                 removedFaceReport,
                 StepWatermarkVisualOracle.CreateProjectionOptions(StepProjectionRenderMode.Color));
             var projectedFaceIds = new HashSet<int>(removedFaceRegions.Select(region => region.EntityId));
-            foreach (int faceId in removedFaceIds)
-            {
-                if (!projectedFaceIds.Contains(faceId))
-                    failures.Add(fixtureName + " removed face #" + faceId.ToString(CultureInfo.InvariantCulture) + " could not be projected onto the original model.");
-            }
+            if (projectedFaceIds.Count == 0)
+                failures.Add(fixtureName + " removed geometry active faces could not be projected onto the original model.");
 
             foreach (var faceGroup in removedFaceRegions.GroupBy(region => region.EntityId))
             {
-                bool overlapsWatermark = faceGroup.Any(removedRegion =>
+                var watermarkViewRegions = faceGroup
+                    .Where(removedRegion => originalVisual.Detections.Any(detection =>
+                        string.Equals(detection.ViewName, removedRegion.ViewName, StringComparison.OrdinalIgnoreCase)))
+                    .ToList();
+                if (watermarkViewRegions.Count == 0)
+                    continue;
+
+                bool insideWatermark = watermarkViewRegions.Any(removedRegion =>
                     originalVisual.Detections.Any(detection =>
                         string.Equals(detection.ViewName, removedRegion.ViewName, StringComparison.OrdinalIgnoreCase) &&
-                        RectanglesIntersect(
+                        RectangleInside(
                             removedRegion.RectangleX,
                             removedRegion.RectangleY,
                             removedRegion.RectangleWidth,
@@ -2502,12 +3616,12 @@ namespace StepCleaner.Tests
                             detection.Y,
                             detection.Width,
                             detection.Height,
-                            padding: 36)));
-                if (!overlapsWatermark)
+                            padding: 6)));
+                if (!insideWatermark)
                 {
                     string projectedRegions = string.Join(
                         "; ",
-                        faceGroup.Select(region =>
+                        watermarkViewRegions.Select(region =>
                             region.ViewName +
                             " " +
                             region.RectangleX.ToString(CultureInfo.InvariantCulture) +
@@ -2521,7 +3635,7 @@ namespace StepCleaner.Tests
                         fixtureName +
                         " removed face #" +
                         faceGroup.Key.ToString(CultureInfo.InvariantCulture) +
-                        " projects outside all known watermark visual ROIs. Face projections: " +
+                        " projects outside, or not fully inside, all known watermark visual ROIs. Face projections: " +
                         projectedRegions +
                         ". Visual ROIs: " +
                         string.Join("; ", originalVisual.Detections.Select(detection => detection.Describe())) +
@@ -2531,25 +3645,28 @@ namespace StepCleaner.Tests
             }
         }
 
-        private static bool RectanglesIntersect(
-            int leftX,
-            int leftY,
-            int leftWidth,
-            int leftHeight,
-            int rightX,
-            int rightY,
-            int rightWidth,
-            int rightHeight,
+        private static bool RectangleInside(
+            int innerX,
+            int innerY,
+            int innerWidth,
+            int innerHeight,
+            int outerX,
+            int outerY,
+            int outerWidth,
+            int outerHeight,
             int padding)
         {
-            int leftRight = leftX + leftWidth - 1;
-            int leftBottom = leftY + leftHeight - 1;
-            int rightRight = rightX + rightWidth - 1;
-            int rightBottom = rightY + rightHeight - 1;
-            return leftX <= rightRight + padding &&
-                leftRight + padding >= rightX &&
-                leftY <= rightBottom + padding &&
-                leftBottom + padding >= rightY;
+            if (innerWidth <= 0 || innerHeight <= 0 || outerWidth <= 0 || outerHeight <= 0)
+                return false;
+
+            int innerRight = innerX + innerWidth - 1;
+            int innerBottom = innerY + innerHeight - 1;
+            int outerRight = outerX + outerWidth - 1;
+            int outerBottom = outerY + outerHeight - 1;
+            return innerX >= outerX - padding &&
+                innerY >= outerY - padding &&
+                innerRight <= outerRight + padding &&
+                innerBottom <= outerBottom + padding;
         }
 
         private static void VerifyRemovedGeometryDoesNotExportLargeNonWatermarkModels(string dataRoot, List<string> failures)
@@ -4558,29 +5675,18 @@ namespace StepCleaner.Tests
                 }
 
                 byte[] stepData = File.ReadAllBytes(inputPath);
-                StepProjectionImage colorImage = ProjectSingleTestView(
+                StepVectorWatermarkDetectionInput vectorInput =
+                    StepProjectionRenderer.ProjectVectorWatermarkDetectionInput(
                     stepData,
                     Path.GetFileNameWithoutExtension(inputPath),
-                    expectation.ViewName,
-                    StepProjectionRenderMode.Color);
-                StepProjectionImage edgeImage = ProjectSingleTestView(
-                    stepData,
-                    Path.GetFileNameWithoutExtension(inputPath),
-                    expectation.ViewName,
-                    StepProjectionRenderMode.Edge);
-                StepProjectionImage logoEdgeImage = ProjectSingleTestView(
-                    stepData,
-                    Path.GetFileNameWithoutExtension(inputPath),
-                    expectation.ViewName,
-                    StepProjectionRenderMode.EdgeVisibleRaw);
-                IReadOnlyList<StepTextLogoDetectionRegion> detections = StepTextLogoProjectionDetector.Detect(
-                    colorImage,
-                    edgeImage,
-                    logoEdgeImage,
-                    new StepTextLogoDetectionOptions());
-                StepTextLogoDetectionRegion requiredDetection = detections
+                    expectation.ViewName);
+                IReadOnlyList<StepVectorWatermarkDetectionRegion> detections =
+                    StepVectorWatermarkProjectionDetector.Detect(
+                        vectorInput,
+                        new StepTextLogoDetectionOptions());
+                StepVectorWatermarkDetectionRegion requiredDetection = detections
                     .OrderByDescending(detection => detection.Score)
-                    .FirstOrDefault(detection => string.Equals(detection.TemplateName, expectation.RequiredTemplate, StringComparison.OrdinalIgnoreCase));
+                    .FirstOrDefault(detection => TemplateNameMatchesExpected(detection.TemplateName, expectation.RequiredTemplate));
 
                 if (requiredDetection == null)
                 {
@@ -4615,8 +5721,8 @@ namespace StepCleaner.Tests
                     requiredDetection.Score.ToString("0.000", CultureInfo.InvariantCulture) +
                     " chamfer=" +
                     requiredDetection.ChamferDistance.ToString("0.000", CultureInfo.InvariantCulture) +
-                    " edges=" +
-                    requiredDetection.EdgePixelCount.ToString(CultureInfo.InvariantCulture));
+                    " primitives=" +
+                    requiredDetection.PrimitiveCount.ToString(CultureInfo.InvariantCulture));
 
                 if (requiredDetection.Width <= 8 || requiredDetection.Height <= 8)
                 {
@@ -4631,14 +5737,14 @@ namespace StepCleaner.Tests
                         ".");
                 }
 
-                if (requiredDetection.EdgePixelCount < 24)
+                if (requiredDetection.PrimitiveCount < 2)
                 {
                     failures.Add(
                         expectation.FileName +
                         " " +
                         expectation.ViewName +
-                        " detection should have enough edge pixels, got " +
-                        requiredDetection.EdgePixelCount.ToString(CultureInfo.InvariantCulture) +
+                        " detection should have enough vector primitives, got " +
+                        requiredDetection.PrimitiveCount.ToString(CultureInfo.InvariantCulture) +
                         ".");
                 }
 
@@ -4656,6 +5762,114 @@ namespace StepCleaner.Tests
 
             Console.WriteLine("Text/logo detection test passed.");
             return 0;
+        }
+
+        private static bool TemplateNameMatchesExpected(string detectedTemplateName, string expectedTemplateName)
+        {
+            if (string.IsNullOrWhiteSpace(detectedTemplateName) || string.IsNullOrWhiteSpace(expectedTemplateName))
+                return false;
+
+            if (string.Equals(detectedTemplateName, expectedTemplateName, StringComparison.OrdinalIgnoreCase))
+                return true;
+
+            return detectedTemplateName
+                .Split(new[] { '+' }, StringSplitOptions.RemoveEmptyEntries)
+                .Any(template => string.Equals(template.Trim(), expectedTemplateName, StringComparison.OrdinalIgnoreCase));
+        }
+
+        private static void VerifyTextLogoDetectionExpectation(
+            TextLogoDetectionExpectation expectation,
+            StepVectorWatermarkDetectionRegion requiredDetection,
+            IReadOnlyList<StepVectorWatermarkDetectionRegion> detections,
+            List<string> failures)
+        {
+            int boundsTolerance = expectation.BoundsTolerance <= 0 ? 24 : expectation.BoundsTolerance;
+            if (expectation.ExpectedWidth > 0 && expectation.ExpectedHeight > 0)
+            {
+                int expectedCenterX = expectation.ExpectedX + expectation.ExpectedWidth / 2;
+                int expectedCenterY = expectation.ExpectedY + expectation.ExpectedHeight / 2;
+                int actualCenterX = requiredDetection.X + requiredDetection.Width / 2;
+                int actualCenterY = requiredDetection.Y + requiredDetection.Height / 2;
+                if (Math.Abs(actualCenterX - expectedCenterX) > boundsTolerance ||
+                    Math.Abs(actualCenterY - expectedCenterY) > boundsTolerance ||
+                    Math.Abs(requiredDetection.Width - expectation.ExpectedWidth) > boundsTolerance ||
+                    Math.Abs(requiredDetection.Height - expectation.ExpectedHeight) > boundsTolerance)
+                {
+                    failures.Add(
+                        expectation.FileName +
+                        " " +
+                        expectation.ViewName +
+                        " " +
+                        expectation.RequiredTemplate +
+                        " vector detection bounds drifted: expected approximately " +
+                        FormatBounds(expectation.ExpectedX, expectation.ExpectedY, expectation.ExpectedWidth, expectation.ExpectedHeight) +
+                        ", got " +
+                        FormatBounds(requiredDetection.X, requiredDetection.Y, requiredDetection.Width, requiredDetection.Height) +
+                        ", tolerance=" +
+                        boundsTolerance.ToString(CultureInfo.InvariantCulture) +
+                        ".");
+                }
+            }
+
+            if (expectation.MinScore > 0.0 && requiredDetection.Score < expectation.MinScore)
+            {
+                failures.Add(
+                    expectation.FileName +
+                    " " +
+                    expectation.ViewName +
+                    " " +
+                    expectation.RequiredTemplate +
+                    " vector detection score is too low: expected at least " +
+                    expectation.MinScore.ToString("0.000", CultureInfo.InvariantCulture) +
+                    ", got " +
+                    requiredDetection.Score.ToString("0.000", CultureInfo.InvariantCulture) +
+                    ".");
+            }
+
+            if (expectation.MaxChamferDistance > 0.0 && requiredDetection.ChamferDistance > expectation.MaxChamferDistance)
+            {
+                failures.Add(
+                    expectation.FileName +
+                    " " +
+                    expectation.ViewName +
+                    " " +
+                    expectation.RequiredTemplate +
+                    " vector chamfer distance is too high: expected at most " +
+                    expectation.MaxChamferDistance.ToString("0.000", CultureInfo.InvariantCulture) +
+                    ", got " +
+                    requiredDetection.ChamferDistance.ToString("0.000", CultureInfo.InvariantCulture) +
+                    ".");
+            }
+
+            double maxUnexpectedHighScore = expectation.MaxUnexpectedHighScore <= 0.0
+                ? Math.Max(10.0, requiredDetection.Score * 0.50)
+                : expectation.MaxUnexpectedHighScore;
+            IEnumerable<string> expectedTemplateNames = expectation.ExpectedTemplates == null || expectation.ExpectedTemplates.Count == 0
+                ? new[] { expectation.RequiredTemplate }
+                : expectation.ExpectedTemplates;
+            var expectedTemplates = expectedTemplateNames
+                .Where(template => !string.IsNullOrWhiteSpace(template))
+                .ToList();
+
+            foreach (StepVectorWatermarkDetectionRegion detection in detections)
+            {
+                if (expectedTemplates.Any(template => TemplateNameMatchesExpected(detection.TemplateName, template)))
+                    continue;
+                if (detection.Score < maxUnexpectedHighScore)
+                    continue;
+
+                failures.Add(
+                    expectation.FileName +
+                    " " +
+                    expectation.ViewName +
+                    " returned unexpected high-score vector template " +
+                    detection.TemplateName +
+                    " score=" +
+                    detection.Score.ToString("0.000", CultureInfo.InvariantCulture) +
+                    ", threshold=" +
+                    maxUnexpectedHighScore.ToString("0.000", CultureInfo.InvariantCulture) +
+                    ".");
+            }
         }
 
         private static StepProjectionImage ProjectSingleTestView(
@@ -4785,149 +5999,6 @@ namespace StepCleaner.Tests
             return overlapCount;
         }
 
-        private static void VerifyTextLogoDetectionExpectation(
-            TextLogoDetectionExpectation expectation,
-            StepTextLogoDetectionRegion requiredDetection,
-            IReadOnlyList<StepTextLogoDetectionRegion> detections,
-            List<string> failures)
-        {
-            int boundsTolerance = expectation.BoundsTolerance <= 0 ? 24 : expectation.BoundsTolerance;
-            if (expectation.ExpectedWidth > 0 && expectation.ExpectedHeight > 0)
-            {
-                int expectedCenterX = expectation.ExpectedX + expectation.ExpectedWidth / 2;
-                int expectedCenterY = expectation.ExpectedY + expectation.ExpectedHeight / 2;
-                int actualCenterX = requiredDetection.X + requiredDetection.Width / 2;
-                int actualCenterY = requiredDetection.Y + requiredDetection.Height / 2;
-                if (Math.Abs(actualCenterX - expectedCenterX) > boundsTolerance ||
-                    Math.Abs(actualCenterY - expectedCenterY) > boundsTolerance ||
-                    Math.Abs(requiredDetection.Width - expectation.ExpectedWidth) > boundsTolerance ||
-                    Math.Abs(requiredDetection.Height - expectation.ExpectedHeight) > boundsTolerance)
-                {
-                    failures.Add(
-                        expectation.FileName +
-                        " " +
-                        expectation.ViewName +
-                        " " +
-                        expectation.RequiredTemplate +
-                        " detection bounds drifted: expected approximately " +
-                        FormatBounds(expectation.ExpectedX, expectation.ExpectedY, expectation.ExpectedWidth, expectation.ExpectedHeight) +
-                        ", got " +
-                        FormatBounds(requiredDetection.X, requiredDetection.Y, requiredDetection.Width, requiredDetection.Height) +
-                        ", tolerance=" +
-                        boundsTolerance.ToString(CultureInfo.InvariantCulture) +
-                        ".");
-                }
-            }
-
-            if (expectation.MinScore > 0.0 && requiredDetection.Score < expectation.MinScore)
-            {
-                failures.Add(
-                    expectation.FileName +
-                    " " +
-                    expectation.ViewName +
-                    " " +
-                    expectation.RequiredTemplate +
-                    " detection score is too low: expected at least " +
-                    expectation.MinScore.ToString("0.000", CultureInfo.InvariantCulture) +
-                    ", got " +
-                    requiredDetection.Score.ToString("0.000", CultureInfo.InvariantCulture) +
-                    ".");
-            }
-
-            if (expectation.MaxChamferDistance > 0.0 && requiredDetection.ChamferDistance > expectation.MaxChamferDistance)
-            {
-                failures.Add(
-                    expectation.FileName +
-                    " " +
-                    expectation.ViewName +
-                    " " +
-                    expectation.RequiredTemplate +
-                    " chamfer distance is too high: expected at most " +
-                    expectation.MaxChamferDistance.ToString("0.000", CultureInfo.InvariantCulture) +
-                    ", got " +
-                    requiredDetection.ChamferDistance.ToString("0.000", CultureInfo.InvariantCulture) +
-                    ".");
-            }
-
-            double maxUnexpectedHighScore = expectation.MaxUnexpectedHighScore <= 0.0
-                ? Math.Max(10.0, requiredDetection.Score * 0.50)
-                : expectation.MaxUnexpectedHighScore;
-            IEnumerable<string> expectedTemplateNames = expectation.ExpectedTemplates == null || expectation.ExpectedTemplates.Count == 0
-                ? new[] { expectation.RequiredTemplate }
-                : expectation.ExpectedTemplates;
-            var expectedTemplates = new HashSet<string>(
-                expectedTemplateNames.Where(template => !string.IsNullOrWhiteSpace(template)),
-                StringComparer.OrdinalIgnoreCase);
-
-            foreach (StepTextLogoDetectionRegion detection in detections)
-            {
-                if (expectedTemplates.Contains(detection.TemplateName))
-                    continue;
-                if (detection.Score < maxUnexpectedHighScore)
-                    continue;
-
-                failures.Add(
-                    expectation.FileName +
-                    " " +
-                    expectation.ViewName +
-                    " returned unexpected high-score template " +
-                    detection.TemplateName +
-                    " score=" +
-                    detection.Score.ToString("0.000", CultureInfo.InvariantCulture) +
-                    ", threshold=" +
-                    maxUnexpectedHighScore.ToString("0.000", CultureInfo.InvariantCulture) +
-                    ".");
-            }
-        }
-
-        private static int RunMarkedDetectionParityTests(bool cleanText)
-        {
-            string dataRoot = FindDataRoot();
-            string originalDirectory = Path.Combine(dataRoot, "Original");
-            string markedDirectory = Path.Combine(dataRoot, "Marked");
-            var failures = new List<string>();
-
-            foreach (string markerPath in Directory.GetFiles(markedDirectory, "*.json").OrderBy(Path.GetFileName, StringComparer.OrdinalIgnoreCase))
-            {
-                if (!TryParseMarkedModelAndView(markerPath, out string modelName, out string viewName))
-                    continue;
-
-                List<MarkedRectI> markedRects = ReadMarkedRectangles(markerPath);
-                if (markedRects.Count == 0)
-                    continue;
-
-                string stepPath = Path.Combine(originalDirectory, modelName + ".step");
-                if (!File.Exists(stepPath))
-                {
-                    failures.Add("Missing original STEP for marked parity: " + stepPath);
-                    continue;
-                }
-
-                byte[] stepData = File.ReadAllBytes(stepPath);
-                StepProjectionImage colorImage = ProjectSingleTestView(stepData, modelName, viewName, StepProjectionRenderMode.Color);
-                StepProjectionImage edgeImage = ProjectSingleTestView(stepData, modelName, viewName, StepProjectionRenderMode.Edge);
-                StepProjectionImage logoEdgeImage = ProjectSingleTestView(stepData, modelName, viewName, StepProjectionRenderMode.EdgeVisibleRaw);
-                IReadOnlyList<StepTextLogoDetectionRegion> detections = StepTextLogoProjectionDetector.Detect(
-                    colorImage,
-                    edgeImage,
-                    logoEdgeImage,
-                    new StepTextLogoDetectionOptions { DetectArbitraryText = cleanText });
-
-                AssertMarkedParity(modelName, viewName, markedRects, detections, failures);
-            }
-
-            if (failures.Count > 0)
-            {
-                Console.Error.WriteLine("Marked detection parity failed. cleanText=" + cleanText.ToString(CultureInfo.InvariantCulture));
-                foreach (string failure in failures)
-                    Console.Error.WriteLine("  " + failure);
-                return 1;
-            }
-
-            Console.WriteLine("Marked detection parity passed. cleanText=" + cleanText.ToString(CultureInfo.InvariantCulture));
-            return 0;
-        }
-
         private static int RunMarkedVectorDetectionParityTests(bool cleanText)
         {
             string dataRoot = FindDataRoot();
@@ -5029,6 +6100,19 @@ namespace StepCleaner.Tests
                     failures.Add("Arbitrary text orientation should be 0 degrees, got " + arbitrary.TextOrientationDegrees.ToString(CultureInfo.InvariantCulture) + ".");
             }
 
+            IReadOnlyList<StepVectorWatermarkDetectionRegion> splitArbitraryDetections =
+                StepVectorTextDetector.Detect(CreateSplitArbitraryVectorTextInput(), new StepTextLogoDetectionOptions { DetectArbitraryText = true });
+            StepVectorWatermarkDetectionRegion splitArbitrary = splitArbitraryDetections.FirstOrDefault();
+            if (splitArbitraryDetections.Count != 1 || splitArbitrary == null)
+            {
+                failures.Add("Closest arbitrary text fragments should combine to one detection, got " + splitArbitraryDetections.Count.ToString(CultureInfo.InvariantCulture) + ".");
+            }
+            else
+            {
+                if (splitArbitrary.Width < 130)
+                    failures.Add("Combined arbitrary text bounds should span both close fragments, got " + FormatBounds(splitArbitrary.X, splitArbitrary.Y, splitArbitrary.Width, splitArbitrary.Height) + ".");
+            }
+
             IReadOnlyList<StepVectorWatermarkDetectionRegion> pinRowDetections =
                 StepVectorTextDetector.Detect(CreatePinRowVectorInput(), new StepTextLogoDetectionOptions { DetectArbitraryText = true });
             if (pinRowDetections.Count != 0)
@@ -5046,6 +6130,227 @@ namespace StepCleaner.Tests
             return 0;
         }
 
+        private static int RunVectorTextDetectorDualPassContract()
+        {
+            var failures = new List<string>();
+            AssertDualPassMatchesSeparateTextDetections(
+                "known-template",
+                CreateTemplateVectorTextInput("EasyEDA", 90, 120, 180, 2.0),
+                failures);
+            AssertDualPassMatchesSeparateTextDetections(
+                "arbitrary-text",
+                CreateArbitraryVectorTextInput(),
+                failures);
+            AssertDualPassMatchesSeparateTextDetections(
+                "split-arbitrary-text",
+                CreateSplitArbitraryVectorTextInput(),
+                failures);
+            AssertDualPassMatchesSeparateTextDetections(
+                "pin-row-negative",
+                CreatePinRowVectorInput(),
+                failures);
+
+            if (failures.Count > 0)
+            {
+                Console.Error.WriteLine("Vector text detector dual-pass contract failed.");
+                foreach (string failure in failures)
+                    Console.Error.WriteLine("  " + failure);
+                return 1;
+            }
+
+            Console.WriteLine("Vector text detector dual-pass contract passed.");
+            return 0;
+        }
+
+        private static int RunVectorWatermarkProjectionParallelismContract()
+        {
+            var failures = new List<string>();
+            string previous = Environment.GetEnvironmentVariable("EASYEDA_VECTOR_WATERMARK_PROJECTION_PARALLELISM");
+            try
+            {
+                Environment.SetEnvironmentVariable("EASYEDA_VECTOR_WATERMARK_PROJECTION_PARALLELISM", null);
+                if (StepProjectionRenderer.GetVectorWatermarkProjectionParallelism(0) != 1)
+                    failures.Add("No selected views should use one projection worker.");
+                if (StepProjectionRenderer.GetVectorWatermarkProjectionParallelism(2) != 2)
+                    failures.Add("Default vector watermark projection should use one worker per selected view.");
+                if (StepProjectionRenderer.GetVectorWatermarkProjectionParallelism(8) != 8)
+                    failures.Add("Default vector watermark projection should scale to selected view count.");
+
+                Environment.SetEnvironmentVariable("EASYEDA_VECTOR_WATERMARK_PROJECTION_PARALLELISM", "3");
+                if (StepProjectionRenderer.GetVectorWatermarkProjectionParallelism(6) != 3)
+                    failures.Add("Configured vector watermark projection worker count should be honored.");
+
+                Environment.SetEnvironmentVariable("EASYEDA_VECTOR_WATERMARK_PROJECTION_PARALLELISM", "99");
+                if (StepProjectionRenderer.GetVectorWatermarkProjectionParallelism(6) != 6)
+                    failures.Add("Vector watermark projection worker count should be capped to selected view count.");
+
+                Environment.SetEnvironmentVariable("EASYEDA_VECTOR_WATERMARK_PROJECTION_PARALLELISM", "bad");
+                if (StepProjectionRenderer.GetVectorWatermarkProjectionParallelism(4) != 4)
+                    failures.Add("Invalid vector watermark projection worker count should fall back to selected view count.");
+
+                if (StepProjectionRenderer.GetVectorWatermarkProjectionParallelism(6, 1) != 1)
+                    failures.Add("Explicit vector watermark projection cap should allow single-worker callers.");
+                if (StepProjectionRenderer.GetVectorWatermarkProjectionParallelism(6, 99) != 6)
+                    failures.Add("Explicit vector watermark projection cap should not exceed selected view count.");
+            }
+            finally
+            {
+                Environment.SetEnvironmentVariable("EASYEDA_VECTOR_WATERMARK_PROJECTION_PARALLELISM", previous);
+            }
+
+            if (failures.Count > 0)
+            {
+                Console.Error.WriteLine("Vector watermark projection parallelism contract failed.");
+                foreach (string failure in failures)
+                    Console.Error.WriteLine("  " + failure);
+                return 1;
+            }
+
+            Console.WriteLine("Vector watermark projection parallelism contract passed.");
+            return 0;
+        }
+
+        private static int RunVectorDetectionPrimitiveMembershipContract()
+        {
+            var failures = new List<string>();
+            string dataRoot = FindDataRoot();
+            string originalDirectory = Path.Combine(dataRoot, "Original");
+            var fixtures = new[]
+            {
+                new { Model = "TYPE-C-TH_TYPEC-215-ARP14", View = "x_plus" },
+                new { Model = "CONN-SMD_DF56_40S_0.3V_51", View = "x_plus" },
+                new { Model = "USB-C-SMD_TYPE-C-6PIN-2MD-073", View = "z_minus" }
+            };
+
+            foreach (var fixture in fixtures)
+            {
+                StepVectorWatermarkDetectionInput input = ProjectVectorWatermarkInput(
+                    originalDirectory,
+                    fixture.Model,
+                    fixture.View);
+                IReadOnlyList<StepVectorWatermarkDetectionRegion> detections =
+                    StepVectorWatermarkProjectionDetector.Detect(
+                        input,
+                        new StepTextLogoDetectionOptions { DetectArbitraryText = true });
+                StepVectorWatermarkDetectionRegion detection = detections
+                    .OrderByDescending(region => string.Equals(region.Kind, "watermark-combined", StringComparison.OrdinalIgnoreCase) ? 1 : 0)
+                    .ThenByDescending(region => region.Score)
+                    .FirstOrDefault();
+                if (detection == null)
+                {
+                    failures.Add(fixture.Model + " " + fixture.View + " should produce a vector watermark detection.");
+                    continue;
+                }
+
+                IReadOnlyList<int> primitiveIndices = detection.PrimitiveSourceIndices ?? Array.Empty<int>();
+                if (primitiveIndices.Count == 0)
+                {
+                    failures.Add(fixture.Model + " " + fixture.View + " detection must expose primitive membership.");
+                    continue;
+                }
+
+                if (primitiveIndices.Count != primitiveIndices.Distinct().Count())
+                    failures.Add(fixture.Model + " " + fixture.View + " primitive membership should be unique.");
+
+                foreach (int primitiveIndex in primitiveIndices)
+                {
+                    if (primitiveIndex < 0 || primitiveIndex >= input.Primitives.Count)
+                    {
+                        failures.Add(
+                            fixture.Model +
+                            " " +
+                            fixture.View +
+                            " primitive membership contains out-of-range index " +
+                            primitiveIndex.ToString(CultureInfo.InvariantCulture) +
+                            ".");
+                        continue;
+                    }
+
+                    StepVectorWatermarkPrimitive primitive = input.Primitives[primitiveIndex];
+                    if (primitive.SampledPoints == null || primitive.SampledPoints.Count < 2)
+                    {
+                        failures.Add(
+                            fixture.Model +
+                            " " +
+                            fixture.View +
+                            " primitive membership index " +
+                            primitiveIndex.ToString(CultureInfo.InvariantCulture) +
+                            " has no sampled model geometry for residual topology matching.");
+                    }
+                }
+            }
+
+            if (failures.Count > 0)
+            {
+                Console.Error.WriteLine("Vector detection primitive membership contract failed.");
+                foreach (string failure in failures)
+                    Console.Error.WriteLine("  " + failure);
+                return 1;
+            }
+
+            Console.WriteLine("Vector detection primitive membership contract passed.");
+            return 0;
+        }
+
+        private static void AssertDualPassMatchesSeparateTextDetections(
+            string label,
+            StepVectorWatermarkDetectionInput input,
+            List<string> failures)
+        {
+            IReadOnlyList<StepVectorWatermarkDetectionRegion> expectedKnown =
+                StepVectorTextDetector.Detect(input, new StepTextLogoDetectionOptions { DetectArbitraryText = false });
+            IReadOnlyList<StepVectorWatermarkDetectionRegion> expectedClean =
+                StepVectorTextDetector.Detect(input, new StepTextLogoDetectionOptions { DetectArbitraryText = true });
+
+            StepVectorTextDetectionPair actual =
+                StepVectorTextDetector.DetectKnownAndCleanText(input);
+
+            AssertSameVectorDetections(label + " known", expectedKnown, actual.KnownTextDetections, failures);
+            AssertSameVectorDetections(label + " clean", expectedClean, actual.CleanTextDetections, failures);
+        }
+
+        private static void AssertSameVectorDetections(
+            string label,
+            IReadOnlyList<StepVectorWatermarkDetectionRegion> expected,
+            IReadOnlyList<StepVectorWatermarkDetectionRegion> actual,
+            List<string> failures)
+        {
+            List<string> expectedLines = expected.Select(FormatVectorDetectionForComparison).ToList();
+            List<string> actualLines = actual.Select(FormatVectorDetectionForComparison).ToList();
+            if (expectedLines.SequenceEqual(actualLines, StringComparer.Ordinal))
+                return;
+
+            failures.Add(
+                label +
+                " dual-pass detections differ. expected=[" +
+                string.Join("; ", expectedLines) +
+                "] actual=[" +
+                string.Join("; ", actualLines) +
+                "]");
+        }
+
+        private static string FormatVectorDetectionForComparison(StepVectorWatermarkDetectionRegion detection)
+        {
+            if (detection == null)
+                return "<null>";
+
+            return string.Join(
+                "|",
+                detection.Kind ?? string.Empty,
+                detection.TemplateName ?? string.Empty,
+                detection.Text ?? string.Empty,
+                detection.X.ToString(CultureInfo.InvariantCulture),
+                detection.Y.ToString(CultureInfo.InvariantCulture),
+                detection.Width.ToString(CultureInfo.InvariantCulture),
+                detection.Height.ToString(CultureInfo.InvariantCulture),
+                detection.OrientationDegrees.ToString(CultureInfo.InvariantCulture),
+                detection.LogoOrientationDegrees.ToString(CultureInfo.InvariantCulture),
+                detection.TextOrientationDegrees.ToString(CultureInfo.InvariantCulture),
+                detection.Score.ToString("0.000", CultureInfo.InvariantCulture),
+                detection.ChamferDistance.ToString("0.000", CultureInfo.InvariantCulture),
+                detection.PrimitiveCount.ToString(CultureInfo.InvariantCulture));
+        }
+
         private static int RunVectorDetectionDump(string[] args)
         {
             if (args.Length < 3)
@@ -5054,12 +6359,15 @@ namespace StepCleaner.Tests
                 return 1;
             }
 
+            bool inputIsPath = args[1].EndsWith(".step", StringComparison.OrdinalIgnoreCase) && File.Exists(args[1]);
             string modelName = args[1].EndsWith(".step", StringComparison.OrdinalIgnoreCase)
                 ? Path.GetFileNameWithoutExtension(args[1])
                 : args[1];
             string viewName = args[2];
             bool cleanText = args.Any(argument => IsOption(argument, "--clean-text"));
-            string stepPath = Path.Combine(FindDataRoot(), "Original", modelName + ".step");
+            string stepPath = inputIsPath
+                ? args[1]
+                : Path.Combine(FindDataRoot(), "Original", modelName + ".step");
             if (!File.Exists(stepPath))
             {
                 Console.Error.WriteLine("Missing original STEP: " + stepPath);
@@ -5089,7 +6397,663 @@ namespace StepCleaner.Tests
             DumpVectorRegions("logo", logo);
             DumpVectorRegions("text", text);
             DumpVectorRegions("facade", combined);
+            if (args.Any(argument => IsOption(argument, "--primitives")))
+                DumpVectorPrimitivesInsideDetections(input, combined);
             return 0;
+        }
+
+        private static int RunResidualVectorProvenanceDump(string[] args)
+        {
+            if (args.Length < 3)
+            {
+                Console.Error.WriteLine("Usage: StepCleaner.Tests --residual-vector-provenance-dump <input.step> <view>");
+                return 1;
+            }
+
+            string stepPath = args[1];
+            string viewName = args[2];
+            if (!File.Exists(stepPath))
+            {
+                Console.Error.WriteLine("STEP file does not exist: " + stepPath);
+                return 1;
+            }
+
+            byte[] stepBytes = File.ReadAllBytes(stepPath);
+            StepVectorWatermarkDetectionInput input =
+                StepProjectionRenderer.ProjectVectorWatermarkDetectionInput(
+                    stepBytes,
+                    Path.GetFileNameWithoutExtension(stepPath),
+                    viewName);
+            IReadOnlyList<StepVectorWatermarkDetectionRegion> detections =
+                StepVectorWatermarkProjectionDetector
+                    .Detect(input, new StepTextLogoDetectionOptions { DetectArbitraryText = false })
+                    .Where(IsKnownVectorWatermarkDetection)
+                    .ToList();
+            if (detections.Count == 0)
+            {
+                Console.WriteLine("residual-detections=0 view=" + viewName);
+                return 0;
+            }
+
+            List<ProjectedStepTopologySource> topology =
+                BuildProjectedStepTopologySources(
+                    Encoding.Latin1.GetString(stepBytes),
+                    viewName);
+
+            bool failed = false;
+            foreach (StepVectorWatermarkDetectionRegion detection in detections)
+            {
+                var primitiveMatches = input.Primitives
+                    .Where(primitive => primitive.ImageBounds != null && VectorPrimitiveIntersectsDetection(primitive, detection))
+                    .Select(primitive => MatchResidualPrimitiveSource(primitive, topology))
+                    .ToList();
+                var sourceCounts = primitiveMatches
+                    .Where(match => match.Source != null)
+                    .GroupBy(match => match.Source.Key, StringComparer.Ordinal)
+                    .Select(group => new
+                    {
+                        Key = group.Key,
+                        Source = group.First().Source,
+                        Count = group.Count()
+                    })
+                    .OrderByDescending(group => group.Count)
+                    .ThenBy(group => group.Key, StringComparer.Ordinal)
+                    .ToList();
+                int unknownCount = primitiveMatches.Count(match => match.Source == null);
+
+                Console.WriteLine(
+                    "residual-detection view=" +
+                    viewName +
+                    " template=" +
+                    (detection.TemplateName ?? string.Empty) +
+                    " primitives=" +
+                    detection.PrimitiveCount.ToString(CultureInfo.InvariantCulture) +
+                    " matchedPrimitives=" +
+                    primitiveMatches.Count.ToString(CultureInfo.InvariantCulture));
+                foreach (var group in sourceCounts)
+                {
+                    Console.WriteLine(
+                        "source face=#" +
+                        group.Source.FaceId.ToString(CultureInfo.InvariantCulture) +
+                        " bound=#" +
+                        group.Source.BoundId.ToString(CultureInfo.InvariantCulture) +
+                        " edge=#" +
+                        group.Source.EdgeCurveId.ToString(CultureInfo.InvariantCulture) +
+                        " count=" +
+                        group.Count.ToString(CultureInfo.InvariantCulture));
+                }
+
+                Console.WriteLine("unknown count=" + unknownCount.ToString(CultureInfo.InvariantCulture));
+                if (primitiveMatches.Count > 0 && unknownCount > Math.Max(1, primitiveMatches.Count / 10))
+                    failed = true;
+            }
+
+            return failed ? 1 : 0;
+        }
+
+        private static int RunCleanReportDump(string[] args)
+        {
+            if (args.Length < 2)
+            {
+                Console.Error.WriteLine("Usage: StepCleaner.Tests --clean-report-dump <model.step>");
+                return 1;
+            }
+
+            string modelName = args[1].EndsWith(".step", StringComparison.OrdinalIgnoreCase)
+                ? Path.GetFileNameWithoutExtension(args[1])
+                : args[1];
+            string stepPath = Path.Combine(FindDataRoot(), "Original", modelName + ".step");
+            if (!File.Exists(stepPath))
+            {
+                Console.Error.WriteLine("Missing original STEP: " + stepPath);
+                return 1;
+            }
+
+            StepWatermarkCleanerReport report = StepWatermarkCleaner.CleanWithReport(
+                File.ReadAllText(stepPath, Encoding.Latin1),
+                new StepWatermarkCleanerOptions());
+            Console.WriteLine(
+                modelName +
+                " removedSolids=" +
+                report.RemovedSolidCount.ToString(CultureInfo.InvariantCulture) +
+                " flattenedFaces=" +
+                report.FlattenedFaceCount.ToString(CultureInfo.InvariantCulture) +
+                " flattenedPoints=" +
+                report.FlattenedPointCount.ToString(CultureInfo.InvariantCulture) +
+                " recoloredFaces=" +
+                report.RecoloredFaceCount.ToString(CultureInfo.InvariantCulture) +
+                " removedGeometryBytes=" +
+                Encoding.Latin1.GetByteCount(report.RemovedGeometryStep ?? string.Empty).ToString(CultureInfo.InvariantCulture));
+            foreach (string diagnostic in report.Diagnostics ?? Array.Empty<string>())
+                Console.WriteLine(diagnostic);
+
+            if (report.DetectionReport != null)
+            {
+                Console.WriteLine("Detection report regions: " + report.DetectionReport.Regions.Count.ToString(CultureInfo.InvariantCulture));
+                foreach (StepWatermarkRegionDetection region in report.DetectionReport.Regions)
+                {
+                    Console.WriteLine(
+                        "  report-region kind=" +
+                        region.Kind +
+                        " view=" +
+                        region.ViewName +
+                        " entity=#" +
+                        region.EntityId.ToString(CultureInfo.InvariantCulture));
+                }
+
+                var projectionOptions = new StepProjectionOptions
+                {
+                    ImageSizePixels = VerificationProjectionImageSizePixels,
+                    PaddingPixels = VerificationProjectionPaddingPixels,
+                    WriteMetadata = false,
+                    SkipGeometryModelForExternalRender = true,
+                    MaxParallelFiles = 1
+                };
+                var verifiedReport = StepWatermarkCleaner.CreateVerifiedCleanupDetectionReport(report.DetectionReport);
+                IReadOnlyList<StepProjectionDetectionRegion> projectedRegions = StepProjectionRenderer.ProjectDetectionRegions(
+                    stepPath,
+                    verifiedReport,
+                    projectionOptions);
+                Console.WriteLine("Projected verified regions: " + projectedRegions.Count.ToString(CultureInfo.InvariantCulture));
+                foreach (StepProjectionDetectionRegion region in projectedRegions)
+                {
+                    Console.WriteLine(
+                        "  projected kind=" +
+                        region.Kind +
+                        " view=" +
+                        region.ViewName +
+                        " rect=[" +
+                        region.RectangleX.ToString(CultureInfo.InvariantCulture) +
+                        "," +
+                        region.RectangleY.ToString(CultureInfo.InvariantCulture) +
+                        " " +
+                        region.RectangleWidth.ToString(CultureInfo.InvariantCulture) +
+                        "x" +
+                        region.RectangleHeight.ToString(CultureInfo.InvariantCulture) +
+                        "]");
+                }
+            }
+
+            return 0;
+        }
+
+        private static bool StepBoundsProjectionIntersects(
+            StepBounds3d bounds,
+            int excludedAxis,
+            double uMin,
+            double uMax,
+            double vMin,
+            double vMax)
+        {
+            double minU;
+            double maxU;
+            double minV;
+            double maxV;
+            if (excludedAxis == 0)
+            {
+                minU = bounds.MinY;
+                maxU = bounds.MaxY;
+                minV = bounds.MinZ;
+                maxV = bounds.MaxZ;
+            }
+            else if (excludedAxis == 1)
+            {
+                minU = bounds.MinX;
+                maxU = bounds.MaxX;
+                minV = bounds.MinZ;
+                maxV = bounds.MaxZ;
+            }
+            else
+            {
+                minU = bounds.MinX;
+                maxU = bounds.MaxX;
+                minV = bounds.MinY;
+                maxV = bounds.MaxY;
+            }
+
+            return maxU >= uMin &&
+                minU <= uMax &&
+                maxV >= vMin &&
+                minV <= vMax;
+        }
+
+        private static int RunStepCleanerProfile(string[] args)
+        {
+            if (args.Length < 2)
+            {
+                Console.Error.WriteLine("Usage: StepCleaner.Tests --stepcleaner-profile <model.step>");
+                return 1;
+            }
+
+            string stepPath = ResolveOriginalStepPath(args[1]);
+            if (!File.Exists(stepPath))
+            {
+                Console.Error.WriteLine("Missing STEP model: " + stepPath);
+                return 1;
+            }
+
+            StepCleanerProfileResult profile = ProfileStepCleanerModel(stepPath, printDetails: true);
+            return profile == null ? 1 : 0;
+        }
+
+        private static int RunStepCleanerSpeedContract(string[] args)
+        {
+            if (args.Length < 2)
+            {
+                Console.Error.WriteLine("Usage: StepCleaner.Tests --stepcleaner-speed-contract <model.step>");
+                return 1;
+            }
+
+            string stepPath = ResolveOriginalStepPath(args[1]);
+            if (!File.Exists(stepPath))
+            {
+                Console.Error.WriteLine("Missing STEP model: " + stepPath);
+                return 1;
+            }
+
+            StepCleanerSpeedContractResult result = MeasureStepCleanerSpeedContract(stepPath);
+            var failures = new List<string>();
+            AddSpeedBudgetFailure(
+                failures,
+                "optimized_clean_with_report_ms",
+                result.CleanWithReportWithoutRemovedGeometryMs,
+                budgetMs: 120000);
+            AddSpeedBudgetFailure(
+                failures,
+                "scoped_visual_oracle_ms",
+                result.ScopedVisualOracleMs,
+                budgetMs: 18000);
+            if (result.RemovedGeometryByteCount != 0)
+                failures.Add("removed_geometry_bytes=" + result.RemovedGeometryByteCount.ToString(CultureInfo.InvariantCulture) + " expected=0");
+            if (result.CleanDetailTimings.ContainsKey("report_build_removed_geometry_step"))
+                failures.Add("report_build_removed_geometry_step timing was present in clean-only path");
+            if (result.VisualOracleFailureCount > 0)
+                failures.Add("scoped_visual_oracle_failures=" + result.VisualOracleFailureCount.ToString(CultureInfo.InvariantCulture));
+            if (result.DetectRegionCount <= 0)
+                failures.Add("detect_regions=0");
+            if (result.ScopedViewCount <= 0)
+                failures.Add("scoped_views=0");
+
+            if (failures.Count > 0)
+            {
+                Console.Error.WriteLine("StepCleaner speed contract failed.");
+                foreach (string failure in failures)
+                    Console.Error.WriteLine("  " + failure);
+                PrintStepCleanerSpeedContract(result);
+                return 1;
+            }
+
+            Console.WriteLine("StepCleaner speed contract passed.");
+            PrintStepCleanerSpeedContract(result);
+            return 0;
+        }
+
+        private static int RunFullRegressionParallelismContract()
+        {
+            string previous = Environment.GetEnvironmentVariable("STEPCLEANER_TEST_CLEANUP_PARALLELISM");
+            try
+            {
+                Environment.SetEnvironmentVariable("STEPCLEANER_TEST_CLEANUP_PARALLELISM", null);
+                int defaultParallelism = GetFullRegressionCleanupParallelism();
+                Environment.SetEnvironmentVariable("STEPCLEANER_TEST_CLEANUP_PARALLELISM", "1");
+                int singleParallelism = GetFullRegressionCleanupParallelism();
+                Environment.SetEnvironmentVariable("STEPCLEANER_TEST_CLEANUP_PARALLELISM", "99");
+                int clampedParallelism = GetFullRegressionCleanupParallelism();
+
+                Console.WriteLine("full_regression_cleanup_parallelism_default=" + defaultParallelism.ToString(CultureInfo.InvariantCulture));
+                Console.WriteLine("full_regression_cleanup_parallelism_override_1=" + singleParallelism.ToString(CultureInfo.InvariantCulture));
+                Console.WriteLine("full_regression_cleanup_parallelism_override_99=" + clampedParallelism.ToString(CultureInfo.InvariantCulture));
+
+                var failures = new List<string>();
+                int expectedDefault = Math.Min(2, Math.Max(1, Environment.ProcessorCount));
+                if (defaultParallelism != expectedDefault)
+                    failures.Add("default_parallelism=" + defaultParallelism.ToString(CultureInfo.InvariantCulture) + " expected=" + expectedDefault.ToString(CultureInfo.InvariantCulture));
+                if (singleParallelism != 1)
+                    failures.Add("override_1_parallelism=" + singleParallelism.ToString(CultureInfo.InvariantCulture) + " expected=1");
+                if (clampedParallelism < 1 || clampedParallelism > Environment.ProcessorCount)
+                    failures.Add("override_99_parallelism=" + clampedParallelism.ToString(CultureInfo.InvariantCulture) + " expected_between=1.." + Environment.ProcessorCount.ToString(CultureInfo.InvariantCulture));
+
+                if (failures.Count > 0)
+                {
+                    Console.Error.WriteLine("Full regression parallelism contract failed.");
+                    foreach (string failure in failures)
+                        Console.Error.WriteLine("  " + failure);
+                    return 1;
+                }
+
+                Console.WriteLine("Full regression parallelism contract passed.");
+                return 0;
+            }
+            finally
+            {
+                Environment.SetEnvironmentVariable("STEPCLEANER_TEST_CLEANUP_PARALLELISM", previous);
+            }
+        }
+
+        private static int RunDetectionDebugCacheCoverageContract()
+        {
+            string root = Path.Combine(FindRepoRoot(), ".codex-temp", "detection-debug-cache-coverage-contract");
+            if (Directory.Exists(root))
+                Directory.Delete(root, recursive: true);
+
+            string originalDirectory = Path.Combine(root, "Original");
+            string projectionDirectory = Path.Combine(root, "Projection");
+            string markedDirectory = Path.Combine(root, "Marked");
+            string detectionDirectory = Path.Combine(root, "Detection");
+            Directory.CreateDirectory(originalDirectory);
+            Directory.CreateDirectory(projectionDirectory);
+            Directory.CreateDirectory(markedDirectory);
+            Directory.CreateDirectory(detectionDirectory);
+
+            string originalFile = Path.Combine(originalDirectory, "Synthetic.step");
+            var originalFiles = new List<string> { originalFile };
+            var originalBaseNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "Synthetic" };
+            var cache = new FullTestDetectionCache();
+            cache.SetReport(
+                originalFile,
+                new StepWatermarkDetectionReport
+                {
+                    Regions = new List<StepWatermarkRegionDetection>
+                    {
+                        new StepWatermarkRegionDetection { ViewName = "x_plus", Kind = "text", RectangleX = 10, RectangleY = 10, RectangleWidth = 20, RectangleHeight = 20 },
+                        new StepWatermarkRegionDetection { ViewName = "y_plus", Kind = "text", RectangleX = 20, RectangleY = 20, RectangleWidth = 20, RectangleHeight = 20 }
+                    }
+                });
+            File.WriteAllBytes(Path.Combine(detectionDirectory, "Synthetic__x_plus.png"), Array.Empty<byte>());
+
+            var failures = new List<string>();
+            VerifyDetectionDebugImages(
+                originalFiles,
+                originalBaseNames,
+                projectionDirectory,
+                markedDirectory,
+                detectionDirectory,
+                cache,
+                regenerateImages: false,
+                failures);
+
+            if (failures.Count > 0)
+            {
+                Console.Error.WriteLine("Detection debug cache coverage contract failed.");
+                foreach (string failure in failures)
+                    Console.Error.WriteLine("  " + failure);
+                return 1;
+            }
+
+            Console.WriteLine("Detection debug cache coverage contract passed.");
+            return 0;
+        }
+
+        private static void AddSpeedBudgetFailure(List<string> failures, string name, long actualMs, long budgetMs)
+        {
+            if (actualMs > budgetMs)
+            {
+                failures.Add(
+                    name +
+                    "=" +
+                    actualMs.ToString(CultureInfo.InvariantCulture) +
+                    " budget_ms=" +
+                    budgetMs.ToString(CultureInfo.InvariantCulture));
+            }
+        }
+
+        private static StepCleanerSpeedContractResult MeasureStepCleanerSpeedContract(string stepPath)
+        {
+            string modelName = Path.GetFileNameWithoutExtension(stepPath);
+            byte[] originalStepBytes = File.ReadAllBytes(stepPath);
+            string stepText = Encoding.Latin1.GetString(originalStepBytes);
+            var result = new StepCleanerSpeedContractResult
+            {
+                ModelName = modelName,
+                ByteCount = originalStepBytes.Length
+            };
+
+            StepWatermarkCleanerReport cleanReport = null;
+            result.CleanWithReportWithoutRemovedGeometryMs = MeasureElapsedMilliseconds(() =>
+            {
+                cleanReport = StepWatermarkCleaner.CleanWithReport(
+                    stepText,
+                    new StepWatermarkCleanerOptions
+                    {
+                        BuildRemovedGeometryStep = false
+                    });
+            });
+
+            if (cleanReport == null)
+                return result;
+
+            result.CleanedStepByteCount = Encoding.Latin1.GetByteCount(cleanReport.CleanedStep ?? string.Empty);
+            result.RemovedGeometryByteCount = Encoding.Latin1.GetByteCount(cleanReport.RemovedGeometryStep ?? string.Empty);
+            result.DetectRegionCount = cleanReport.DetectionReport?.Regions?.Count ?? 0;
+            if (cleanReport.Timings != null)
+            {
+                foreach (StepWatermarkCleanerTiming timing in cleanReport.Timings)
+                {
+                    if (timing == null || string.IsNullOrWhiteSpace(timing.Name))
+                        continue;
+
+                    result.CleanDetailTimings[timing.Name] = timing.ElapsedMilliseconds;
+                }
+            }
+
+            List<string> scopedViewNames = cleanReport.DetectionReport?.Regions?
+                .Select(region => region.ViewName)
+                .Where(viewName => !string.IsNullOrWhiteSpace(viewName))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(viewName => viewName, StringComparer.OrdinalIgnoreCase)
+                .ToList() ?? new List<string>();
+            if (scopedViewNames.Count == 0)
+                scopedViewNames.AddRange(StepProjectionRenderer.ViewNames);
+
+            result.ScopedViewCount = scopedViewNames.Count;
+            result.ScopedViewNames.AddRange(scopedViewNames);
+
+            byte[] cleanStepBytes = Encoding.Latin1.GetBytes(cleanReport.CleanedStep ?? string.Empty);
+            IReadOnlyList<StepWatermarkVisualDetection> originalVisualDetections =
+                StepWatermarkVisualOracle.CreateOriginalDetections(cleanReport.DetectionReport, scopedViewNames);
+            result.ScopedVisualOracleMs = MeasureElapsedMilliseconds(() =>
+            {
+                StepWatermarkVisualResidualResult visualResult =
+                    StepWatermarkVisualOracle.VerifyKnownWatermarkRemoved(
+                        originalVisualDetections,
+                        cleanStepBytes,
+                        modelName + ".speed",
+                        scopedViewNames);
+                result.VisualOracleFailureCount = visualResult.Failures.Count;
+                result.VisualOracleOriginalDetectionCount = visualResult.OriginalDetections.Count;
+                result.VisualOracleResidualDetectionCount = visualResult.ResidualDetections.Count;
+            });
+
+            return result;
+        }
+
+        private static StepCleanerProfileResult ProfileStepCleanerModel(string stepPath, bool printDetails)
+        {
+            string modelName = Path.GetFileNameWithoutExtension(stepPath);
+            byte[] stepBytes = File.ReadAllBytes(stepPath);
+            string stepText = Encoding.Latin1.GetString(stepBytes);
+            var result = new StepCleanerProfileResult
+            {
+                ModelName = modelName,
+                ByteCount = stepBytes.Length
+            };
+
+            result.CleanerDetectOnlyMs = MeasureElapsedMilliseconds(() =>
+            {
+                StepWatermarkDetectionReport report = StepWatermarkCleaner.Detect(
+                    stepBytes,
+                    new StepWatermarkCleanerOptions());
+                result.DetectRegionCount = report.Regions.Count;
+            });
+
+            result.CleanWithoutRemovedGeometryMs = MeasureElapsedMilliseconds(() =>
+            {
+                byte[] cleanStep = StepWatermarkCleaner.Clean(
+                    stepBytes,
+                    new StepWatermarkCleanerOptions());
+                result.CleanedStepByteCount = cleanStep.Length;
+            });
+
+            StepWatermarkCleanerReport cleanReport = null;
+            result.CleanWithReportMs = MeasureElapsedMilliseconds(() =>
+            {
+                cleanReport = StepWatermarkCleaner.CleanWithReport(
+                    stepText,
+                    new StepWatermarkCleanerOptions());
+                result.RemovedGeometryByteCount = Encoding.Latin1.GetByteCount(cleanReport.RemovedGeometryStep ?? string.Empty);
+            });
+
+            if (cleanReport?.Timings != null)
+            {
+                foreach (StepWatermarkCleanerTiming timing in cleanReport.Timings)
+                {
+                    if (timing == null || string.IsNullOrWhiteSpace(timing.Name))
+                        continue;
+
+                    result.CleanDetailTimings[timing.Name] = timing.ElapsedMilliseconds;
+                }
+            }
+
+            result.VisualOracleAllViewsMs = MeasureElapsedMilliseconds(() =>
+            {
+                StepWatermarkVisualScanResult visual = StepWatermarkVisualOracle.DetectKnownWatermarks(
+                    stepBytes,
+                    modelName + ".profile");
+                result.VisualDetectionCount = visual.Detections.Count;
+            });
+
+            foreach (string viewName in StepProjectionRenderer.ViewNames)
+            {
+                result.VectorProjectDetectMsByView[viewName] = MeasureElapsedMilliseconds(() =>
+                {
+                    StepVectorWatermarkDetectionInput input = StepProjectionRenderer.ProjectVectorWatermarkDetectionInput(
+                        stepBytes,
+                        modelName + ".profile",
+                        viewName);
+                    IReadOnlyList<StepVectorWatermarkDetectionRegion> detections =
+                        StepVectorWatermarkProjectionDetector.Detect(
+                            input,
+                            new StepTextLogoDetectionOptions { DetectArbitraryText = false });
+                    result.VectorPrimitiveCountByView[viewName] = input.Primitives.Count;
+                    result.VectorDetectionCountByView[viewName] = detections.Count;
+                });
+            }
+
+            string projectionOutput = Path.Combine(
+                FindDataRoot(),
+                ".ProfileProjection");
+            Directory.CreateDirectory(projectionOutput);
+            result.ProjectFileAllViewsMs = MeasureElapsedMilliseconds(() =>
+            {
+                StepProjectionReport projectionReport = StepProjectionRenderer.ProjectFile(
+                    stepPath,
+                    projectionOutput,
+                    new StepProjectionOptions
+                    {
+                        ImageSizePixels = VerificationProjectionImageSizePixels,
+                        PaddingPixels = VerificationProjectionPaddingPixels,
+                        WriteMetadata = false,
+                        SkipGeometryModelForExternalRender = true,
+                        MaxParallelFiles = 1
+                    });
+                result.ProjectionOutputCount = projectionReport.OutputFiles.Count;
+            });
+
+            if (printDetails)
+                PrintStepCleanerProfile(result);
+            return result;
+        }
+
+        private static long MeasureElapsedMilliseconds(Action action)
+        {
+            Stopwatch stopwatch = Stopwatch.StartNew();
+            action();
+            stopwatch.Stop();
+            return stopwatch.ElapsedMilliseconds;
+        }
+
+        private static void PrintStepCleanerProfile(StepCleanerProfileResult profile)
+        {
+            if (profile == null)
+                return;
+
+            Console.WriteLine("profile_model=" + profile.ModelName);
+            Console.WriteLine("profile_bytes=" + profile.ByteCount.ToString(CultureInfo.InvariantCulture));
+            Console.WriteLine("profile_detect_regions=" + profile.DetectRegionCount.ToString(CultureInfo.InvariantCulture));
+            Console.WriteLine("profile_cleaned_step_bytes=" + profile.CleanedStepByteCount.ToString(CultureInfo.InvariantCulture));
+            Console.WriteLine("profile_removed_geometry_bytes=" + profile.RemovedGeometryByteCount.ToString(CultureInfo.InvariantCulture));
+            Console.WriteLine("profile_visual_detections=" + profile.VisualDetectionCount.ToString(CultureInfo.InvariantCulture));
+            Console.WriteLine("profile_projection_outputs=" + profile.ProjectionOutputCount.ToString(CultureInfo.InvariantCulture));
+            Console.WriteLine("profile_cleaner_detect_only_ms=" + profile.CleanerDetectOnlyMs.ToString(CultureInfo.InvariantCulture));
+            Console.WriteLine("profile_cleaner_clean_ms=" + profile.CleanWithoutRemovedGeometryMs.ToString(CultureInfo.InvariantCulture));
+            Console.WriteLine("profile_cleaner_clean_with_report_ms=" + profile.CleanWithReportMs.ToString(CultureInfo.InvariantCulture));
+            Console.WriteLine("profile_visual_oracle_all_views_ms=" + profile.VisualOracleAllViewsMs.ToString(CultureInfo.InvariantCulture));
+            Console.WriteLine("profile_project_file_all_views_ms=" + profile.ProjectFileAllViewsMs.ToString(CultureInfo.InvariantCulture));
+
+            foreach (var kvp in profile.CleanDetailTimings.OrderBy(kvp => kvp.Key, StringComparer.Ordinal))
+            {
+                Console.WriteLine(
+                    "profile_clean_detail_" +
+                    kvp.Key +
+                    "_ms=" +
+                    kvp.Value.ToString(CultureInfo.InvariantCulture));
+            }
+
+            foreach (string viewName in StepProjectionRenderer.ViewNames)
+            {
+                profile.VectorProjectDetectMsByView.TryGetValue(viewName, out long elapsedMs);
+                profile.VectorPrimitiveCountByView.TryGetValue(viewName, out int primitiveCount);
+                profile.VectorDetectionCountByView.TryGetValue(viewName, out int detectionCount);
+                Console.WriteLine(
+                    "profile_vector_project_detect_" +
+                    viewName +
+                    "_ms=" +
+                    elapsedMs.ToString(CultureInfo.InvariantCulture) +
+                    " primitives=" +
+                    primitiveCount.ToString(CultureInfo.InvariantCulture) +
+                    " detections=" +
+                    detectionCount.ToString(CultureInfo.InvariantCulture));
+            }
+        }
+
+        private static void PrintStepCleanerSpeedContract(StepCleanerSpeedContractResult result)
+        {
+            if (result == null)
+                return;
+
+            Console.WriteLine("speed_contract_model=" + result.ModelName);
+            Console.WriteLine("speed_contract_bytes=" + result.ByteCount.ToString(CultureInfo.InvariantCulture));
+            Console.WriteLine("speed_contract_detect_regions=" + result.DetectRegionCount.ToString(CultureInfo.InvariantCulture));
+            Console.WriteLine("speed_contract_scoped_views=" + string.Join(",", result.ScopedViewNames));
+            Console.WriteLine("speed_contract_scoped_view_count=" + result.ScopedViewCount.ToString(CultureInfo.InvariantCulture));
+            Console.WriteLine("speed_contract_cleaned_step_bytes=" + result.CleanedStepByteCount.ToString(CultureInfo.InvariantCulture));
+            Console.WriteLine("speed_contract_removed_geometry_bytes=" + result.RemovedGeometryByteCount.ToString(CultureInfo.InvariantCulture));
+            Console.WriteLine("speed_contract_clean_with_report_no_removed_geometry_ms=" + result.CleanWithReportWithoutRemovedGeometryMs.ToString(CultureInfo.InvariantCulture));
+            Console.WriteLine("speed_contract_scoped_visual_oracle_ms=" + result.ScopedVisualOracleMs.ToString(CultureInfo.InvariantCulture));
+            Console.WriteLine("speed_contract_visual_original_detections=" + result.VisualOracleOriginalDetectionCount.ToString(CultureInfo.InvariantCulture));
+            Console.WriteLine("speed_contract_visual_residual_detections=" + result.VisualOracleResidualDetectionCount.ToString(CultureInfo.InvariantCulture));
+            Console.WriteLine("speed_contract_visual_failures=" + result.VisualOracleFailureCount.ToString(CultureInfo.InvariantCulture));
+
+            foreach (var kvp in result.CleanDetailTimings.OrderBy(kvp => kvp.Key, StringComparer.Ordinal))
+            {
+                Console.WriteLine(
+                    "speed_contract_clean_detail_" +
+                    kvp.Key +
+                    "_ms=" +
+                    kvp.Value.ToString(CultureInfo.InvariantCulture));
+            }
+        }
+
+        private static string ResolveOriginalStepPath(string modelNameOrPath)
+        {
+            if (!string.IsNullOrWhiteSpace(modelNameOrPath) && File.Exists(modelNameOrPath))
+                return Path.GetFullPath(modelNameOrPath);
+
+            string modelName = modelNameOrPath.EndsWith(".step", StringComparison.OrdinalIgnoreCase) ||
+                modelNameOrPath.EndsWith(".stp", StringComparison.OrdinalIgnoreCase)
+                    ? Path.GetFileNameWithoutExtension(modelNameOrPath)
+                    : modelNameOrPath;
+            return Path.Combine(FindDataRoot(), "Original", modelName + ".step");
         }
 
         private static int RunVectorDetectionReportContractTests()
@@ -5170,11 +7134,25 @@ namespace StepCleaner.Tests
                 {
                     string[] headerColumns = ParseCsvLine(reportLines[0]).ToArray();
                     int markedRectsIndex = Array.IndexOf(headerColumns, "MarkedRects");
+                    int modelIndex = Array.IndexOf(headerColumns, "Model");
+                    int viewIndex = Array.IndexOf(headerColumns, "View");
+                    int logoBoxesIndex = Array.IndexOf(headerColumns, "LogoBoxes");
+                    int textBoxesIndex = Array.IndexOf(headerColumns, "TextBoxes");
+                    int cleanTextTextBoxesIndex = Array.IndexOf(headerColumns, "CleanTextTextBoxes");
                     int cleanTextCombinedStatusIndex = Array.IndexOf(headerColumns, "CleanTextCombinedStatus");
                     int cleanTextCombinedBoxesIndex = Array.IndexOf(headerColumns, "CleanTextCombinedBoxes");
-                    if (markedRectsIndex < 0 || cleanTextCombinedStatusIndex < 0 || cleanTextCombinedBoxesIndex < 0)
+                    int markedFileIndex = Array.IndexOf(headerColumns, "MarkedFile");
+                    if (markedRectsIndex < 0 ||
+                        modelIndex < 0 ||
+                        viewIndex < 0 ||
+                        logoBoxesIndex < 0 ||
+                        textBoxesIndex < 0 ||
+                        cleanTextTextBoxesIndex < 0 ||
+                        cleanTextCombinedStatusIndex < 0 ||
+                        cleanTextCombinedBoxesIndex < 0 ||
+                        markedFileIndex < 0)
                     {
-                        failures.Add("MarkedVsDetected CSV should include marked rects, CleanText combined status, and CleanText combined boxes columns.");
+                        failures.Add("MarkedVsDetected CSV should include model/view, marked rects, marked file, logo/text boxes, CleanText combined status, and CleanText combined boxes columns.");
                     }
                     else
                     {
@@ -5193,7 +7171,103 @@ namespace StepCleaner.Tests
                                 failures.Add("MarkedVsDetected CleanText combined status should be matched for all marked rows, got `" + columns[cleanTextCombinedStatusIndex] + "` in `" + line + "`.");
                             if (string.IsNullOrWhiteSpace(columns[cleanTextCombinedBoxesIndex]))
                                 failures.Add("MarkedVsDetected CleanText combined boxes should not be empty in `" + line + "`.");
+
+                            string model = columns[modelIndex];
+                            string view = columns[viewIndex];
+                            string logoBoxes = columns[logoBoxesIndex];
+                            string textBoxes = columns[textBoxesIndex];
+                            string cleanTextTextBoxes = columns[cleanTextTextBoxesIndex];
+                            if (string.Equals(model, "BUZ-TH_D9.0-H5.5-P4.0", StringComparison.OrdinalIgnoreCase) &&
+                                string.Equals(view, "z_plus", StringComparison.OrdinalIgnoreCase) &&
+                                logoBoxes.Contains("1291:649:109:347", StringComparison.Ordinal))
+                            {
+                                failures.Add("MarkedVsDetected should not report BUZ-TH_D9.0-H5.5-P4.0 z_plus expanded combined support as a logo box.");
+                            }
+
+                            if (string.Equals(model, "CONN-TH_MR30PB-M30.A.G.Y", StringComparison.OrdinalIgnoreCase) &&
+                                string.Equals(view, "y_plus", StringComparison.OrdinalIgnoreCase) &&
+                                textBoxes.Contains("615:544:349:109", StringComparison.Ordinal))
+                            {
+                                failures.Add("MarkedVsDetected should not report CONN-TH_MR30PB-M30.A.G.Y y_plus watermark-sized support as a text box.");
+                            }
+
+                            if (string.Equals(model, "BUZ-SMD_4P-L7.5-W7.5-H2.5", StringComparison.OrdinalIgnoreCase) &&
+                                string.Equals(view, "x_plus", StringComparison.OrdinalIgnoreCase))
+                            {
+                                if (string.IsNullOrWhiteSpace(logoBoxes))
+                                    failures.Add("MarkedVsDetected should expose a BUZ-SMD x_plus logo part instead of only text/combined boxes.");
+                                if (textBoxes.Contains("459:661:416:131", StringComparison.Ordinal))
+                                    failures.Add("MarkedVsDetected should not report BUZ-SMD x_plus full watermark support as a text box.");
+                            }
+
+                            if (string.Equals(model, "BUZ-SMD_4P-L7.5-W7.5-H2.5", StringComparison.OrdinalIgnoreCase) &&
+                                string.Equals(view, "z_minus", StringComparison.OrdinalIgnoreCase) &&
+                                cleanTextTextBoxes.Contains(";"))
+                            {
+                                failures.Add("MarkedVsDetected should report BUZ-SMD z_minus clean text as one merged clean-text rectangle.");
+                            }
+
+                            if (string.Equals(model, "BUZ-TH_D9.0-H5.5-P4.0", StringComparison.OrdinalIgnoreCase) &&
+                                string.Equals(view, "z_plus", StringComparison.OrdinalIgnoreCase) &&
+                                string.IsNullOrWhiteSpace(logoBoxes) &&
+                                string.IsNullOrWhiteSpace(textBoxes))
+                            {
+                                failures.Add("MarkedVsDetected should expose BUZ-TH z_plus display parts, not only an orange combined rectangle.");
+                            }
+
+                            if (string.Equals(model, "CONN-SMD_30P-P0.60_DF56C-30S-0.3V-51", StringComparison.OrdinalIgnoreCase) &&
+                                string.Equals(view, "z_minus", StringComparison.OrdinalIgnoreCase) &&
+                                !string.IsNullOrWhiteSpace(logoBoxes))
+                            {
+                                failures.Add("MarkedVsDetected should not report CONN-SMD_30P z_minus LCEDA text as a logo box.");
+                            }
+
+                            if (string.Equals(model, "CONN-SMD_30P-P0.60_DF56C-30S-0.3V-51", StringComparison.OrdinalIgnoreCase) &&
+                                string.Equals(view, "z_plus", StringComparison.OrdinalIgnoreCase) &&
+                                CountBoxes(textBoxes) < 2)
+                            {
+                                failures.Add("MarkedVsDetected should expose both LCEDA and EasyEDA text rows for CONN-SMD_30P z_plus.");
+                            }
+
+                            if (string.Equals(model, "CONN-SMD_DF56_40S_0.3V_51", StringComparison.OrdinalIgnoreCase) &&
+                                string.Equals(view, "x_plus", StringComparison.OrdinalIgnoreCase) &&
+                                CountBoxes(textBoxes) < 2)
+                            {
+                                failures.Add("MarkedVsDetected should expose both LCEDA and EasyEDA text rows for CONN-SMD_DF56_40S_0.3V_51 x_plus.");
+                            }
+
+                            if (string.Equals(model, "CONN-TH_MR30PW-M30-G-Y", StringComparison.OrdinalIgnoreCase) &&
+                                string.Equals(view, "z_plus", StringComparison.OrdinalIgnoreCase) &&
+                                CountBoxes(textBoxes) < 2)
+                            {
+                                failures.Add("MarkedVsDetected should expose both LCEDA and EasyEDA text rows for CONN-TH_MR30PW-M30-G-Y z_plus.");
+                            }
                         }
+                    }
+
+                    var markedModels = new HashSet<string>(
+                        reportLines
+                            .Skip(1)
+                            .Select(line => ParseCsvLine(line).ToArray())
+                            .Where(columns => columns.Length > Math.Max(modelIndex, markedRectsIndex))
+                            .Where(columns => int.TryParse(columns[markedRectsIndex], NumberStyles.Integer, CultureInfo.InvariantCulture, out int count) && count > 0)
+                            .Select(columns => columns[modelIndex]),
+                        StringComparer.OrdinalIgnoreCase);
+                    foreach (string line in reportLines.Skip(1))
+                    {
+                        string[] columns = ParseCsvLine(line).ToArray();
+                        if (columns.Length <= Math.Max(Math.Max(modelIndex, markedRectsIndex), markedFileIndex))
+                            continue;
+                        if (!int.TryParse(columns[markedRectsIndex], NumberStyles.Integer, CultureInfo.InvariantCulture, out int markedRects) ||
+                            markedRects != 0)
+                        {
+                            continue;
+                        }
+                        if (!string.IsNullOrWhiteSpace(columns[markedFileIndex]))
+                            continue;
+
+                        if (markedModels.Contains(columns[modelIndex]))
+                            failures.Add("MarkedVsDetected should not add unmarked projection-side rows for marked model `" + columns[modelIndex] + "`.");
                     }
                 }
             }
@@ -5284,6 +7358,14 @@ namespace StepCleaner.Tests
             return columns;
         }
 
+        private static int CountBoxes(string boxes)
+        {
+            if (string.IsNullOrWhiteSpace(boxes))
+                return 0;
+
+            return boxes.Split(new[] { ';' }, StringSplitOptions.RemoveEmptyEntries).Length;
+        }
+
         private static int RunVectorDetectionQualityContractTests()
         {
             string dataRoot = FindDataRoot();
@@ -5296,11 +7378,18 @@ namespace StepCleaner.Tests
             {
                 if (buz.Y > 670 || buz.Height < 320)
                     failures.Add("BUZ-TH_D9.0-H5.5-P4.0 z_plus should include the stacked logo/text vector support, got " + FormatBounds(buz.X, buz.Y, buz.Width, buz.Height) + ".");
+                if (string.Equals(buz.Kind, "logo", StringComparison.OrdinalIgnoreCase))
+                    failures.Add("BUZ-TH_D9.0-H5.5-P4.0 z_plus stacked logo/text support should not be exposed as a logo-only region.");
             }
 
             AssertVectorTextLabels(originalDirectory, "CONN-TH_MR30PW-M30-G-Y", "z_plus", failures);
             AssertVectorTextLabels(originalDirectory, "SOT-89-3_L4.3-W2.5-H1.6-LS4.1-P1.50", "x_plus", failures);
             AssertVectorTextLabels(originalDirectory, "LED-SMD_XL-3838UV2SA06G3", "y_minus", failures);
+            AssertVectorLcedaCoverage(originalDirectory, "USB-A-SMD_USB-212-BCW", "y_plus", maxX: 1120, minWidth: 260, failures);
+            AssertVectorLcedaCoverage(originalDirectory, "CONN-TH_MR30PW-M30-G-Y", "z_plus", maxX: 780, minWidth: 320, failures);
+            AssertVectorLcedaCoverage(originalDirectory, "SOT-89-3_L4.3-W2.5-H1.6-LS4.1-P1.50", "x_plus", maxX: 790, minWidth: 280, failures);
+            AssertVectorLcedaCoverage(originalDirectory, "CONN-SMD_30P-P0.60_DF56C-30S-0.3V-51", "z_plus", maxX: 817, minWidth: 70, maxY: 852, failures);
+            AssertVectorLcedaCoverage(originalDirectory, "CONN-SMD_DF56_40S_0.3V_51", "x_plus", maxX: 364, minWidth: 220, maxY: 990, failures);
 
             StepVectorWatermarkDetectionRegion usbC =
                 SingleVectorWatermark(originalDirectory, "USB-C-SMD_TYPE-C-6PIN-2MD-073", "z_minus", failures);
@@ -5341,6 +7430,866 @@ namespace StepCleaner.Tests
 
             Console.WriteLine("Vector detection quality contract passed.");
             return 0;
+        }
+
+        private static int RunVectorPrismCleanupContractTests()
+        {
+            string dataRoot = FindDataRoot();
+            string originalDirectory = Path.Combine(dataRoot, "Original");
+            string verificationRoot = Path.Combine(dataRoot, "VectorPrismCleanupVerification");
+            var failures = new List<string>();
+            var fixtureNames = new[]
+            {
+                "SOT-223-4P_L6.5-W3.5-H1.6-LS7.0-P2.30.step"
+            };
+
+            foreach (string fixtureName in fixtureNames)
+            {
+                string inputPath = Path.Combine(originalDirectory, fixtureName);
+                if (!File.Exists(inputPath))
+                {
+                    failures.Add("Missing vector prism cleanup fixture: " + inputPath);
+                    continue;
+                }
+
+                try
+                {
+                    byte[] originalBytes = File.ReadAllBytes(inputPath);
+                    StepWatermarkCleanerReport cleanReport = StepWatermarkCleaner.CleanWithReport(
+                        Encoding.Latin1.GetString(originalBytes),
+                        new StepWatermarkCleanerOptions());
+                    VerifyVectorPrismCleanupRemovesRetainedInnerBounds(
+                        fixtureName,
+                        originalBytes,
+                        cleanReport.CleanedStep,
+                        failures);
+
+                    StepWatermarkCleanVerifier.CleanOrThrowWithReport(
+                        originalBytes,
+                        fixtureName,
+                        Path.Combine(verificationRoot, Path.GetFileNameWithoutExtension(fixtureName)));
+                }
+                catch (StepWatermarkCleanFailedException ex)
+                {
+                    failures.Add(
+                        fixtureName +
+                        " should clean only inside vector prism regions and pass post-clean verification. Report: " +
+                        ex.ReportPath +
+                        ". Failures: " +
+                        string.Join(" | ", ex.Failures));
+                }
+            }
+
+            if (failures.Count > 0)
+            {
+                Console.Error.WriteLine("Vector prism cleanup contract failed.");
+                foreach (string failure in failures)
+                    Console.Error.WriteLine("  " + failure);
+                return 1;
+            }
+
+            Console.WriteLine("Vector prism cleanup contract passed.");
+            return 0;
+        }
+
+        private static int RunVectorPrismRetainedBoundContractTests()
+        {
+            string dataRoot = FindDataRoot();
+            string inputPath = Path.Combine(
+                dataRoot,
+                "Original",
+                "SOT-223-4P_L6.5-W3.5-H1.6-LS7.0-P2.30.step");
+            var failures = new List<string>();
+            if (!File.Exists(inputPath))
+            {
+                failures.Add("Missing vector prism retained-bound fixture: " + inputPath);
+            }
+            else
+            {
+                byte[] originalBytes = File.ReadAllBytes(inputPath);
+                StepWatermarkCleanerReport cleanReport = StepWatermarkCleaner.CleanWithReport(
+                    Encoding.Latin1.GetString(originalBytes),
+                    new StepWatermarkCleanerOptions());
+                VerifyVectorPrismCleanupRemovesRetainedInnerBounds(
+                    Path.GetFileName(inputPath),
+                    originalBytes,
+                    cleanReport.CleanedStep,
+                    failures);
+            }
+
+            if (failures.Count > 0)
+            {
+                Console.Error.WriteLine("Vector prism retained-bound contract failed.");
+                foreach (string failure in failures)
+                    Console.Error.WriteLine("  " + failure);
+                return 1;
+            }
+
+            Console.WriteLine("Vector prism retained-bound contract passed.");
+            return 0;
+        }
+
+        private static int RunDetectionBoxCleanupContractTests()
+        {
+            string dataRoot = FindDataRoot();
+            string inputPath = Path.Combine(
+                dataRoot,
+                "Original",
+                "SOT-89-3_L4.3-W2.5-H1.6-LS4.1-P1.50.step");
+            string verificationRoot = Path.Combine(dataRoot, "DetectionBoxCleanupVerification");
+            var failures = new List<string>();
+            if (!File.Exists(inputPath))
+            {
+                failures.Add("Missing detection-box cleanup fixture: " + inputPath);
+            }
+            else
+            {
+                try
+                {
+                    byte[] originalBytes = File.ReadAllBytes(inputPath);
+                    StepWatermarkCleanVerifier.CleanOrThrowWithReport(
+                        originalBytes,
+                        Path.GetFileName(inputPath),
+                        Path.Combine(verificationRoot, Path.GetFileNameWithoutExtension(inputPath)));
+
+                    AssertNoResidualKnownVectorWatermark(
+                        inputPath,
+                        "x_plus",
+                        failures);
+                }
+                catch (StepWatermarkCleanFailedException ex)
+                {
+                    failures.Add(
+                        Path.GetFileName(inputPath) +
+                        " should clean only inside the x_plus 3D detection box and pass post-clean verification. Report: " +
+                        ex.ReportPath +
+                        ". Failures: " +
+                        string.Join(" | ", ex.Failures));
+                }
+            }
+
+            if (failures.Count > 0)
+            {
+                Console.Error.WriteLine("Detection-box cleanup contract failed.");
+                foreach (string failure in failures)
+                    Console.Error.WriteLine("  " + failure);
+                return 1;
+            }
+
+            Console.WriteLine("Detection-box cleanup contract passed.");
+            return 0;
+        }
+
+        private static int RunResidualEdgeCleanupContractTests()
+        {
+            string dataRoot = FindDataRoot();
+            string inputPath = Path.Combine(
+                dataRoot,
+                "Original",
+                "LED-SMD_XL-3838UV2SA06G3.step");
+            string verificationRoot = Path.Combine(dataRoot, "ResidualEdgeCleanupVerification");
+            var failures = new List<string>();
+            if (!File.Exists(inputPath))
+            {
+                failures.Add("Missing residual-edge cleanup fixture: " + inputPath);
+            }
+            else
+            {
+                try
+                {
+                    StepWatermarkCleanVerifierResult cleanResult = StepWatermarkCleanVerifier.CleanOrThrowWithReport(
+                        File.ReadAllBytes(inputPath),
+                        Path.GetFileName(inputPath),
+                        Path.Combine(verificationRoot, Path.GetFileNameWithoutExtension(inputPath)));
+                    AssertNoResidualArbitraryTextInsideOriginalWatermarkRegion(
+                        inputPath,
+                        cleanResult.CleanStep,
+                        "y_minus",
+                        failures);
+                }
+                catch (StepWatermarkCleanFailedException ex)
+                {
+                    failures.Add(
+                        Path.GetFileName(inputPath) +
+                        " should remove residual text/logo edge contours inside detected boxes. Report: " +
+                        ex.ReportPath +
+                        ". Failures: " +
+                        string.Join(" | ", ex.Failures));
+                }
+            }
+
+            if (failures.Count > 0)
+            {
+                Console.Error.WriteLine("Residual-edge cleanup contract failed.");
+                foreach (string failure in failures)
+                    Console.Error.WriteLine("  " + failure);
+                return 1;
+            }
+
+            Console.WriteLine("Residual-edge cleanup contract passed.");
+            return 0;
+        }
+
+        private static void AssertNoResidualArbitraryTextInsideOriginalWatermarkRegion(
+            string inputPath,
+            byte[] cleanStep,
+            string viewName,
+            List<string> failures)
+        {
+            string modelName = Path.GetFileNameWithoutExtension(inputPath);
+            StepVectorWatermarkDetectionInput originalInput =
+                StepProjectionRenderer.ProjectVectorWatermarkDetectionInput(
+                    File.ReadAllBytes(inputPath),
+                    modelName,
+                    viewName);
+            List<StepVectorWatermarkDetectionRegion> originalWatermarks =
+                StepVectorWatermarkProjectionDetector
+                    .Detect(originalInput, new StepTextLogoDetectionOptions { DetectArbitraryText = false })
+                    .Where(IsKnownVectorWatermarkDetection)
+                    .ToList();
+            if (originalWatermarks.Count == 0)
+            {
+                failures.Add(Path.GetFileName(inputPath) + " should have an original vector watermark on " + viewName + ".");
+                return;
+            }
+
+            StepVectorWatermarkDetectionInput cleanInput =
+                StepProjectionRenderer.ProjectVectorWatermarkDetectionInput(
+                    cleanStep,
+                    modelName,
+                    viewName);
+            List<StepVectorWatermarkDetectionRegion> residualText =
+                StepVectorWatermarkProjectionDetector
+                    .Detect(cleanInput, new StepTextLogoDetectionOptions { DetectArbitraryText = true })
+                    .Where(detection => string.Equals(detection.Kind, "text", StringComparison.OrdinalIgnoreCase))
+                    .Where(detection => !IsKnownVectorWatermarkDetection(detection))
+                    .Where(detection => originalWatermarks.Any(original => DetectionInsidePaddedRegion(detection, original, 8)))
+                    .ToList();
+            if (residualText.Count == 0)
+                return;
+
+            failures.Add(
+                Path.GetFileName(inputPath) +
+                " still has arbitrary text contours inside the original " +
+                viewName +
+                " watermark detection box after cleanup: " +
+                string.Join("; ", residualText.Select(detection =>
+                    FormatBounds(detection.X, detection.Y, detection.Width, detection.Height) +
+                    " score=" +
+                    detection.Score.ToString("0.000", CultureInfo.InvariantCulture))));
+        }
+
+        private static int RunVectorPrismTopologyRewriteContractTests()
+        {
+            string dataRoot = FindDataRoot();
+            string originalDirectory = Path.Combine(dataRoot, "Original");
+            var cases = new[]
+            {
+                new { ModelName = "SOT-89-3_L4.3-W2.5-H1.6-LS4.1-P1.50", ViewName = "x_plus" },
+                new { ModelName = "LED-SMD_XL-3838UV2SA06G3", ViewName = "y_minus" },
+                new { ModelName = "LED-SMD_XL-3838UV2SA06G3", ViewName = "z_minus" }
+            };
+            var failures = new List<string>();
+
+            foreach (var testCase in cases)
+            {
+                string inputPath = Path.Combine(originalDirectory, testCase.ModelName + ".step");
+                if (!File.Exists(inputPath))
+                {
+                    failures.Add("Missing topology rewrite fixture: " + inputPath);
+                    continue;
+                }
+
+                byte[] originalBytes = File.ReadAllBytes(inputPath);
+                StepWatermarkCleanerReport report = StepWatermarkCleaner.CleanWithReport(
+                    Encoding.Latin1.GetString(originalBytes),
+                    new StepWatermarkCleanerOptions());
+                List<VectorPrismTopologyRewritePlan> plans = BuildResidualTopologyRewritePlans(
+                    report.CleanedStep,
+                    testCase.ModelName,
+                    testCase.ViewName);
+
+                if (plans.Count == 0)
+                {
+                    Console.WriteLine(
+                        "rewrite-case model=" +
+                        testCase.ModelName +
+                        " view=" +
+                        testCase.ViewName +
+                        " residuals=0");
+                    continue;
+                }
+
+                Console.WriteLine(
+                    "rewrite-case model=" +
+                    testCase.ModelName +
+                    " view=" +
+                    testCase.ViewName +
+                    " residualPlans=" +
+                    plans.Count.ToString(CultureInfo.InvariantCulture));
+                foreach (VectorPrismTopologyRewritePlan plan in plans)
+                    DumpVectorPrismTopologyRewritePlan(plan);
+
+                failures.Add(
+                    testCase.ModelName +
+                    " " +
+                    testCase.ViewName +
+                    " still has residual vector topology requiring rewrite; see printed plan.");
+            }
+
+            if (failures.Count > 0)
+            {
+                Console.Error.WriteLine("Vector prism topology rewrite contract failed.");
+                foreach (string failure in failures)
+                    Console.Error.WriteLine("  " + failure);
+                return 1;
+            }
+
+            Console.WriteLine("Vector prism topology rewrite contract passed.");
+            return 0;
+        }
+
+        private static int RunStepEntityAppendContractTests()
+        {
+            var failures = new List<string>();
+            Type cleanerType = typeof(StepWatermarkCleaner);
+            Type stepDataType = cleanerType.GetNestedType("StepData", BindingFlags.NonPublic);
+            if (stepDataType == null)
+            {
+                failures.Add("StepData private edit layer was not found.");
+                return PrintStepEntityAppendContractResult(failures);
+            }
+
+            MethodInfo parseMethod = stepDataType.GetMethod("Parse", BindingFlags.Public | BindingFlags.Static);
+            MethodInfo applyMethod = stepDataType
+                .GetMethods(BindingFlags.Public | BindingFlags.Instance)
+                .FirstOrDefault(method =>
+                    string.Equals(method.Name, "ApplyDefinitionEdits", StringComparison.Ordinal) &&
+                    method.GetParameters().Length == 3);
+            if (parseMethod == null)
+                failures.Add("StepData.Parse is missing.");
+            if (applyMethod == null)
+                failures.Add("StepData.ApplyDefinitionEdits append overload is missing.");
+            if (failures.Count > 0)
+                return PrintStepEntityAppendContractResult(failures);
+
+            const string originalStep =
+                "ISO-10303-21;\r\n" +
+                "HEADER;\r\n" +
+                "ENDSEC;\r\n" +
+                "DATA;\r\n" +
+                "#7 = CARTESIAN_POINT('', (0., 0., 0.));\r\n" +
+                "ENDSEC;\r\n" +
+                "END-ISO-10303-21;\r\n";
+            object stepData = parseMethod.Invoke(null, new object[] { originalStep });
+            var appendedDefinitions = new[]
+            {
+                "CARTESIAN_POINT('', (1., 2., 3.))"
+            };
+            string editedStep = (string)applyMethod.Invoke(
+                stepData,
+                new object[] { null, null, appendedDefinitions });
+
+            int appendedEntityIndex = editedStep.IndexOf(
+                "#8 = CARTESIAN_POINT('', (1., 2., 3.)) ;",
+                StringComparison.Ordinal);
+            int dataEndIndex = editedStep.LastIndexOf("ENDSEC;", StringComparison.Ordinal);
+            int fileEndIndex = editedStep.LastIndexOf("END-ISO-10303-21;", StringComparison.Ordinal);
+            if (appendedEntityIndex < 0)
+                failures.Add("Append overload should allocate the next STEP entity id and write the generated definition.");
+            if (appendedEntityIndex >= 0 && dataEndIndex >= 0 && appendedEntityIndex > dataEndIndex)
+                failures.Add("Generated STEP entity should be inserted inside the DATA section before ENDSEC.");
+            if (dataEndIndex < 0 || fileEndIndex < 0 || dataEndIndex > fileEndIndex)
+                failures.Add("Edited STEP should preserve DATA ENDSEC before END-ISO-10303-21.");
+            if (!editedStep.Contains("#7 = CARTESIAN_POINT('', (0., 0., 0.));", StringComparison.Ordinal))
+                failures.Add("Append-only edit should preserve existing entities.");
+
+            return PrintStepEntityAppendContractResult(failures);
+        }
+
+        private static int PrintStepEntityAppendContractResult(List<string> failures)
+        {
+            if (failures.Count > 0)
+            {
+                Console.Error.WriteLine("STEP entity append contract failed.");
+                foreach (string failure in failures)
+                    Console.Error.WriteLine("  " + failure);
+                return 1;
+            }
+
+            Console.WriteLine("STEP entity append contract passed.");
+            return 0;
+        }
+
+        private static List<VectorPrismTopologyRewritePlan> BuildResidualTopologyRewritePlans(
+            string cleanedStep,
+            string modelName,
+            string viewName)
+        {
+            byte[] cleanedBytes = Encoding.Latin1.GetBytes(cleanedStep);
+            StepVectorWatermarkDetectionInput input =
+                StepProjectionRenderer.ProjectVectorWatermarkDetectionInput(
+                    cleanedBytes,
+                    modelName,
+                    viewName);
+            IReadOnlyList<StepVectorWatermarkDetectionRegion> detections =
+                StepVectorWatermarkProjectionDetector
+                    .Detect(input, new StepTextLogoDetectionOptions { DetectArbitraryText = false })
+                    .Where(IsKnownVectorWatermarkDetection)
+                    .ToList();
+            if (detections.Count == 0)
+                return new List<VectorPrismTopologyRewritePlan>();
+
+            Dictionary<int, string> entities = ParseStepEntityDefinitions(cleanedStep);
+            var boundsById = new Dictionary<int, StepBounds3d>();
+            StepBounds3d modelBounds = GetActiveModelBounds(cleanedStep, entities, boundsById);
+            List<ProjectedStepTopologySource> topology =
+                BuildProjectedStepTopologySources(cleanedStep, viewName);
+            var result = new List<VectorPrismTopologyRewritePlan>();
+            foreach (StepVectorWatermarkDetectionRegion detection in detections)
+            {
+                VectorPrismDetectionBox box = CreateVectorPrismDetectionBox(input, detection, modelBounds, viewName);
+                StepProjectionBounds2d projectionBounds = ToProjectionBounds(input, detection, paddingPixels: 6);
+                List<ProjectedStepTopologySource> detectionTopology = topology
+                    .Where(source => ProjectedSourceIntersectsRoi(source, projectionBounds, 0.02))
+                    .ToList();
+                List<ResidualPrimitiveSourceMatch> matches = input.Primitives
+                    .Where(primitive => primitive.ImageBounds != null && VectorPrimitiveIntersectsDetection(primitive, detection))
+                    .Select(primitive => MatchResidualPrimitiveSource(primitive, detectionTopology))
+                    .ToList();
+                result.Add(BuildVectorPrismTopologyRewritePlan(
+                    detection,
+                    box,
+                    matches,
+                    entities,
+                    boundsById));
+            }
+
+            return result;
+        }
+
+        private static bool ProjectedSourceIntersectsRoi(
+            ProjectedStepTopologySource source,
+            StepProjectionBounds2d roi,
+            double padding)
+        {
+            if (source == null || source.Points == null || source.Points.Count == 0)
+                return false;
+
+            double minU = source.Points.Min(point => point.U);
+            double maxU = source.Points.Max(point => point.U);
+            double minV = source.Points.Min(point => point.V);
+            double maxV = source.Points.Max(point => point.V);
+            return minU <= roi.UMax + padding &&
+                maxU >= roi.UMin - padding &&
+                minV <= roi.VMax + padding &&
+                maxV >= roi.VMin - padding;
+        }
+
+        private static VectorPrismTopologyRewritePlan BuildVectorPrismTopologyRewritePlan(
+            StepVectorWatermarkDetectionRegion detection,
+            VectorPrismDetectionBox box,
+            IReadOnlyList<ResidualPrimitiveSourceMatch> matches,
+            IReadOnlyDictionary<int, string> entities,
+            Dictionary<int, StepBounds3d> boundsById)
+        {
+            var plan = new VectorPrismTopologyRewritePlan
+            {
+                Box = box,
+                TemplateName = detection.TemplateName ?? string.Empty,
+                ResidualPrimitiveCount = matches.Count,
+                UnknownPrimitiveCount = matches.Count(match => match.Source == null)
+            };
+
+            List<ProjectedStepTopologySource> sources = matches
+                .Where(match => match.Source != null)
+                .Select(match => match.Source)
+                .GroupBy(source => source.Key, StringComparer.Ordinal)
+                .Select(group => group.First())
+                .ToList();
+            ProjectedStepTopologySource dominantSource = sources
+                .GroupBy(source => source.FaceId)
+                .OrderByDescending(group => group.Count())
+                .Select(group => group.First())
+                .FirstOrDefault();
+            if (dominantSource != null)
+            {
+                plan.HostFaceId = dominantSource.FaceId;
+                plan.OwnerId = FindClosedShellOwnerForFace(entities, dominantSource.FaceId);
+            }
+
+            foreach (ProjectedStepTopologySource source in sources)
+            {
+                StepBounds3d faceBounds = GetStepEntityBounds(source.FaceId, entities, boundsById);
+                StepBounds3d boundBounds = GetStepEntityBounds(source.BoundId, entities, boundsById);
+                string boundType = entities.TryGetValue(source.BoundId, out string boundDefinition)
+                    ? GetStepEntityType(boundDefinition)
+                    : string.Empty;
+
+                if (StepBoundsInsideDetectionBox(faceBounds, box, 0.006))
+                {
+                    if (!plan.FaceIdsToRemove.Contains(source.FaceId))
+                        plan.FaceIdsToRemove.Add(source.FaceId);
+                    continue;
+                }
+
+                if (string.Equals(boundType, "FACE_BOUND", StringComparison.OrdinalIgnoreCase) &&
+                    StepBoundsInsideDetectionBox(boundBounds, box, 0.006))
+                {
+                    if (!plan.FaceBoundsToRemove.TryGetValue(source.FaceId, out HashSet<int> boundIds))
+                    {
+                        boundIds = new HashSet<int>();
+                        plan.FaceBoundsToRemove.Add(source.FaceId, boundIds);
+                    }
+
+                    boundIds.Add(source.BoundId);
+                    continue;
+                }
+
+                plan.BlockedSources.Add(
+                    "face=#" +
+                    source.FaceId.ToString(CultureInfo.InvariantCulture) +
+                    " bound=#" +
+                    source.BoundId.ToString(CultureInfo.InvariantCulture) +
+                    " edge=#" +
+                    source.EdgeCurveId.ToString(CultureInfo.InvariantCulture) +
+                    " crosses detection box");
+            }
+
+            if (plan.UnknownPrimitiveCount > Math.Max(1, plan.ResidualPrimitiveCount / 10))
+                plan.BlockedSources.Add("unknown residual primitive provenance exceeds 10 percent");
+
+            if (plan.FaceBoundsToRemove.Count > 0 && plan.FaceIdsToRemove.Count == 0 && plan.BlockedSources.Count == 0)
+            {
+                plan.RequiresPlanarFillPatch = false;
+                plan.Reason = "contained retained FACE_BOUND removal should erase residual contours";
+            }
+            else if (plan.FaceIdsToRemove.Count > 0 && plan.BlockedSources.Count == 0)
+            {
+                plan.RequiresPlanarFillPatch = true;
+                plan.Reason = "contained residual faces need replacement of the host surface patch";
+            }
+            else
+            {
+                plan.RequiresPlanarFillPatch = false;
+                plan.Reason = "blocked by crossing or unknown residual topology";
+            }
+
+            plan.FaceIdsToRemove.Sort();
+            return plan;
+        }
+
+        private static void DumpVectorPrismTopologyRewritePlan(VectorPrismTopologyRewritePlan plan)
+        {
+            Console.WriteLine(
+                "rewrite-plan template=" +
+                plan.TemplateName +
+                " owner=#" +
+                plan.OwnerId.ToString(CultureInfo.InvariantCulture) +
+                " hostFace=#" +
+                plan.HostFaceId.ToString(CultureInfo.InvariantCulture) +
+                " residualPrimitives=" +
+                plan.ResidualPrimitiveCount.ToString(CultureInfo.InvariantCulture) +
+                " unknown=" +
+                plan.UnknownPrimitiveCount.ToString(CultureInfo.InvariantCulture) +
+                " removeFaces=" +
+                plan.FaceIdsToRemove.Count.ToString(CultureInfo.InvariantCulture) +
+                " removeBounds=" +
+                plan.FaceBoundsToRemove.Sum(kvp => kvp.Value.Count).ToString(CultureInfo.InvariantCulture) +
+                " requiresPlanarFillPatch=" +
+                plan.RequiresPlanarFillPatch.ToString(CultureInfo.InvariantCulture) +
+                " reason=" +
+                plan.Reason);
+            Console.WriteLine(
+                "box view=" +
+                plan.Box.ViewName +
+                " bounds=[" +
+                plan.Box.Bounds.MinX.ToString("G6", CultureInfo.InvariantCulture) + "," +
+                plan.Box.Bounds.MinY.ToString("G6", CultureInfo.InvariantCulture) + "," +
+                plan.Box.Bounds.MinZ.ToString("G6", CultureInfo.InvariantCulture) + " -> " +
+                plan.Box.Bounds.MaxX.ToString("G6", CultureInfo.InvariantCulture) + "," +
+                plan.Box.Bounds.MaxY.ToString("G6", CultureInfo.InvariantCulture) + "," +
+                plan.Box.Bounds.MaxZ.ToString("G6", CultureInfo.InvariantCulture) + "]");
+            foreach (int faceId in plan.FaceIdsToRemove.Take(24))
+                Console.WriteLine("remove-face #" + faceId.ToString(CultureInfo.InvariantCulture));
+            foreach (KeyValuePair<int, HashSet<int>> kvp in plan.FaceBoundsToRemove.OrderBy(kvp => kvp.Key))
+            {
+                Console.WriteLine(
+                    "remove-bounds face=#" +
+                    kvp.Key.ToString(CultureInfo.InvariantCulture) +
+                    " bounds=" +
+                    string.Join(",", kvp.Value.OrderBy(id => id).Take(24).Select(id => "#" + id.ToString(CultureInfo.InvariantCulture))));
+            }
+
+            foreach (string blockedSource in plan.BlockedSources.Take(24))
+                Console.WriteLine("blocked " + blockedSource);
+        }
+
+        private static void AssertNoResidualKnownVectorWatermark(
+            string inputPath,
+            string viewName,
+            List<string> failures)
+        {
+            byte[] originalBytes = File.ReadAllBytes(inputPath);
+            StepWatermarkCleanerReport report = StepWatermarkCleaner.CleanWithReport(
+                Encoding.Latin1.GetString(originalBytes),
+                new StepWatermarkCleanerOptions());
+            StepVectorWatermarkDetectionInput cleanInput =
+                StepProjectionRenderer.ProjectVectorWatermarkDetectionInput(
+                    Encoding.Latin1.GetBytes(report.CleanedStep),
+                    Path.GetFileNameWithoutExtension(inputPath),
+                    viewName);
+            IReadOnlyList<StepVectorWatermarkDetectionRegion> residuals =
+                StepVectorWatermarkProjectionDetector
+                    .Detect(cleanInput, new StepTextLogoDetectionOptions { DetectArbitraryText = false })
+                    .Where(IsKnownVectorWatermarkDetection)
+                    .ToList();
+            if (residuals.Count == 0)
+                return;
+
+            failures.Add(
+                Path.GetFileName(inputPath) +
+                " still has known vector watermark detections after cleanup on " +
+                viewName +
+                ": " +
+                string.Join(
+                    "; ",
+                    residuals.Select(detection =>
+                        detection.Kind +
+                        "/" +
+                        detection.TemplateName +
+                        " " +
+                        FormatBounds(detection.X, detection.Y, detection.Width, detection.Height) +
+                        " score=" +
+                        detection.Score.ToString("0.000", CultureInfo.InvariantCulture))));
+        }
+
+        private static void VerifyVectorPrismCleanupRemovesRetainedInnerBounds(
+            string fixtureName,
+            byte[] originalBytes,
+            string cleanedStep,
+            List<string> failures)
+        {
+            string modelName = Path.GetFileNameWithoutExtension(fixtureName);
+            StepVectorWatermarkDetectionInput input =
+                StepProjectionRenderer.ProjectVectorWatermarkDetectionInput(
+                    originalBytes,
+                    modelName,
+                    "z_plus");
+            StepVectorWatermarkDetectionRegion detection = StepVectorWatermarkProjectionDetector
+                .Detect(input, new StepTextLogoDetectionOptions { DetectArbitraryText = false })
+                .Where(IsKnownVectorWatermarkDetection)
+                .OrderByDescending(region => region.Score)
+                .FirstOrDefault();
+            if (detection == null)
+            {
+                failures.Add(fixtureName + " should have a z_plus vector watermark detection for retained-bound cleanup verification.");
+                return;
+            }
+
+            StepProjectionBounds2d roi = ToProjectionBounds(input, detection, paddingPixels: 6);
+            IReadOnlyDictionary<int, string> originalEntities = ParseStepEntityDefinitions(Encoding.Latin1.GetString(originalBytes));
+            IReadOnlyDictionary<int, string> cleanedEntities = ParseStepEntityDefinitions(cleanedStep);
+            List<int> originalBounds = FindRetainedInnerFaceBoundsInsideProjectionRoi(originalEntities, roi);
+            List<int> cleanedBounds = FindRetainedInnerFaceBoundsInsideProjectionRoi(cleanedEntities, roi);
+            if (originalBounds.Count == 0)
+            {
+                failures.Add(fixtureName + " retained-bound cleanup verification did not find any original z_plus inner bounds inside the vector ROI.");
+                return;
+            }
+
+            if (cleanedBounds.Count > 0)
+            {
+                failures.Add(
+                    fixtureName +
+                    " retained " +
+                    cleanedBounds.Count.ToString(CultureInfo.InvariantCulture) +
+                    " inner face bounds inside the z_plus vector prism ROI after cleanup: " +
+                    string.Join(", ", cleanedBounds.Take(12).Select(id => "#" + id.ToString(CultureInfo.InvariantCulture))) +
+                    ".");
+            }
+        }
+
+        private static bool IsKnownVectorWatermarkDetection(StepVectorWatermarkDetectionRegion detection)
+        {
+            if (detection == null)
+                return false;
+
+            string templateName = detection.TemplateName ?? string.Empty;
+            return templateName.IndexOf("LCEDA", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                templateName.IndexOf("EasyEDA", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                templateName.IndexOf("easyeda-logo", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                string.Equals(detection.Kind, "watermark-combined", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static StepProjectionBounds2d ToProjectionBounds(
+            StepVectorWatermarkDetectionInput input,
+            StepVectorWatermarkDetectionRegion detection,
+            int paddingPixels)
+        {
+            StepVectorWatermarkImageMapping mapping = input.ImageMapping;
+            double scale = Math.Max(mapping.Scale, 0.000001);
+            double left = mapping.UMin + (detection.X - mapping.PaddingPixels - paddingPixels) / scale;
+            double right = mapping.UMin + (detection.X + detection.Width - mapping.PaddingPixels + paddingPixels) / scale;
+            double top = mapping.VMin + (input.ImageHeight - mapping.PaddingPixels - detection.Y + paddingPixels) / scale;
+            double bottom = mapping.VMin + (input.ImageHeight - mapping.PaddingPixels - detection.Y - detection.Height - paddingPixels) / scale;
+            return new StepProjectionBounds2d
+            {
+                UMin = Math.Min(left, right),
+                UMax = Math.Max(left, right),
+                VMin = Math.Min(bottom, top),
+                VMax = Math.Max(bottom, top)
+            };
+        }
+
+        private static VectorPrismDetectionBox CreateVectorPrismDetectionBox(
+            StepVectorWatermarkDetectionInput input,
+            StepVectorWatermarkDetectionRegion detection,
+            StepBounds3d modelBounds,
+            string viewName)
+        {
+            if (!TryGetVectorViewAxes(viewName, out int uAxis, out int uSign, out int vAxis, out int vSign))
+                return new VectorPrismDetectionBox { ViewName = viewName, Bounds = modelBounds };
+
+            StepProjectionBounds2d projectionBounds = ToProjectionBounds(input, detection, paddingPixels: 6);
+            var box = new StepBounds3d();
+            double u0 = uSign > 0 ? projectionBounds.UMin : -projectionBounds.UMax;
+            double u1 = uSign > 0 ? projectionBounds.UMax : -projectionBounds.UMin;
+            double v0 = vSign > 0 ? projectionBounds.VMin : -projectionBounds.VMax;
+            double v1 = vSign > 0 ? projectionBounds.VMax : -projectionBounds.VMin;
+            int depthAxis = Enumerable.Range(0, 3).First(axis => axis != uAxis && axis != vAxis);
+            double[] min = { modelBounds.MinX, modelBounds.MinY, modelBounds.MinZ };
+            double[] max = { modelBounds.MaxX, modelBounds.MaxY, modelBounds.MaxZ };
+            min[uAxis] = Math.Min(u0, u1);
+            max[uAxis] = Math.Max(u0, u1);
+            min[vAxis] = Math.Min(v0, v1);
+            max[vAxis] = Math.Max(v0, v1);
+            box.Include(min[0], min[1], min[2]);
+            box.Include(max[0], max[1], max[2]);
+            return new VectorPrismDetectionBox
+            {
+                ViewName = viewName,
+                UAxis = uAxis,
+                VAxis = vAxis,
+                DepthAxis = depthAxis,
+                Bounds = box
+            };
+        }
+
+        private static StepBounds3d GetActiveModelBounds(
+            string stepText,
+            IReadOnlyDictionary<int, string> entities,
+            Dictionary<int, StepBounds3d> boundsById)
+        {
+            var result = new StepBounds3d();
+            foreach (int faceId in GetActiveAdvancedFaceIds(stepText))
+                result.Include(GetStepEntityBounds(faceId, entities, boundsById));
+
+            return result;
+        }
+
+        private static bool StepBoundsInsideDetectionBox(
+            StepBounds3d inner,
+            VectorPrismDetectionBox box,
+            double padding)
+        {
+            if (!inner.HasValue || box == null || box.Bounds == null || !box.Bounds.HasValue)
+                return false;
+
+            return inner.MinX >= box.Bounds.MinX - padding &&
+                inner.MaxX <= box.Bounds.MaxX + padding &&
+                inner.MinY >= box.Bounds.MinY - padding &&
+                inner.MaxY <= box.Bounds.MaxY + padding &&
+                inner.MinZ >= box.Bounds.MinZ - padding &&
+                inner.MaxZ <= box.Bounds.MaxZ + padding;
+        }
+
+        private static int FindClosedShellOwnerForFace(
+            IReadOnlyDictionary<int, string> entities,
+            int faceId)
+        {
+            string needle = "#" + faceId.ToString(CultureInfo.InvariantCulture);
+            foreach (KeyValuePair<int, string> entity in entities.OrderBy(kvp => kvp.Key))
+            {
+                if (!entity.Value.StartsWith("CLOSED_SHELL", StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                if (ExtractStepReferenceIds(entity.Value).Contains(faceId))
+                    return entity.Key;
+
+                if (entity.Value.IndexOf(needle, StringComparison.Ordinal) >= 0)
+                    return entity.Key;
+            }
+
+            return 0;
+        }
+
+        private static string GetStepEntityType(string definition)
+        {
+            Match match = Regex.Match(
+                definition ?? string.Empty,
+                @"^\s*([A-Z0-9_]+)",
+                RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+            return match.Success ? match.Groups[1].Value.ToUpperInvariant() : string.Empty;
+        }
+
+        private static List<int> FindRetainedInnerFaceBoundsInsideProjectionRoi(
+            IReadOnlyDictionary<int, string> entities,
+            StepProjectionBounds2d roi)
+        {
+            var boundsById = new Dictionary<int, StepBounds3d>();
+            var retainedBounds = new SortedSet<int>();
+
+            foreach (KeyValuePair<int, string> entity in entities)
+            {
+                if (!entity.Value.StartsWith("ADVANCED_FACE", StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                List<int> faceBounds = ExtractStepReferenceIds(entity.Value)
+                    .TakeWhile(referenceId => !entities.TryGetValue(referenceId, out string referencedDefinition) ||
+                        !referencedDefinition.StartsWith("PLANE", StringComparison.OrdinalIgnoreCase))
+                    .Where(referenceId => entities.TryGetValue(referenceId, out string referencedDefinition) &&
+                        referencedDefinition.StartsWith("FACE_BOUND", StringComparison.OrdinalIgnoreCase))
+                    .ToList();
+                if (faceBounds.Count == 0)
+                    continue;
+
+                StepBounds3d faceBox = GetStepEntityBounds(entity.Key, entities, boundsById);
+                if (!ProjectedBoundsInsideRoi(faceBox, roi))
+                    continue;
+
+                foreach (int boundId in faceBounds)
+                {
+                    StepBounds3d boundBox = GetStepEntityBounds(boundId, entities, boundsById);
+                    if (ProjectedBoundsInsideRoi(boundBox, roi))
+                        retainedBounds.Add(boundId);
+                }
+            }
+
+            return retainedBounds.ToList();
+        }
+
+        private static List<int> FindActiveAdvancedFacesInsideProjectionRoiAndDepth(
+            IReadOnlyDictionary<int, string> entities,
+            StepProjectionBounds2d roi,
+            double minZ,
+            double maxZ)
+        {
+            var boundsById = new Dictionary<int, StepBounds3d>();
+            var result = new SortedSet<int>();
+            foreach (int faceId in GetActiveAdvancedFaceIds(entities))
+            {
+                StepBounds3d faceBox = GetStepEntityBounds(faceId, entities, boundsById);
+                if (!faceBox.HasValue)
+                    continue;
+
+                if (!ProjectedBoundsInsideRoi(faceBox, roi, minZ, maxZ))
+                    continue;
+
+                result.Add(faceId);
+            }
+
+            return result.ToList();
         }
 
         private static StepVectorWatermarkDetectionRegion SingleVectorWatermark(
@@ -5391,6 +8340,51 @@ namespace StepCleaner.Tests
                     " should expose EasyEDA and LCEDA text labels, got [" +
                     string.Join("; ", labels.OrderBy(label => label, StringComparer.OrdinalIgnoreCase)) +
                     "].");
+            }
+        }
+
+        private static void AssertVectorLcedaCoverage(
+            string originalDirectory,
+            string modelName,
+            string viewName,
+            int maxX,
+            int minWidth,
+            List<string> failures)
+        {
+            AssertVectorLcedaCoverage(originalDirectory, modelName, viewName, maxX, minWidth, maxY: int.MaxValue, failures);
+        }
+
+        private static void AssertVectorLcedaCoverage(
+            string originalDirectory,
+            string modelName,
+            string viewName,
+            int maxX,
+            int minWidth,
+            int maxY,
+            List<string> failures)
+        {
+            StepVectorWatermarkDetectionInput input = ProjectVectorWatermarkInput(originalDirectory, modelName, viewName);
+            StepVectorWatermarkDetectionRegion lceda =
+                StepVectorTextDetector
+                    .Detect(input, new StepTextLogoDetectionOptions { DetectArbitraryText = true })
+                    .Where(detection => string.Equals(detection.Text, "LCEDA", StringComparison.OrdinalIgnoreCase))
+                    .OrderByDescending(detection => detection.Width * detection.Height)
+                    .FirstOrDefault();
+            if (lceda == null)
+            {
+                failures.Add(modelName + " " + viewName + " should expose an LCEDA text detection.");
+                return;
+            }
+
+            if (lceda.X > maxX || lceda.Width < minWidth || lceda.Y > maxY)
+            {
+                failures.Add(
+                    modelName +
+                    " " +
+                    viewName +
+                    " should select the full LCEDA text, got " +
+                    FormatBounds(lceda.X, lceda.Y, lceda.Width, lceda.Height) +
+                    ".");
             }
         }
 
@@ -5449,6 +8443,384 @@ namespace StepCleaner.Tests
             int leftArea = Math.Max(1, left.Width * left.Height);
             int rightArea = Math.Max(1, right.Width * right.Height);
             return intersection / (double)Math.Min(leftArea, rightArea);
+        }
+
+        private static bool DetectionInsidePaddedRegion(
+            StepVectorWatermarkDetectionRegion inner,
+            StepVectorWatermarkDetectionRegion outer,
+            int paddingPixels)
+        {
+            return inner.X >= outer.X - paddingPixels &&
+                inner.Y >= outer.Y - paddingPixels &&
+                inner.X + inner.Width <= outer.X + outer.Width + paddingPixels &&
+                inner.Y + inner.Height <= outer.Y + outer.Height + paddingPixels;
+        }
+
+        private static void DumpVectorPrimitivesInsideDetections(
+            StepVectorWatermarkDetectionInput input,
+            IReadOnlyList<StepVectorWatermarkDetectionRegion> detections)
+        {
+            if (input == null || input.Primitives == null || detections == null || detections.Count == 0)
+                return;
+
+            foreach (StepVectorWatermarkDetectionRegion detection in detections)
+            {
+                Console.WriteLine(
+                    "primitives-in=" +
+                    detection.Kind +
+                    " template=" +
+                    (detection.TemplateName ?? string.Empty) +
+                    " box=" +
+                    FormatBounds(detection.X, detection.Y, detection.Width, detection.Height));
+                int printed = 0;
+                for (int i = 0; i < input.Primitives.Count; i++)
+                {
+                    StepVectorWatermarkPrimitive primitive = input.Primitives[i];
+                    if (primitive.ImageBounds == null || !VectorPrimitiveIntersectsDetection(primitive, detection))
+                        continue;
+
+                    Console.WriteLine(
+                        "  primitive index=" +
+                        i.ToString(CultureInfo.InvariantCulture) +
+                        " source=" +
+                        primitive.SourceIndex.ToString(CultureInfo.InvariantCulture) +
+                        " kind=" +
+                        primitive.Kind +
+                        " original=" +
+                        (primitive.OriginalKind ?? string.Empty) +
+                        " category=" +
+                        (primitive.Category ?? string.Empty) +
+                        " model=[" +
+                        primitive.Bounds.Left.ToString("G6", CultureInfo.InvariantCulture) + "," +
+                        primitive.Bounds.Bottom.ToString("G6", CultureInfo.InvariantCulture) + " -> " +
+                        primitive.Bounds.Right.ToString("G6", CultureInfo.InvariantCulture) + "," +
+                        primitive.Bounds.Top.ToString("G6", CultureInfo.InvariantCulture) + "] image=[" +
+                        primitive.ImageBounds.Left.ToString("G6", CultureInfo.InvariantCulture) + "," +
+                        primitive.ImageBounds.Bottom.ToString("G6", CultureInfo.InvariantCulture) + " -> " +
+                        primitive.ImageBounds.Right.ToString("G6", CultureInfo.InvariantCulture) + "," +
+                        primitive.ImageBounds.Top.ToString("G6", CultureInfo.InvariantCulture) + "]");
+                    printed++;
+                    if (printed >= 40)
+                    {
+                        Console.WriteLine("  ... truncated");
+                        break;
+                    }
+                }
+            }
+        }
+
+        private static bool VectorPrimitiveIntersectsDetection(
+            StepVectorWatermarkPrimitive primitive,
+            StepVectorWatermarkDetectionRegion detection)
+        {
+            double left = detection.X;
+            double right = detection.X + detection.Width;
+            double top = detection.Y;
+            double bottom = detection.Y + detection.Height;
+            return primitive.ImageBounds.Left <= right &&
+                primitive.ImageBounds.Right >= left &&
+                primitive.ImageBounds.Bottom >= top &&
+                primitive.ImageBounds.Top <= bottom;
+        }
+
+        private static List<ProjectedStepTopologySource> BuildProjectedStepTopologySources(
+            string stepText,
+            string viewName)
+        {
+            if (!TryGetVectorViewAxes(viewName, out int uAxis, out int uSign, out int vAxis, out int vSign))
+                return new List<ProjectedStepTopologySource>();
+
+            Dictionary<int, string> entities = ParseStepEntityDefinitions(stepText);
+            var activeFaceIds = new HashSet<int>(GetActiveAdvancedFaceIds(stepText));
+            var result = new List<ProjectedStepTopologySource>();
+            foreach (int faceId in activeFaceIds.OrderBy(id => id))
+            {
+                if (!entities.TryGetValue(faceId, out string faceDefinition))
+                    continue;
+
+                List<int> faceReferences = ExtractStepReferenceIds(faceDefinition);
+                if (faceReferences.Count < 2)
+                    continue;
+
+                for (int index = 0; index < faceReferences.Count - 1; index++)
+                {
+                    int boundId = faceReferences[index];
+                    if (!entities.TryGetValue(boundId, out string boundDefinition) ||
+                        (!boundDefinition.StartsWith("FACE_BOUND", StringComparison.OrdinalIgnoreCase) &&
+                         !boundDefinition.StartsWith("FACE_OUTER_BOUND", StringComparison.OrdinalIgnoreCase)))
+                    {
+                        continue;
+                    }
+
+                    int edgeLoopId = ExtractStepReferenceIds(boundDefinition)
+                        .FirstOrDefault(id => entities.TryGetValue(id, out string definition) &&
+                            definition.StartsWith("EDGE_LOOP", StringComparison.OrdinalIgnoreCase));
+                    if (edgeLoopId == 0 || !entities.TryGetValue(edgeLoopId, out string edgeLoopDefinition))
+                        continue;
+
+                    foreach (int orientedEdgeId in ExtractStepReferenceIds(edgeLoopDefinition))
+                    {
+                        if (!entities.TryGetValue(orientedEdgeId, out string orientedEdgeDefinition) ||
+                            !orientedEdgeDefinition.StartsWith("ORIENTED_EDGE", StringComparison.OrdinalIgnoreCase))
+                        {
+                            continue;
+                        }
+
+                        int edgeCurveId = ExtractStepReferenceIds(orientedEdgeDefinition)
+                            .FirstOrDefault(id => entities.TryGetValue(id, out string definition) &&
+                                definition.StartsWith("EDGE_CURVE", StringComparison.OrdinalIgnoreCase));
+                        if (edgeCurveId == 0)
+                            continue;
+
+                        List<ProjectedStepPoint> points = BuildProjectedEdgeCurvePoints(
+                            entities,
+                            edgeCurveId,
+                            uAxis,
+                            uSign,
+                            vAxis,
+                            vSign);
+                        if (points.Count < 2)
+                            continue;
+
+                        bool sameSense = !orientedEdgeDefinition.TrimEnd().EndsWith(".F.)", StringComparison.OrdinalIgnoreCase);
+                        if (!sameSense)
+                            points.Reverse();
+
+                        result.Add(new ProjectedStepTopologySource
+                        {
+                            FaceId = faceId,
+                            BoundId = boundId,
+                            EdgeCurveId = edgeCurveId,
+                            Points = points
+                        });
+                    }
+                }
+            }
+
+            return result;
+        }
+
+        private static List<ProjectedStepPoint> BuildProjectedEdgeCurvePoints(
+            IReadOnlyDictionary<int, string> entities,
+            int edgeCurveId,
+            int uAxis,
+            int uSign,
+            int vAxis,
+            int vSign)
+        {
+            if (!entities.TryGetValue(edgeCurveId, out string edgeCurveDefinition))
+                return new List<ProjectedStepPoint>();
+
+            var result = new List<ProjectedStepPoint>();
+            List<int> references = ExtractStepReferenceIds(edgeCurveDefinition);
+            foreach (int referenceId in references)
+            {
+                if (!entities.TryGetValue(referenceId, out string referenceDefinition))
+                    continue;
+
+                if (referenceDefinition.StartsWith("VERTEX_POINT", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (TryGetProjectedVertexPoint(entities, referenceId, uAxis, uSign, vAxis, vSign, out ProjectedStepPoint point))
+                        AddProjectedPoint(result, point);
+                    continue;
+                }
+
+                if (referenceDefinition.IndexOf("B_SPLINE_CURVE", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    referenceDefinition.StartsWith("POLYLINE", StringComparison.OrdinalIgnoreCase))
+                {
+                    foreach (int pointId in ExtractStepReferenceIds(referenceDefinition))
+                    {
+                        if (TryGetProjectedCartesianPoint(entities, pointId, uAxis, uSign, vAxis, vSign, out ProjectedStepPoint point))
+                            AddProjectedPoint(result, point);
+                    }
+                }
+            }
+
+            if (result.Count < 2)
+            {
+                foreach (int pointId in BuildStepReferenceClosure(edgeCurveId, entities)
+                    .Where(id => entities.TryGetValue(id, out string definition) &&
+                        definition.StartsWith("CARTESIAN_POINT", StringComparison.OrdinalIgnoreCase))
+                    .OrderBy(id => id))
+                {
+                    if (TryGetProjectedCartesianPoint(entities, pointId, uAxis, uSign, vAxis, vSign, out ProjectedStepPoint point))
+                        AddProjectedPoint(result, point);
+                }
+            }
+
+            return result;
+        }
+
+        private static ResidualPrimitiveSourceMatch MatchResidualPrimitiveSource(
+            StepVectorWatermarkPrimitive primitive,
+            IReadOnlyList<ProjectedStepTopologySource> topology)
+        {
+            IReadOnlyList<StepVectorWatermarkPoint> samples = primitive.SampledPoints ?? Array.Empty<StepVectorWatermarkPoint>();
+            if (samples.Count < 2 || topology.Count == 0)
+                return new ResidualPrimitiveSourceMatch();
+
+            const double endpointTolerance = 0.005;
+            const double sampleTolerance = 0.005;
+            ProjectedStepTopologySource bestSource = null;
+            double bestScore = double.PositiveInfinity;
+            foreach (ProjectedStepTopologySource source in topology)
+            {
+                double firstDistance = DistanceToPolyline(samples[0].X, samples[0].Y, source.Points);
+                double lastDistance = DistanceToPolyline(samples[samples.Count - 1].X, samples[samples.Count - 1].Y, source.Points);
+                if (firstDistance > endpointTolerance || lastDistance > endpointTolerance)
+                    continue;
+
+                int onPolylineCount = 0;
+                double totalDistance = 0.0;
+                foreach (StepVectorWatermarkPoint sample in samples)
+                {
+                    double distance = DistanceToPolyline(sample.X, sample.Y, source.Points);
+                    totalDistance += distance;
+                    if (distance <= sampleTolerance)
+                        onPolylineCount++;
+                }
+
+                if (onPolylineCount < Math.Ceiling(samples.Count * 0.80))
+                    continue;
+
+                double score = totalDistance / Math.Max(samples.Count, 1);
+                if (score < bestScore)
+                {
+                    bestScore = score;
+                    bestSource = source;
+                }
+            }
+
+            return new ResidualPrimitiveSourceMatch
+            {
+                Source = bestSource,
+                AverageDistance = bestScore
+            };
+        }
+
+        private static bool TryGetVectorViewAxes(
+            string viewName,
+            out int uAxis,
+            out int uSign,
+            out int vAxis,
+            out int vSign)
+        {
+            switch ((viewName ?? string.Empty).Trim().ToLowerInvariant())
+            {
+                case "x_plus":
+                    uAxis = 1; uSign = 1; vAxis = 2; vSign = 1; return true;
+                case "x_minus":
+                    uAxis = 1; uSign = -1; vAxis = 2; vSign = 1; return true;
+                case "y_plus":
+                    uAxis = 0; uSign = -1; vAxis = 2; vSign = 1; return true;
+                case "y_minus":
+                    uAxis = 0; uSign = 1; vAxis = 2; vSign = 1; return true;
+                case "z_plus":
+                    uAxis = 0; uSign = 1; vAxis = 1; vSign = 1; return true;
+                case "z_minus":
+                    uAxis = 0; uSign = -1; vAxis = 1; vSign = 1; return true;
+                default:
+                    uAxis = -1; uSign = 1; vAxis = -1; vSign = 1; return false;
+            }
+        }
+
+        private static bool TryGetProjectedVertexPoint(
+            IReadOnlyDictionary<int, string> entities,
+            int vertexId,
+            int uAxis,
+            int uSign,
+            int vAxis,
+            int vSign,
+            out ProjectedStepPoint point)
+        {
+            point = default;
+            if (!entities.TryGetValue(vertexId, out string vertexDefinition))
+                return false;
+
+            int pointId = ExtractStepReferenceIds(vertexDefinition)
+                .FirstOrDefault(id => entities.TryGetValue(id, out string definition) &&
+                    definition.StartsWith("CARTESIAN_POINT", StringComparison.OrdinalIgnoreCase));
+            return pointId != 0 &&
+                TryGetProjectedCartesianPoint(entities, pointId, uAxis, uSign, vAxis, vSign, out point);
+        }
+
+        private static bool TryGetProjectedCartesianPoint(
+            IReadOnlyDictionary<int, string> entities,
+            int pointId,
+            int uAxis,
+            int uSign,
+            int vAxis,
+            int vSign,
+            out ProjectedStepPoint point)
+        {
+            point = default;
+            if (!entities.TryGetValue(pointId, out string definition) ||
+                !definition.StartsWith("CARTESIAN_POINT", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            List<double> values = Regex.Matches(
+                    definition,
+                    @"[-+]?\d+(?:\.\d+)?(?:[Ee][-+]?\d+)?",
+                    RegexOptions.CultureInvariant)
+                .Cast<Match>()
+                .Select(match => double.Parse(match.Value, CultureInfo.InvariantCulture))
+                .ToList();
+            if (values.Count < 3)
+                return false;
+
+            double[] coordinates =
+            {
+                values[values.Count - 3],
+                values[values.Count - 2],
+                values[values.Count - 1]
+            };
+            point = new ProjectedStepPoint(
+                coordinates[uAxis] * uSign,
+                coordinates[vAxis] * vSign);
+            return true;
+        }
+
+        private static void AddProjectedPoint(List<ProjectedStepPoint> points, ProjectedStepPoint point)
+        {
+            if (points.Count == 0 || Distance(points[points.Count - 1].U, points[points.Count - 1].V, point.U, point.V) > 0.0000001)
+                points.Add(point);
+        }
+
+        private static double DistanceToPolyline(double u, double v, IReadOnlyList<ProjectedStepPoint> points)
+        {
+            if (points == null || points.Count == 0)
+                return double.PositiveInfinity;
+
+            if (points.Count == 1)
+                return Distance(u, v, points[0].U, points[0].V);
+
+            double best = double.PositiveInfinity;
+            for (int i = 0; i + 1 < points.Count; i++)
+                best = Math.Min(best, DistanceToSegment(u, v, points[i], points[i + 1]));
+
+            return best;
+        }
+
+        private static double DistanceToSegment(double u, double v, ProjectedStepPoint a, ProjectedStepPoint b)
+        {
+            double du = b.U - a.U;
+            double dv = b.V - a.V;
+            double lengthSquared = du * du + dv * dv;
+            if (lengthSquared <= 0.0)
+                return Distance(u, v, a.U, a.V);
+
+            double t = ((u - a.U) * du + (v - a.V) * dv) / lengthSquared;
+            t = Math.Max(0.0, Math.Min(1.0, t));
+            return Distance(u, v, a.U + t * du, a.V + t * dv);
+        }
+
+        private static double Distance(double leftU, double leftV, double rightU, double rightV)
+        {
+            double du = leftU - rightU;
+            double dv = leftV - rightV;
+            return Math.Sqrt(du * du + dv * dv);
         }
 
         private static void DumpVectorRegions(
@@ -5529,6 +8901,29 @@ namespace StepCleaner.Tests
             }
 
             return CreateVectorInput("arbitrary-text", primitives);
+        }
+
+        private static StepVectorWatermarkDetectionInput CreateSplitArbitraryVectorTextInput()
+        {
+            var primitives = new List<StepVectorWatermarkPrimitive>();
+            double x = 60;
+            double y = 80;
+            for (int group = 0; group < 2; group++)
+            {
+                double baseX = x + group * 150;
+                for (int glyph = 0; glyph < 6; glyph++)
+                {
+                    double gx = baseX + glyph * 15;
+                    primitives.Add(CreateVectorPrimitive(new StepVectorWatermarkPoint(gx, y), new StepVectorWatermarkPoint(gx, y + 24)));
+                    primitives.Add(CreateVectorPrimitive(new StepVectorWatermarkPoint(gx, y), new StepVectorWatermarkPoint(gx + 8, y)));
+                    primitives.Add(CreateVectorPrimitive(new StepVectorWatermarkPoint(gx, y + 12), new StepVectorWatermarkPoint(gx + 7, y + 12)));
+                    primitives.Add(CreateVectorPrimitive(new StepVectorWatermarkPoint(gx, y + 24), new StepVectorWatermarkPoint(gx + 9, y + 24)));
+                    if (glyph % 2 == 0)
+                        primitives.Add(CreateVectorPrimitive(new StepVectorWatermarkPoint(gx + 9, y + 2), new StepVectorWatermarkPoint(gx + 9, y + 22)));
+                }
+            }
+
+            return CreateVectorInput("split-arbitrary-text", primitives);
         }
 
         private static StepVectorWatermarkDetectionInput CreatePinRowVectorInput()
@@ -5645,42 +9040,6 @@ namespace StepCleaner.Tests
                 .Where(rectangle => rectangle.Width > 0 && rectangle.Height > 0)
                 .Select(rectangle => new MarkedRectI(rectangle.X, rectangle.Y, rectangle.Width, rectangle.Height))
                 .ToList();
-        }
-
-        private static void AssertMarkedParity(
-            string modelName,
-            string viewName,
-            IReadOnlyList<MarkedRectI> markedRects,
-            IReadOnlyList<StepTextLogoDetectionRegion> detections,
-            List<string> failures)
-        {
-            if (detections.Count != markedRects.Count)
-            {
-                failures.Add(
-                    modelName +
-                    " " +
-                    viewName +
-                    " expected " +
-                    markedRects.Count.ToString(CultureInfo.InvariantCulture) +
-                    " detections from marked data, got " +
-                    detections.Count.ToString(CultureInfo.InvariantCulture) +
-                    ".");
-                return;
-            }
-
-            var detectedRects = detections
-                .Select(detection => new MarkedRectI(detection.X, detection.Y, detection.Width, detection.Height))
-                .ToList();
-            foreach (MarkedRectI detected in detectedRects)
-            {
-                MarkedRectI best = markedRects
-                    .OrderByDescending(marked => IntersectArea(marked, detected))
-                    .First();
-                if (!IsInsideMarkedRectangle(detected, best))
-                    failures.Add(modelName + " " + viewName + " detection " + detected + " is not fully inside marked rectangle " + best + ".");
-                if (detected.Area >= best.Area)
-                    failures.Add(modelName + " " + viewName + " detection " + detected + " should be smaller than marked rectangle " + best + ".");
-            }
         }
 
         private static void AssertMarkedVectorParity(
@@ -6128,6 +9487,26 @@ namespace StepCleaner.Tests
             }
         }
 
+        private static void PrintTopCleanerTiming(StepWatermarkCleanerReport report, string prefix)
+        {
+            if (report?.Timings == null || report.Timings.Count == 0)
+                return;
+
+            foreach (StepWatermarkCleanerTiming timing in report.Timings
+                .Where(timing => timing != null && !string.IsNullOrWhiteSpace(timing.Name))
+                .OrderByDescending(timing => timing.ElapsedMilliseconds)
+                .ThenBy(timing => timing.Name, StringComparer.Ordinal)
+                .Take(5))
+            {
+                Console.WriteLine(
+                    prefix +
+                    "watermark_clean_top_" +
+                    timing.Name +
+                    "_ms=" +
+                    timing.ElapsedMilliseconds.ToString(CultureInfo.InvariantCulture));
+            }
+        }
+
         private static async System.Threading.Tasks.Task<MeasuredModelInfo> LoadMeasuredModelInfoAsync(
             HttpClient httpClient,
             string partNumber,
@@ -6499,6 +9878,80 @@ namespace StepCleaner.Tests
                         failures);
                 }
             }
+        }
+
+        private static void VerifyProjectionRegionVisiblePixelsRetained(
+            string fileName,
+            string viewName,
+            string regionName,
+            string originalProjectionPath,
+            string cleanProjectionPath,
+            int x,
+            int y,
+            int width,
+            int height,
+            int luminanceThreshold,
+            double minRetainedRatio,
+            List<string> failures)
+        {
+            using (var originalImage = SKBitmap.Decode(originalProjectionPath))
+            using (var cleanImage = SKBitmap.Decode(cleanProjectionPath))
+            {
+                if (originalImage == null || cleanImage == null)
+                {
+                    failures.Add(fileName + " has an unreadable " + regionName + " projection on " + viewName + ".");
+                    return;
+                }
+
+                int xEnd = Math.Min(x + width, Math.Min(originalImage.Width, cleanImage.Width));
+                int yEnd = Math.Min(y + height, Math.Min(originalImage.Height, cleanImage.Height));
+                int originalVisiblePixels = 0;
+                int retainedVisiblePixels = 0;
+                for (int row = Math.Max(y, 0); row < yEnd; row++)
+                {
+                    for (int col = Math.Max(x, 0); col < xEnd; col++)
+                    {
+                        if (!PixelLuminanceAtLeast(originalImage.GetPixel(col, row), luminanceThreshold))
+                            continue;
+
+                        originalVisiblePixels++;
+                        if (PixelLuminanceAtLeast(cleanImage.GetPixel(col, row), luminanceThreshold))
+                            retainedVisiblePixels++;
+                    }
+                }
+
+                if (originalVisiblePixels == 0)
+                {
+                    failures.Add(fileName + " has no visible " + regionName + " pixels on " + viewName + ".");
+                    return;
+                }
+
+                double retainedRatio = retainedVisiblePixels / (double)originalVisiblePixels;
+                if (retainedRatio < minRetainedRatio)
+                {
+                    failures.Add(
+                        fileName +
+                        " did not retain " +
+                        regionName +
+                        " on " +
+                        viewName +
+                        ": retained=" +
+                        retainedVisiblePixels.ToString(CultureInfo.InvariantCulture) +
+                        "/" +
+                        originalVisiblePixels.ToString(CultureInfo.InvariantCulture) +
+                        " (" +
+                        retainedRatio.ToString("P2", CultureInfo.InvariantCulture) +
+                        "), required=" +
+                        minRetainedRatio.ToString("P2", CultureInfo.InvariantCulture) +
+                        ".");
+                }
+            }
+        }
+
+        private static bool PixelLuminanceAtLeast(SKColor color, int threshold)
+        {
+            int luminance = (int)Math.Round((0.2126 * color.Red) + (0.7152 * color.Green) + (0.0722 * color.Blue));
+            return luminance >= threshold;
         }
 
         private static void VerifyProjectionRegionPreserved(
@@ -7679,8 +11132,6 @@ namespace StepCleaner.Tests
             if (matchedFileNames.Count == 0)
                 return;
 
-            ClearProjectionFiles(originalProjectionDirectory, matchedFileNames);
-
             var originalByName = originalFiles.ToDictionary(Path.GetFileName, StringComparer.OrdinalIgnoreCase);
             int comparedImages = 0;
             int checkedRegions = 0;
@@ -7721,7 +11172,7 @@ namespace StepCleaner.Tests
                 var renderOptions = CreateProjectionOptionsForViews(detectedViewNames, projectionOptions);
                 projectionTimings.Measure(
                     "original_detection_side_projection_render_ms",
-                    () => StepProjectionRenderer.ProjectFile(originalFile, originalProjectionDirectory, renderOptions));
+                    () => ProjectFileIfNeeded(originalFile, originalProjectionDirectory, renderOptions));
 
                 foreach (string viewName in detectedViewNames)
                 {
@@ -7893,7 +11344,12 @@ namespace StepCleaner.Tests
                 }
 
                 foreach (StepProjectionDetectionRegion region in detectionRegions)
+                {
+                    if (!IsVisualDetectionRegion(region))
+                        continue;
+
                     VerifyCleanedRegionFlatness(fileName, viewName, originalImage, cleanImage, region, postCleanFaultFileNames, failures);
+                }
             }
         }
 
@@ -7978,6 +11434,12 @@ namespace StepCleaner.Tests
                 ", original edge ratio=" +
                 originalEdgeRatio.ToString("0.0000", CultureInfo.InvariantCulture) +
                 ".");
+        }
+
+        private static bool IsVisualDetectionRegion(StepProjectionDetectionRegion region)
+        {
+            return region != null &&
+                string.Equals(region.Kind, "visual", StringComparison.OrdinalIgnoreCase);
         }
 
         private static double MeasureRegionEdgeRatio(SKBitmap image, int left, int top, int right, int bottom)
@@ -8090,6 +11552,41 @@ namespace StepCleaner.Tests
                 failures.Add("Clean output changed when marker-only options were supplied; cleanup must use automatic detection only.");
         }
 
+        private static int RunRegenerateDetectionDebugImages()
+        {
+            string dataRoot = FindDataRoot();
+            string originalDirectory = Path.Combine(dataRoot, "Original");
+            string cleanDirectory = Path.Combine(dataRoot, "Clean");
+            string projectionDirectory = Path.Combine(dataRoot, "Projection");
+            string markedDirectory = Path.Combine(dataRoot, "Marked");
+            string detectionDirectory = Path.Combine(cleanDirectory, "Detection");
+            var originalFiles = GetStepFiles(originalDirectory);
+            var originalBaseNames = new HashSet<string>(
+                originalFiles.Select(file => Path.GetFileNameWithoutExtension(file)),
+                StringComparer.OrdinalIgnoreCase);
+            var failures = new List<string>();
+            VerifyDetectionDebugImages(
+                originalFiles,
+                originalBaseNames,
+                projectionDirectory,
+                markedDirectory,
+                detectionDirectory,
+                new FullTestDetectionCache(),
+                regenerateImages: true,
+                failures);
+
+            if (failures.Count > 0)
+            {
+                Console.Error.WriteLine("Detection debug image regeneration failed.");
+                foreach (string failure in failures)
+                    Console.Error.WriteLine("  " + failure);
+                return 1;
+            }
+
+            Console.WriteLine("Detection debug image regeneration passed.");
+            return 0;
+        }
+
         private static void VerifyDetectionDebugImages(
             List<string> originalFiles,
             HashSet<string> originalBaseNames,
@@ -8097,6 +11594,7 @@ namespace StepCleaner.Tests
             string markedDirectory,
             string detectionDirectory,
             FullTestDetectionCache detectionCache,
+            bool regenerateImages,
             List<string> failures)
         {
             if (!Directory.Exists(markedDirectory))
@@ -8114,20 +11612,17 @@ namespace StepCleaner.Tests
             Directory.CreateDirectory(detectionDirectory);
 
             Stopwatch stopwatch = Stopwatch.StartNew();
-            var expectedNames = GetMarkedDetectionImageNames(markedDirectory, originalBaseNames);
-            var expectedSet = new HashSet<string>(expectedNames, StringComparer.OrdinalIgnoreCase);
-            foreach (string staleImage in Directory.GetFiles(detectionDirectory, "*.png"))
+            if (regenerateImages)
             {
-                if (!expectedSet.Contains(Path.GetFileName(staleImage)))
+                foreach (string staleImage in Directory.GetFiles(detectionDirectory, "*.png"))
                     File.Delete(staleImage);
             }
 
             int regeneratedModels = 0;
-            int cachedModels = 0;
             long loadMarkedRegionsMs = 0;
-            long cacheCheckMs = 0;
             long detectMs = 0;
             long projectDetectionFileMs = 0;
+            var expectedNames = new List<string>();
             foreach (string originalFile in originalFiles)
             {
                 Stopwatch stageStopwatch = Stopwatch.StartNew();
@@ -8139,36 +11634,38 @@ namespace StepCleaner.Tests
                 loadMarkedRegionsMs += stageStopwatch.ElapsedMilliseconds;
 
                 stageStopwatch = Stopwatch.StartNew();
-                if (IsDetectionDebugImageCacheFresh(originalFile, markedRegions, detectionDirectory))
-                {
-                    stageStopwatch.Stop();
-                    cacheCheckMs += stageStopwatch.ElapsedMilliseconds;
-                    cachedModels++;
-                    continue;
-                }
-                stageStopwatch.Stop();
-                cacheCheckMs += stageStopwatch.ElapsedMilliseconds;
-
-                stageStopwatch = Stopwatch.StartNew();
                 var detectionReport = detectionCache.GetReport(originalFile);
                 stageStopwatch.Stop();
                 detectMs += stageStopwatch.ElapsedMilliseconds;
 
-                stageStopwatch = Stopwatch.StartNew();
-                StepProjectionRenderer.ProjectDetectionFile(
-                    originalFile,
-                    detectionDirectory,
-                    detectionReport,
-                    new StepProjectionOptions
-                    {
-                        WriteMetadata = false
-                    },
-                    markedRegions);
-                stageStopwatch.Stop();
-                projectDetectionFileMs += stageStopwatch.ElapsedMilliseconds;
-                regeneratedModels++;
+                if (regenerateImages)
+                {
+                    stageStopwatch = Stopwatch.StartNew();
+                    StepProjectionReport projectionReport = StepProjectionRenderer.ProjectDetectionFile(
+                        originalFile,
+                        detectionDirectory,
+                        detectionReport,
+                        new StepProjectionOptions
+                        {
+                            WriteMetadata = false
+                        },
+                        markedRegions);
+                    stageStopwatch.Stop();
+                    projectDetectionFileMs += stageStopwatch.ElapsedMilliseconds;
+                    expectedNames.AddRange(projectionReport.OutputFiles.Select(Path.GetFileName));
+                    regeneratedModels++;
+                }
+                else
+                {
+                    expectedNames.AddRange(GetExpectedDetectionDebugImageNames(originalFile, detectionReport, markedRegions));
+                }
             }
 
+            expectedNames = expectedNames
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(name => name, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            var expectedSet = new HashSet<string>(expectedNames, StringComparer.OrdinalIgnoreCase);
             var actualNames = Directory.GetFiles(detectionDirectory, "*.png")
                 .Select(Path.GetFileName)
                 .OrderBy(name => name, StringComparer.OrdinalIgnoreCase)
@@ -8176,26 +11673,27 @@ namespace StepCleaner.Tests
 
             stopwatch.Stop();
             Console.WriteLine(
-                "Detection debug images: marked=" +
+                "Detection debug images: expected=" +
                 expectedNames.Count.ToString(CultureInfo.InvariantCulture) +
                 ", generated=" +
                 actualNames.Count.ToString(CultureInfo.InvariantCulture) +
                 ", regenerated models=" +
                 regeneratedModels.ToString(CultureInfo.InvariantCulture) +
-                ", cached models=" +
-                cachedModels.ToString(CultureInfo.InvariantCulture) +
                 ", elapsed=" +
                 stopwatch.ElapsedMilliseconds.ToString(CultureInfo.InvariantCulture) +
                 " ms");
             Console.WriteLine("  detection_debug_load_marked_regions_ms=" + loadMarkedRegionsMs.ToString(CultureInfo.InvariantCulture) + " ms");
-            Console.WriteLine("  detection_debug_cache_check_ms=" + cacheCheckMs.ToString(CultureInfo.InvariantCulture) + " ms");
             Console.WriteLine("  detection_debug_detect_ms=" + detectMs.ToString(CultureInfo.InvariantCulture) + " ms");
             Console.WriteLine("  detection_debug_project_file_ms=" + projectDetectionFileMs.ToString(CultureInfo.InvariantCulture) + " ms");
+            Console.WriteLine("  detection_debug_skipped_existing=" + (!regenerateImages).ToString(CultureInfo.InvariantCulture).ToLowerInvariant());
+
+            if (!regenerateImages)
+                return;
 
             if (actualNames.Count != expectedNames.Count)
             {
                 failures.Add(
-                    "Detection debug image count differs from Marked sidecars: marked=" +
+                    "Detection debug image count differs from renderer outputs: expected=" +
                     expectedNames.Count.ToString(CultureInfo.InvariantCulture) +
                     ", generated=" +
                     actualNames.Count.ToString(CultureInfo.InvariantCulture) +
@@ -8207,14 +11705,43 @@ namespace StepCleaner.Tests
             foreach (string expectedName in expectedNames)
             {
                 if (!actualSet.Contains(expectedName))
-                    failures.Add("Detection debug image is missing for marked side: " + expectedName);
+                    failures.Add("Detection debug image is missing for renderer output: " + expectedName);
             }
 
             foreach (string actualName in actualNames)
             {
                 if (!expectedSet.Contains(actualName))
-                    failures.Add("Detection debug image has no matching marked side: " + actualName);
+                    failures.Add("Detection debug image was not reported by renderer: " + actualName);
             }
+        }
+
+        private static IReadOnlyList<string> GetExpectedDetectionDebugImageNames(
+            string originalFile,
+            StepWatermarkDetectionReport detectionReport,
+            IReadOnlyList<StepWatermarkMarkedRegion> markedRegions)
+        {
+            if (detectionReport?.Regions == null || detectionReport.Regions.Count == 0)
+                return Array.Empty<string>();
+
+            string modelName = Path.GetFileNameWithoutExtension(originalFile);
+            var viewNames = detectionReport.Regions
+                .Where(region => region != null && !string.IsNullOrWhiteSpace(region.ViewName))
+                .Select(region => region.ViewName)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            var markedViewNames = new HashSet<string>(
+                (markedRegions ?? Array.Empty<StepWatermarkMarkedRegion>())
+                    .Select(region => region.ViewName)
+                    .Where(viewName => !string.IsNullOrWhiteSpace(viewName)),
+                StringComparer.OrdinalIgnoreCase);
+            if (markedViewNames.Count > 0)
+                viewNames = viewNames.Where(viewName => markedViewNames.Contains(viewName)).ToList();
+
+            return viewNames
+                .OrderBy(viewName => viewName, StringComparer.OrdinalIgnoreCase)
+                .Select(viewName => modelName + "__" + viewName + ".png")
+                .ToList();
         }
 
         private static bool IsDetectionDebugImageCacheFresh(
@@ -8273,34 +11800,6 @@ namespace StepCleaner.Tests
                 latest = writeTime;
         }
 
-        private static List<string> GetMarkedDetectionImageNames(string markedDirectory, HashSet<string> originalBaseNames)
-        {
-            var result = new List<string>();
-            foreach (string modelName in originalBaseNames.OrderBy(name => name, StringComparer.OrdinalIgnoreCase))
-            {
-                string stepFileName = modelName + ".step";
-                var markedRegions = StepWatermarkCleaner.LoadMarkedRegionsForStepFile(
-                    stepFileName,
-                    Path.Combine(Path.GetDirectoryName(markedDirectory) ?? string.Empty, "Projection"),
-                    markedDirectory);
-
-                foreach (var region in markedRegions)
-                {
-                    string markerPath = region.SourceMarkerPath;
-                    if (string.IsNullOrEmpty(markerPath))
-                        continue;
-
-                    result.Add(Path.GetFileNameWithoutExtension(markerPath) + ".png");
-                }
-            }
-
-            result = result
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .ToList();
-            result.Sort(StringComparer.OrdinalIgnoreCase);
-            return result;
-        }
-
         private static void CompareCleanAndValidatedProjections(
             Dictionary<string, string> generatedCleanByName,
             Dictionary<string, string> validatedByName,
@@ -8321,11 +11820,9 @@ namespace StepCleaner.Tests
             if (matchedFileNames.Count == 0)
                 return;
 
-            ClearProjectionFiles(validatedProjectionDirectory, matchedFileNames);
-
             projectionTimings.Measure(
                 "validated_projection_render_ms",
-                () => StepProjectionRenderer.ProjectDirectory(validatedDirectory, validatedProjectionDirectory, projectionOptions));
+                () => ProjectDirectoryIfNeeded(validatedDirectory, validatedProjectionDirectory, projectionOptions));
 
             int comparedImages = 0;
             foreach (string fileName in matchedFileNames)
@@ -8627,6 +12124,182 @@ namespace StepCleaner.Tests
             }
         }
 
+        private static IReadOnlyList<FullRegressionCleanResult> CleanOriginalFilesForFullRegression(
+            IReadOnlyList<string> originalFiles,
+            string cleanDirectory,
+            int maxDegreeOfParallelism)
+        {
+            var results = new List<FullRegressionCleanResult>();
+            var sync = new object();
+            var options = new ParallelOptions
+            {
+                MaxDegreeOfParallelism = Math.Max(1, maxDegreeOfParallelism)
+            };
+
+            Parallel.ForEach(originalFiles, options, originalFile =>
+            {
+                string fileName = Path.GetFileName(originalFile);
+                string outputFile = Path.Combine(cleanDirectory, fileName);
+                var result = new FullRegressionCleanResult
+                {
+                    OriginalFile = originalFile,
+                    OutputFile = outputFile
+                };
+
+                Stopwatch stopwatch = Stopwatch.StartNew();
+                try
+                {
+                    StepWatermarkCleanerReport report = StepWatermarkCleaner.CleanWithReport(
+                        File.ReadAllText(originalFile, Encoding.Latin1),
+                        new StepWatermarkCleanerOptions
+                        {
+                            BuildRemovedGeometryStep = false
+                        });
+                    File.WriteAllBytes(outputFile, Encoding.Latin1.GetBytes(report.CleanedStep));
+                    result.Report = report;
+                }
+                catch (Exception ex)
+                {
+                    result.Exception = ex;
+                }
+                finally
+                {
+                    stopwatch.Stop();
+                    result.ElapsedMilliseconds = stopwatch.ElapsedMilliseconds;
+                    lock (sync)
+                        results.Add(result);
+                }
+            });
+
+            var indexByFile = originalFiles
+                .Select((file, index) => new { file, index })
+                .ToDictionary(item => item.file, item => item.index, StringComparer.OrdinalIgnoreCase);
+            return results
+                .OrderBy(result => indexByFile.TryGetValue(result.OriginalFile, out int index) ? index : int.MaxValue)
+                .ToList();
+        }
+
+        private static int GetFullRegressionCleanupParallelism()
+        {
+            int processorCount = Math.Max(1, Environment.ProcessorCount);
+            string configured = Environment.GetEnvironmentVariable("STEPCLEANER_TEST_CLEANUP_PARALLELISM");
+            if (int.TryParse(configured, NumberStyles.Integer, CultureInfo.InvariantCulture, out int requested) &&
+                requested > 0)
+            {
+                return Math.Max(1, Math.Min(processorCount, requested));
+            }
+
+            return Math.Min(2, processorCount);
+        }
+
+        private static IReadOnlyList<StepProjectionReport> ProjectDirectoryIfNeeded(
+            string inputDirectory,
+            string outputDirectory,
+            StepProjectionOptions options)
+        {
+            var reports = new List<StepProjectionReport>();
+            int renderedCount = 0;
+            int skippedCount = 0;
+            foreach (string inputFile in GetStepFiles(inputDirectory))
+            {
+                reports.Add(ProjectFileIfNeeded(inputFile, outputDirectory, options, out bool rendered));
+                if (rendered)
+                    renderedCount++;
+                else
+                    skippedCount++;
+            }
+
+            Console.WriteLine(
+                "projection_cache input=" +
+                Path.GetFileName(inputDirectory) +
+                " rendered=" +
+                renderedCount.ToString(CultureInfo.InvariantCulture) +
+                " skipped=" +
+                skippedCount.ToString(CultureInfo.InvariantCulture));
+
+            return reports;
+        }
+
+        private static StepProjectionReport ProjectFileIfNeeded(
+            string inputFile,
+            string outputDirectory,
+            StepProjectionOptions options)
+        {
+            return ProjectFileIfNeeded(inputFile, outputDirectory, options, out _);
+        }
+
+        private static StepProjectionReport ProjectFileIfNeeded(
+            string inputFile,
+            string outputDirectory,
+            StepProjectionOptions options,
+            out bool rendered)
+        {
+            Directory.CreateDirectory(outputDirectory);
+            options = options ?? new StepProjectionOptions();
+            string modelName = Path.GetFileNameWithoutExtension(inputFile);
+            IReadOnlyList<string> viewNames = GetProjectionOptionViewNames(options);
+            string signature = BuildProjectionOptionSignature(options, viewNames);
+            string signaturePath = Path.Combine(outputDirectory, modelName + ".__projection-options.txt");
+            List<string> expectedOutputs = viewNames
+                .Select(viewName => Path.Combine(outputDirectory, modelName + "__" + viewName + ".png"))
+                .ToList();
+            DateTime latestInputWriteTimeUtc = GetLatestProjectionInputWriteTimeUtc(inputFile);
+            bool outputsFresh =
+                File.Exists(signaturePath) &&
+                string.Equals(File.ReadAllText(signaturePath, Encoding.UTF8), signature, StringComparison.Ordinal) &&
+                expectedOutputs.All(outputPath =>
+                    File.Exists(outputPath) &&
+                    File.GetLastWriteTimeUtc(outputPath) >= latestInputWriteTimeUtc);
+
+            if (outputsFresh)
+            {
+                rendered = false;
+                return new StepProjectionReport
+                {
+                    InputPath = inputFile,
+                    FaceCount = 0,
+                    EdgeCount = 0,
+                    OutputFiles = expectedOutputs
+                };
+            }
+
+            StepProjectionReport report = StepProjectionRenderer.ProjectFile(inputFile, outputDirectory, options);
+            File.WriteAllText(signaturePath, signature, Encoding.UTF8);
+            rendered = true;
+            return report;
+        }
+
+        private static IReadOnlyList<string> GetProjectionOptionViewNames(StepProjectionOptions options)
+        {
+            if (options?.ViewNames != null && options.ViewNames.Count > 0)
+                return options.ViewNames.ToList();
+
+            return StepProjectionRenderer.ViewNames.ToList();
+        }
+
+        private static string BuildProjectionOptionSignature(StepProjectionOptions options, IReadOnlyList<string> viewNames)
+        {
+            return string.Join(
+                Environment.NewLine,
+                "imageSize=" + options.ImageSizePixels.ToString(CultureInfo.InvariantCulture),
+                "imageWidth=" + options.ImageWidthPixels.ToString(CultureInfo.InvariantCulture),
+                "imageHeight=" + options.ImageHeightPixels.ToString(CultureInfo.InvariantCulture),
+                "padding=" + options.PaddingPixels.ToString(CultureInfo.InvariantCulture),
+                "views=" + string.Join(",", viewNames),
+                "mode=" + options.RenderMode,
+                "writeMetadata=" + options.WriteMetadata.ToString(CultureInfo.InvariantCulture),
+                "skipGeometryModelForExternalRender=" + options.SkipGeometryModelForExternalRender.ToString(CultureInfo.InvariantCulture));
+        }
+
+        private static DateTime GetLatestProjectionInputWriteTimeUtc(string inputFile)
+        {
+            DateTime latest = File.GetLastWriteTimeUtc(inputFile);
+            AddLatestWriteTimeUtc(ref latest, typeof(Program).Assembly.Location);
+            AddLatestWriteTimeUtc(ref latest, typeof(StepProjectionRenderer).Assembly.Location);
+            AddLatestWriteTimeUtc(ref latest, typeof(StepWatermarkCleaner).Assembly.Location);
+            return latest;
+        }
+
         private static IReadOnlyList<CleanupExpectation> GetCleanupExpectations()
         {
             return new[]
@@ -8843,12 +12516,128 @@ namespace StepCleaner.Tests
             public double Tolerance { get; set; }
         }
 
+        private sealed class ResidualPrimitiveSourceMatch
+        {
+            public ProjectedStepTopologySource Source { get; set; }
+            public double AverageDistance { get; set; }
+        }
+
+        private sealed class VectorPrismTopologyRewritePlan
+        {
+            public VectorPrismDetectionBox Box { get; set; }
+            public string TemplateName { get; set; }
+            public int OwnerId { get; set; }
+            public int HostFaceId { get; set; }
+            public int ResidualPrimitiveCount { get; set; }
+            public int UnknownPrimitiveCount { get; set; }
+            public List<int> FaceIdsToRemove { get; } = new List<int>();
+            public Dictionary<int, HashSet<int>> FaceBoundsToRemove { get; } =
+                new Dictionary<int, HashSet<int>>();
+            public bool RequiresPlanarFillPatch { get; set; }
+            public string Reason { get; set; }
+            public List<string> BlockedSources { get; } = new List<string>();
+        }
+
+        private sealed class VectorPrismDetectionBox
+        {
+            public string ViewName { get; set; }
+            public int UAxis { get; set; }
+            public int VAxis { get; set; }
+            public int DepthAxis { get; set; }
+            public StepBounds3d Bounds { get; set; }
+        }
+
+        private sealed class ProjectedStepTopologySource
+        {
+            public int FaceId { get; set; }
+            public int BoundId { get; set; }
+            public int EdgeCurveId { get; set; }
+            public List<ProjectedStepPoint> Points { get; set; } = new List<ProjectedStepPoint>();
+
+            public string Key =>
+                FaceId.ToString(CultureInfo.InvariantCulture) + "|" +
+                BoundId.ToString(CultureInfo.InvariantCulture) + "|" +
+                EdgeCurveId.ToString(CultureInfo.InvariantCulture);
+        }
+
+        private readonly struct ProjectedStepPoint
+        {
+            public ProjectedStepPoint(double u, double v)
+            {
+                U = u;
+                V = v;
+            }
+
+            public double U { get; }
+            public double V { get; }
+        }
+
+        private sealed class StepCleanerProfileResult
+        {
+            public string ModelName { get; set; }
+            public int ByteCount { get; set; }
+            public int DetectRegionCount { get; set; }
+            public int CleanedStepByteCount { get; set; }
+            public int RemovedGeometryByteCount { get; set; }
+            public int VisualDetectionCount { get; set; }
+            public int ProjectionOutputCount { get; set; }
+            public long CleanerDetectOnlyMs { get; set; }
+            public long CleanWithoutRemovedGeometryMs { get; set; }
+            public long CleanWithReportMs { get; set; }
+            public long VisualOracleAllViewsMs { get; set; }
+            public long ProjectFileAllViewsMs { get; set; }
+            public Dictionary<string, long> CleanDetailTimings { get; } =
+                new Dictionary<string, long>(StringComparer.Ordinal);
+            public Dictionary<string, long> VectorProjectDetectMsByView { get; } =
+                new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
+            public Dictionary<string, int> VectorPrimitiveCountByView { get; } =
+                new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            public Dictionary<string, int> VectorDetectionCountByView { get; } =
+                new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        }
+
+        private sealed class StepCleanerSpeedContractResult
+        {
+            public string ModelName { get; set; }
+            public int ByteCount { get; set; }
+            public int DetectRegionCount { get; set; }
+            public int CleanedStepByteCount { get; set; }
+            public int RemovedGeometryByteCount { get; set; }
+            public int ScopedViewCount { get; set; }
+            public int VisualOracleOriginalDetectionCount { get; set; }
+            public int VisualOracleResidualDetectionCount { get; set; }
+            public int VisualOracleFailureCount { get; set; }
+            public long CleanWithReportWithoutRemovedGeometryMs { get; set; }
+            public long ScopedVisualOracleMs { get; set; }
+            public List<string> ScopedViewNames { get; } = new List<string>();
+            public Dictionary<string, long> CleanDetailTimings { get; } =
+                new Dictionary<string, long>(StringComparer.Ordinal);
+        }
+
+        private sealed class FullRegressionCleanResult
+        {
+            public string OriginalFile { get; set; }
+            public string OutputFile { get; set; }
+            public StepWatermarkCleanerReport Report { get; set; }
+            public long ElapsedMilliseconds { get; set; }
+            public Exception Exception { get; set; }
+        }
+
         private sealed class FullTestDetectionCache
         {
             private readonly Dictionary<string, StepWatermarkDetectionReport> _reportsByFileName =
                 new Dictionary<string, StepWatermarkDetectionReport>(StringComparer.OrdinalIgnoreCase);
             private readonly Dictionary<string, IReadOnlyList<StepProjectionDetectionRegion>> _regionsByKey =
                 new Dictionary<string, IReadOnlyList<StepProjectionDetectionRegion>>(StringComparer.OrdinalIgnoreCase);
+
+            public void SetReport(string originalFile, StepWatermarkDetectionReport report)
+            {
+                if (report == null)
+                    return;
+
+                string fileName = Path.GetFileName(originalFile);
+                _reportsByFileName[fileName] = report;
+            }
 
             public StepWatermarkDetectionReport GetReport(string originalFile)
             {
@@ -8981,6 +12770,11 @@ namespace StepCleaner.Tests
         private static IEnumerable<int> GetActiveAdvancedFaceIds(string stepText)
         {
             Dictionary<int, string> entities = ParseStepEntityDefinitions(stepText);
+            return GetActiveAdvancedFaceIds(entities);
+        }
+
+        private static IEnumerable<int> GetActiveAdvancedFaceIds(IReadOnlyDictionary<int, string> entities)
+        {
             var referencedFaceIds = new HashSet<int>();
             foreach (string definition in entities.Values)
             {
@@ -8999,6 +12793,129 @@ namespace StepCleaner.Tests
             }
 
             return referencedFaceIds.OrderBy(id => id).ToList();
+        }
+
+        private static List<int> ExtractStepReferenceIds(string definition)
+        {
+            var result = new List<int>();
+            foreach (Match match in Regex.Matches(
+                definition ?? string.Empty,
+                @"#(\d+)",
+                RegexOptions.CultureInvariant))
+            {
+                result.Add(int.Parse(match.Groups[1].Value, CultureInfo.InvariantCulture));
+            }
+
+            return result;
+        }
+
+        private static StepBounds3d GetStepEntityBounds(
+            int rootId,
+            IReadOnlyDictionary<int, string> entities,
+            Dictionary<int, StepBounds3d> boundsById)
+        {
+            if (boundsById.TryGetValue(rootId, out StepBounds3d cached))
+                return cached;
+
+            var bounds = new StepBounds3d();
+            foreach (int entityId in BuildStepReferenceClosure(rootId, entities))
+            {
+                if (!entities.TryGetValue(entityId, out string definition) ||
+                    !definition.StartsWith("CARTESIAN_POINT", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                List<double> values = Regex.Matches(
+                        definition,
+                        @"[-+]?\d+(?:\.\d+)?(?:[Ee][-+]?\d+)?",
+                        RegexOptions.CultureInvariant)
+                    .Cast<Match>()
+                    .Select(match => double.Parse(match.Value, CultureInfo.InvariantCulture))
+                    .ToList();
+                if (values.Count < 3)
+                    continue;
+
+                bounds.Include(
+                    values[values.Count - 3],
+                    values[values.Count - 2],
+                    values[values.Count - 1]);
+            }
+
+            boundsById[rootId] = bounds;
+            return bounds;
+        }
+
+        private static bool ProjectedBoundsInsideRoi(StepBounds3d bounds, StepProjectionBounds2d roi)
+        {
+            const double zPlusTopMin = 1.699;
+            const double zPlusTopMax = 1.702;
+            return ProjectedBoundsInsideRoi(bounds, roi, zPlusTopMin, zPlusTopMax);
+        }
+
+        private static bool ProjectedBoundsInsideRoi(
+            StepBounds3d bounds,
+            StepProjectionBounds2d roi,
+            double minZ,
+            double maxZ)
+        {
+            const double padding = 0.006;
+            if (!bounds.HasValue)
+                return false;
+
+            return bounds.MinX >= roi.UMin - padding &&
+                bounds.MaxX <= roi.UMax + padding &&
+                bounds.MinY >= roi.VMin - padding &&
+                bounds.MaxY <= roi.VMax + padding &&
+                bounds.MaxZ >= minZ &&
+                bounds.MinZ <= maxZ;
+        }
+
+        private sealed class StepProjectionBounds2d
+        {
+            public double UMin { get; set; }
+            public double UMax { get; set; }
+            public double VMin { get; set; }
+            public double VMax { get; set; }
+        }
+
+        private sealed class StepBounds3d
+        {
+            public bool HasValue { get; private set; }
+            public double MinX { get; private set; }
+            public double MaxX { get; private set; }
+            public double MinY { get; private set; }
+            public double MaxY { get; private set; }
+            public double MinZ { get; private set; }
+            public double MaxZ { get; private set; }
+
+            public void Include(double x, double y, double z)
+            {
+                if (!HasValue)
+                {
+                    MinX = MaxX = x;
+                    MinY = MaxY = y;
+                    MinZ = MaxZ = z;
+                    HasValue = true;
+                    return;
+                }
+
+                MinX = Math.Min(MinX, x);
+                MaxX = Math.Max(MaxX, x);
+                MinY = Math.Min(MinY, y);
+                MaxY = Math.Max(MaxY, y);
+                MinZ = Math.Min(MinZ, z);
+                MaxZ = Math.Max(MaxZ, z);
+            }
+
+            public void Include(StepBounds3d bounds)
+            {
+                if (bounds == null || !bounds.HasValue)
+                    return;
+
+                Include(bounds.MinX, bounds.MinY, bounds.MinZ);
+                Include(bounds.MaxX, bounds.MaxY, bounds.MaxZ);
+            }
         }
 
         private static void VerifyProtectedFaceEntityClosurePreserved(

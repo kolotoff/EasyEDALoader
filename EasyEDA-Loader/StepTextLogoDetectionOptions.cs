@@ -9,11 +9,6 @@ namespace EasyEDA_Loader
         public double MinimumKnownTemplateScore { get; set; } = 0.20;
         public double MinimumArbitraryTextScore { get; set; } = 0.58;
         public double MaximumRegionExpansionRatio { get; set; } = 1.12;
-        public string LogoReferenceImagePath { get; set; }
-        public bool UseColorProjectionCandidates { get; set; }
-        public bool UseGrayscaleLogoMatching { get; set; }
-        public bool UseSiftLogoMatching { get; set; }
-        public bool UseGeneralizedHoughLogoMatching { get; set; }
         public bool IncludeCombinedWatermarkRegion { get; set; }
     }
 }

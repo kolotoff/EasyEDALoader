@@ -1,10 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
-using System.IO;
 using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
 
 namespace EasyEDA_Loader
 {
@@ -73,56 +70,42 @@ namespace EasyEDA_Loader
 
         public static StepWatermarkVisualScanResult DetectKnownWatermarks(byte[] stepData, string modelName)
         {
+            return DetectKnownWatermarks(stepData, modelName, StepProjectionRenderer.ViewNames);
+        }
+
+        public static StepWatermarkVisualScanResult DetectKnownWatermarks(
+            byte[] stepData,
+            string modelName,
+            IReadOnlyCollection<string> viewNames)
+        {
             if (stepData == null)
                 throw new ArgumentNullException(nameof(stepData));
 
             if (string.IsNullOrWhiteSpace(modelName))
                 modelName = "model";
+            if (viewNames == null || viewNames.Count == 0)
+                viewNames = StepProjectionRenderer.ViewNames;
 
-            var colorOptions = CreateProjectionOptions(StepProjectionRenderMode.Color);
-            var edgeOptions = CreateProjectionOptions(StepProjectionRenderMode.Edge);
-            var logoEdgeOptions = CreateProjectionOptions(StepProjectionRenderMode.EdgeVisibleRaw);
-            var colorTask = Task.Run(() => StepProjectionRenderer.ProjectFileImages(stepData, modelName + ".visual", colorOptions));
-            var edgeTask = Task.Run(() => StepProjectionRenderer.ProjectFileImages(stepData, modelName + ".visual.edge", edgeOptions));
-            var logoEdgeTask = Task.Run(() => StepProjectionRenderer.ProjectFileImages(stepData, modelName + ".visual.logo-edge", logoEdgeOptions));
-            Task.WaitAll(colorTask, edgeTask, logoEdgeTask);
+            IReadOnlyDictionary<string, StepVectorWatermarkDetectionInput> inputsByView =
+                StepProjectionRenderer.ProjectVectorWatermarkDetectionInputs(
+                    stepData,
+                    modelName + ".visual",
+                    viewNames);
 
-            Dictionary<string, StepProjectionImage> edgeByViewName = edgeTask.Result.ToDictionary(
-                image => image.ViewName,
-                StringComparer.OrdinalIgnoreCase);
-            Dictionary<string, StepProjectionImage> logoEdgeByViewName = logoEdgeTask.Result.ToDictionary(
-                image => image.ViewName,
-                StringComparer.OrdinalIgnoreCase);
             var detections = new List<StepWatermarkVisualDetection>();
-            foreach (StepProjectionImage colorImage in colorTask.Result)
+            foreach (KeyValuePair<string, StepVectorWatermarkDetectionInput> inputByView in inputsByView)
             {
-                if (!edgeByViewName.TryGetValue(colorImage.ViewName, out StepProjectionImage edgeImage))
-                    continue;
-                logoEdgeByViewName.TryGetValue(colorImage.ViewName, out StepProjectionImage logoEdgeImage);
-
-                foreach (StepTextLogoDetectionRegion detection in StepTextLogoProjectionDetector.Detect(
-                    colorImage,
-                    edgeImage,
-                    logoEdgeImage,
-                    new StepTextLogoDetectionOptions { DetectArbitraryText = false }))
+                IReadOnlyList<StepVectorWatermarkDetectionRegion> vectorDetections =
+                    StepVectorWatermarkProjectionDetector.Detect(
+                        inputByView.Value,
+                        new StepTextLogoDetectionOptions { DetectArbitraryText = false });
+                foreach (StepVectorWatermarkDetectionRegion vectorDetection in vectorDetections)
                 {
+                    StepWatermarkVisualDetection detection = ToVisualDetection(inputByView.Key, vectorDetection);
                     if (!IsKnownWatermarkDetection(detection))
                         continue;
 
-                    detections.Add(new StepWatermarkVisualDetection
-                    {
-                        ViewName = colorImage.ViewName,
-                        TemplateName = detection.TemplateName,
-                        Kind = detection.Kind,
-                        Text = detection.Text,
-                        X = detection.X,
-                        Y = detection.Y,
-                        Width = detection.Width,
-                        Height = detection.Height,
-                        Score = detection.Score,
-                        ChamferDistance = detection.ChamferDistance,
-                        EdgePixelCount = detection.EdgePixelCount
-                    });
+                    detections.Add(detection);
                 }
             }
 
@@ -143,11 +126,30 @@ namespace EasyEDA_Loader
             byte[] cleanStep,
             string modelName)
         {
-            StepWatermarkVisualScanResult original = DetectKnownWatermarks(originalStep, modelName + ".original");
-            StepWatermarkVisualScanResult clean = DetectKnownWatermarks(cleanStep, modelName + ".clean");
+            return VerifyKnownWatermarkRemoved(originalStep, cleanStep, modelName, StepProjectionRenderer.ViewNames);
+        }
+
+        public static StepWatermarkVisualResidualResult VerifyKnownWatermarkRemoved(
+            byte[] originalStep,
+            byte[] cleanStep,
+            string modelName,
+            IReadOnlyCollection<string> viewNames)
+        {
+            StepWatermarkVisualScanResult original = DetectKnownWatermarks(originalStep, modelName + ".original", viewNames);
+            return VerifyKnownWatermarkRemoved(original.Detections, cleanStep, modelName, viewNames);
+        }
+
+        public static StepWatermarkVisualResidualResult VerifyKnownWatermarkRemoved(
+            IReadOnlyList<StepWatermarkVisualDetection> originalDetections,
+            byte[] cleanStep,
+            string modelName,
+            IReadOnlyCollection<string> viewNames)
+        {
+            originalDetections = originalDetections ?? Array.Empty<StepWatermarkVisualDetection>();
+            StepWatermarkVisualScanResult clean = DetectKnownWatermarks(cleanStep, modelName + ".clean", viewNames);
             var failures = new List<string>();
 
-            if (original.Detections.Count == 0)
+            if (originalDetections.Count == 0)
             {
                 failures.Add(modelName + " original model has no known text/logo watermark detections; visual cleanup cannot be verified.");
             }
@@ -155,7 +157,7 @@ namespace EasyEDA_Loader
             {
                 foreach (StepWatermarkVisualDetection residual in clean.Detections
                     .Where(detection => detection.Score >= MinimumResidualScore)
-                    .Where(detection => MatchesOriginalWatermarkRegion(detection, original.Detections)))
+                    .Where(detection => MatchesOriginalWatermarkRegion(detection, originalDetections)))
                 {
                     failures.Add(modelName + " retains known watermark visual template " + residual.Describe() + ".");
                 }
@@ -163,12 +165,60 @@ namespace EasyEDA_Loader
 
             return new StepWatermarkVisualResidualResult
             {
-                OriginalDetections = original.Detections,
+                OriginalDetections = originalDetections,
                 ResidualDetections = clean.Detections
                     .Where(detection => detection.Score >= MinimumResidualScore)
                     .ToList(),
                 Failures = failures
             };
+        }
+
+        public static IReadOnlyList<StepWatermarkVisualDetection> CreateOriginalDetections(
+            StepWatermarkDetectionReport detectionReport,
+            IReadOnlyCollection<string> viewNames)
+        {
+            if (detectionReport?.Regions == null || detectionReport.Regions.Count == 0)
+                return Array.Empty<StepWatermarkVisualDetection>();
+
+            HashSet<string> selectedViewNames = viewNames == null || viewNames.Count == 0
+                ? null
+                : new HashSet<string>(viewNames, StringComparer.OrdinalIgnoreCase);
+            var detections = new List<StepWatermarkVisualDetection>();
+            foreach (StepWatermarkRegionDetection region in detectionReport.Regions)
+            {
+                if (region == null ||
+                    !region.RectangleX.HasValue ||
+                    !region.RectangleY.HasValue ||
+                    !region.RectangleWidth.HasValue ||
+                    !region.RectangleHeight.HasValue ||
+                    string.IsNullOrWhiteSpace(region.ViewName) ||
+                    selectedViewNames != null && !selectedViewNames.Contains(region.ViewName))
+                {
+                    continue;
+                }
+
+                var detection = new StepWatermarkVisualDetection
+                {
+                    ViewName = region.ViewName,
+                    TemplateName = region.TemplateName,
+                    Kind = region.Kind,
+                    Text = region.Text,
+                    X = region.RectangleX.Value,
+                    Y = region.RectangleY.Value,
+                    Width = region.RectangleWidth.Value,
+                    Height = region.RectangleHeight.Value,
+                    Score = region.Score,
+                    ChamferDistance = region.ChamferDistance,
+                    EdgePixelCount = region.EdgePixelCount
+                };
+                if (IsKnownWatermarkDetection(detection))
+                    detections.Add(detection);
+            }
+
+            return detections
+                .OrderBy(detection => detection.ViewName, StringComparer.OrdinalIgnoreCase)
+                .ThenByDescending(detection => detection.Score)
+                .ToList();
         }
 
         public static StepProjectionOptions CreateProjectionOptions(StepProjectionRenderMode renderMode)
@@ -187,14 +237,41 @@ namespace EasyEDA_Loader
             return options;
         }
 
-        private static bool IsKnownWatermarkDetection(StepTextLogoDetectionRegion detection)
+        private static StepWatermarkVisualDetection ToVisualDetection(
+            string viewName,
+            StepVectorWatermarkDetectionRegion detection)
         {
-            if (detection == null || string.IsNullOrWhiteSpace(detection.TemplateName))
+            return new StepWatermarkVisualDetection
+            {
+                ViewName = viewName,
+                TemplateName = detection.TemplateName,
+                Kind = detection.Kind,
+                Text = detection.Text,
+                X = detection.X,
+                Y = detection.Y,
+                Width = detection.Width,
+                Height = detection.Height,
+                Score = detection.Score,
+                ChamferDistance = detection.ChamferDistance,
+                EdgePixelCount = detection.PrimitiveCount
+            };
+        }
+
+        private static bool IsKnownWatermarkDetection(StepWatermarkVisualDetection detection)
+        {
+            if (detection == null)
                 return false;
 
-            return string.Equals(detection.TemplateName, "LCEDA", StringComparison.OrdinalIgnoreCase) ||
-                string.Equals(detection.TemplateName, "EasyEDA", StringComparison.OrdinalIgnoreCase) ||
-                string.Equals(detection.TemplateName, "easyeda-logo", StringComparison.OrdinalIgnoreCase);
+            if (string.Equals(detection.Kind, "watermark-combined", StringComparison.OrdinalIgnoreCase))
+                return true;
+
+            if (string.IsNullOrWhiteSpace(detection.TemplateName))
+                return false;
+
+            string templateName = detection.TemplateName;
+            return templateName.IndexOf("LCEDA", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                templateName.IndexOf("EasyEDA", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                templateName.IndexOf("easyeda-logo", StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
         private static bool MatchesOriginalWatermarkRegion(

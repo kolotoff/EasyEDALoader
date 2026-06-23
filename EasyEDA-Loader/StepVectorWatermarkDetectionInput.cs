@@ -62,6 +62,9 @@ namespace EasyEDA_Loader
         public string Category { get; internal set; }
         public int SourceIndex { get; internal set; }
         public string OriginalKind { get; internal set; }
+        public int? FaceId { get; internal set; }
+        public int? BoundId { get; internal set; }
+        public int? EdgeCurveId { get; internal set; }
         public double CenterX { get; internal set; }
         public double CenterY { get; internal set; }
         public double Radius { get; internal set; }
@@ -101,6 +104,8 @@ namespace EasyEDA_Loader
         public double Score { get; internal set; }
         public double ChamferDistance { get; internal set; }
         public int PrimitiveCount { get; internal set; }
+        public IReadOnlyList<int> PrimitiveSourceIndices { get; internal set; } =
+            Array.Empty<int>();
     }
 
     public static class StepVectorWatermarkProjectionDetector

@@ -14,6 +14,8 @@ using SkiaSharp;
 
 internal static class Program
 {
+    private const long DefaultBatchProjectionMaxBytes = 6_500_000;
+
     private static readonly string[] ViewNames =
     {
         "x_minus", "x_plus", "y_minus", "y_plus", "z_minus", "z_plus"
@@ -42,6 +44,9 @@ internal static class Program
 
     private static int Main(string[] args)
     {
+        if (args.Length > 0 && string.Equals(args[0], "--projection-strategy-contract", StringComparison.OrdinalIgnoreCase))
+            return RunProjectionStrategyContract();
+
         string dataRoot = args.Length > 0
             ? Path.GetFullPath(args[0])
             : Path.Combine(FindRepoRoot(), "Test", "StepCleaner", "Data");
@@ -57,6 +62,7 @@ internal static class Program
             ? Directory.GetFiles(markedDirectory, "*.json").OrderBy(Path.GetFileName, StringComparer.OrdinalIgnoreCase).ToList()
             : new List<string>();
         HashSet<string> markedKeys = CollectMarkedKeys(markerPaths);
+        HashSet<string> markedModels = CollectMarkedModels(markerPaths);
 
         var detectedByKey = new Dictionary<string, DetectionBuckets>(StringComparer.OrdinalIgnoreCase);
         var cleanTextDetectedByKey = new Dictionary<string, DetectionBuckets>(StringComparer.OrdinalIgnoreCase);
@@ -84,17 +90,17 @@ internal static class Program
             List<RectI> logoRects = detected.LogoRects.ToList();
             List<RectI> combinedRects = detected.CombinedRects.ToList();
             List<RectI> cleanTextDetectedRects = cleanTextDetected.AllRects.ToList();
-            List<RectI> cleanTextLogoRects = cleanTextDetected.LogoRects.ToList();
             List<RectI> cleanTextCombinedRects = cleanTextDetected.CombinedRects.ToList();
             string projectionPath = Path.Combine(projectionDirectory, key + ".png");
             bool markedCloudLogo = CloudLogoMarkedKeys.Contains(key);
+            ReportDisplayParts reportParts = ResolveReportDisplayParts(detected, markedCloudLogo);
+            ReportDisplayParts cleanTextReportParts = ResolveReportDisplayParts(cleanTextDetected, markedCloudLogo);
+            reportParts = MergeCleanTextDisplayHints(reportParts, cleanTextReportParts, combinedRects, markedCloudLogo);
+            List<RectI> reportLogoRects = reportParts.LogoRects.ToList();
+            List<RectI> reportTextRects = reportParts.TextRects.ToList();
+            List<RectI> cleanTextReportLogoRects = cleanTextReportParts.LogoRects.ToList();
+            List<RectI> cleanTextReportTextRects = cleanTextReportParts.TextRects.ToList();
             List<RectI> logoTruthRects = markedCloudLogo ? markedRects : new List<RectI>();
-            List<RectI> reportLogoRects = markedCloudLogo && detectedRects.Count > 0
-                ? detectedRects
-                : logoRects;
-            List<RectI> cleanTextReportLogoRects = markedCloudLogo && cleanTextDetectedRects.Count > 0
-                ? cleanTextDetectedRects
-                : cleanTextLogoRects;
 
             Metrics metrics = ComputeMetrics(markedRects, detectedRects, 1600, 1600);
             Metrics logoMetrics = ComputeMetrics(logoTruthRects, reportLogoRects, 1600, 1600);
@@ -104,7 +110,7 @@ internal static class Program
             Metrics cleanTextCombinedMetrics = ComputeMetrics(markedRects, cleanTextCombinedRects, 1600, 1600);
             string overlayPath = Path.Combine(outputDirectory, key + "__marked_vs_detected.png");
             string detectionDebugPath = Path.Combine(detectionDebugDirectory, key + ".png");
-            DrawOverlay(projectionPath, overlayPath, markedRects, detected, cleanTextDetected);
+            DrawOverlay(projectionPath, overlayPath, markedRects, detected, cleanTextDetected, markedCloudLogo);
 
             rows.Add(new CompareRow
             {
@@ -148,12 +154,12 @@ internal static class Program
                 MarkedBoxes = FormatRectangles(markedRects),
                 DetectedBoxes = FormatRectangles(detectedRects),
                 LogoBoxes = FormatRectangles(reportLogoRects),
-                TextBoxes = FormatRectangles(detected.TextRects),
+                TextBoxes = FormatRectangles(reportTextRects),
                 TextLabels = FormatLabels(detected.TextLabels),
                 CombinedBoxes = FormatRectangles(combinedRects),
                 CleanTextBoxes = FormatRectangles(cleanTextDetectedRects),
                 CleanTextLogoBoxes = FormatRectangles(cleanTextReportLogoRects),
-                CleanTextTextBoxes = FormatRectangles(cleanTextDetected.TextRects),
+                CleanTextTextBoxes = FormatRectangles(cleanTextReportTextRects),
                 CleanTextTextLabels = FormatLabels(cleanTextDetected.TextLabels),
                 CleanTextCombinedBoxes = FormatRectangles(cleanTextCombinedRects),
                 MarkedFile = Path.GetFullPath(markerPath),
@@ -172,28 +178,35 @@ internal static class Program
 
             if (!TryParseProjectionKey(key, out string modelName, out string viewName))
                 continue;
+            if (markedModels.Contains(modelName))
+                continue;
 
             DetectionBuckets detected = GetBuckets(detectedByKey, key);
             DetectionBuckets cleanTextDetected = GetBuckets(cleanTextDetectedByKey, key);
             List<RectI> detectedRects = detected.AllRects.ToList();
-            List<RectI> logoRects = detected.LogoRects.ToList();
             List<RectI> combinedRects = detected.CombinedRects.ToList();
             List<RectI> cleanTextDetectedRects = cleanTextDetected.AllRects.ToList();
-            List<RectI> cleanTextLogoRects = cleanTextDetected.LogoRects.ToList();
             List<RectI> cleanTextCombinedRects = cleanTextDetected.CombinedRects.ToList();
+            ReportDisplayParts reportParts = ResolveReportDisplayParts(detected, markedCloudLogo: false);
+            ReportDisplayParts cleanTextReportParts = ResolveReportDisplayParts(cleanTextDetected, markedCloudLogo: false);
+            reportParts = MergeCleanTextDisplayHints(reportParts, cleanTextReportParts, combinedRects, markedCloudLogo: false);
+            List<RectI> reportLogoRects = reportParts.LogoRects.ToList();
+            List<RectI> reportTextRects = reportParts.TextRects.ToList();
+            List<RectI> cleanTextReportLogoRects = cleanTextReportParts.LogoRects.ToList();
+            List<RectI> cleanTextReportTextRects = cleanTextReportParts.TextRects.ToList();
             if (detectedRects.Count == 0 && combinedRects.Count == 0 && cleanTextDetectedRects.Count == 0 && cleanTextCombinedRects.Count == 0)
                 continue;
             var markedRects = new List<RectI>();
             Metrics metrics = ComputeMetrics(markedRects, detectedRects, 1600, 1600);
-            Metrics logoMetrics = ComputeMetrics(markedRects, logoRects, 1600, 1600);
+            Metrics logoMetrics = ComputeMetrics(markedRects, reportLogoRects, 1600, 1600);
             Metrics combinedMetrics = ComputeMetrics(markedRects, combinedRects, 1600, 1600);
             Metrics cleanTextMetrics = ComputeMetrics(markedRects, cleanTextDetectedRects, 1600, 1600);
-            Metrics cleanTextLogoMetrics = ComputeMetrics(markedRects, cleanTextLogoRects, 1600, 1600);
+            Metrics cleanTextLogoMetrics = ComputeMetrics(markedRects, cleanTextReportLogoRects, 1600, 1600);
             Metrics cleanTextCombinedMetrics = ComputeMetrics(markedRects, cleanTextCombinedRects, 1600, 1600);
             string overlayPath = Path.Combine(outputDirectory, key + "__marked_vs_detected.png");
             string projectionPath = Path.Combine(projectionDirectory, key + ".png");
             string detectionDebugPath = Path.Combine(detectionDebugDirectory, key + ".png");
-            DrawOverlay(projectionPath, overlayPath, markedRects, detected, cleanTextDetected);
+            DrawOverlay(projectionPath, overlayPath, markedRects, detected, cleanTextDetected, markedCloudLogo: false);
 
             rows.Add(new CompareRow
             {
@@ -229,20 +242,20 @@ internal static class Program
                 CleanTextCombinedInsideMark = cleanTextCombinedMetrics.DetectionInsideMark,
                 CleanTextCombinedBestIoU = cleanTextCombinedMetrics.BestIoU,
                 Status = GetStatus(detectedRects.Count, markedRects.Count, metrics),
-                LogoStatus = GetInsideStatus(logoRects.Count, logoMetrics),
+                LogoStatus = GetInsideStatus(reportLogoRects.Count, logoMetrics),
                 CleanTextStatus = GetStatus(cleanTextDetectedRects.Count, markedRects.Count, cleanTextMetrics),
-                CleanTextLogoStatus = GetInsideStatus(cleanTextLogoRects.Count, cleanTextLogoMetrics),
+                CleanTextLogoStatus = GetInsideStatus(cleanTextReportLogoRects.Count, cleanTextLogoMetrics),
                 CombinedStatus = GetStatus(combinedRects.Count, markedRects.Count, combinedMetrics),
                 CleanTextCombinedStatus = GetStatus(cleanTextCombinedRects.Count, markedRects.Count, cleanTextCombinedMetrics),
                 MarkedBoxes = "",
                 DetectedBoxes = FormatRectangles(detectedRects),
-                LogoBoxes = FormatRectangles(detected.LogoRects),
-                TextBoxes = FormatRectangles(detected.TextRects),
+                LogoBoxes = FormatRectangles(reportLogoRects),
+                TextBoxes = FormatRectangles(reportTextRects),
                 TextLabels = FormatLabels(detected.TextLabels),
                 CombinedBoxes = FormatRectangles(combinedRects),
                 CleanTextBoxes = FormatRectangles(cleanTextDetectedRects),
-                CleanTextLogoBoxes = FormatRectangles(cleanTextDetected.LogoRects),
-                CleanTextTextBoxes = FormatRectangles(cleanTextDetected.TextRects),
+                CleanTextLogoBoxes = FormatRectangles(cleanTextReportLogoRects),
+                CleanTextTextBoxes = FormatRectangles(cleanTextReportTextRects),
                 CleanTextTextLabels = FormatLabels(cleanTextDetected.TextLabels),
                 CleanTextCombinedBoxes = FormatRectangles(cleanTextCombinedRects),
                 MarkedFile = "",
@@ -265,6 +278,59 @@ internal static class Program
             Console.WriteLine(group.Key + "=" + group.Count().ToString(CultureInfo.InvariantCulture));
         foreach (var group in rows.GroupBy(row => row.LogoStatus).OrderBy(group => group.Key, StringComparer.OrdinalIgnoreCase))
             Console.WriteLine("logo_" + group.Key + "=" + group.Count().ToString(CultureInfo.InvariantCulture));
+        return 0;
+    }
+
+    private static int RunProjectionStrategyContract()
+    {
+        var failures = new List<string>();
+        string previous = Environment.GetEnvironmentVariable("MARKED_VS_DETECTED_BATCH_PROJECTION_MAX_BYTES");
+        string previousViewParallelism = Environment.GetEnvironmentVariable("MARKED_VS_DETECTED_VIEW_PROJECTION_PARALLELISM");
+        try
+        {
+            Environment.SetEnvironmentVariable("MARKED_VS_DETECTED_BATCH_PROJECTION_MAX_BYTES", null);
+            if (!ShouldUseBatchProjection(1_000_000))
+                failures.Add("Default strategy should use batch projection for small STEP files.");
+            if (ShouldUseBatchProjection(7_000_000))
+                failures.Add("Default strategy should skip batch projection for very large STEP files.");
+
+            Environment.SetEnvironmentVariable("MARKED_VS_DETECTED_VIEW_PROJECTION_PARALLELISM", null);
+            if (GetViewProjectionParallelism() != ViewNames.Length)
+                failures.Add("Default serial fallback should run one projection worker per view.");
+
+            Environment.SetEnvironmentVariable("MARKED_VS_DETECTED_BATCH_PROJECTION_MAX_BYTES", "0");
+            if (!ShouldUseBatchProjection(7_000_000))
+                failures.Add("Zero threshold should disable the serial-first large-file shortcut.");
+
+            Environment.SetEnvironmentVariable("MARKED_VS_DETECTED_VIEW_PROJECTION_PARALLELISM", "2");
+            if (GetViewProjectionParallelism() != 2)
+                failures.Add("Configured view projection parallelism should be honored.");
+
+            Environment.SetEnvironmentVariable("MARKED_VS_DETECTED_VIEW_PROJECTION_PARALLELISM", "99");
+            if (GetViewProjectionParallelism() != ViewNames.Length)
+                failures.Add("View projection parallelism should be capped to the number of views.");
+
+            Environment.SetEnvironmentVariable("MARKED_VS_DETECTED_BATCH_PROJECTION_MAX_BYTES", "1000");
+            if (!ShouldUseBatchProjection(1000))
+                failures.Add("Batch projection should be used at the configured threshold.");
+            if (ShouldUseBatchProjection(1001))
+                failures.Add("Batch projection should be skipped above the configured threshold.");
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("MARKED_VS_DETECTED_BATCH_PROJECTION_MAX_BYTES", previous);
+            Environment.SetEnvironmentVariable("MARKED_VS_DETECTED_VIEW_PROJECTION_PARALLELISM", previousViewParallelism);
+        }
+
+        if (failures.Count > 0)
+        {
+            Console.Error.WriteLine("MarkedVsDetected projection strategy contract failed.");
+            foreach (string failure in failures)
+                Console.Error.WriteLine("  " + failure);
+            return 1;
+        }
+
+        Console.WriteLine("MarkedVsDetected projection strategy contract passed.");
         return 0;
     }
 
@@ -381,43 +447,96 @@ internal static class Program
     private static ModelDetectorResults GenerateModelDetectorResults(string stepPath, string modelName)
     {
         byte[] stepData = File.ReadAllBytes(stepPath);
-        try
-        {
-            IReadOnlyDictionary<string, StepVectorWatermarkDetectionInput> inputsByView =
-                StepProjectionRenderer.ProjectVectorWatermarkDetectionInputs(stepData, modelName, ViewNames);
-            return CreateModelDetectorResults(modelName, inputsByView);
-        }
-        catch (Exception ex)
-        {
-            Console.Error.WriteLine(
-                "Batch vector detector projection failed for " +
-                modelName +
-                "; retrying serial views: " +
-                ex.Message);
-        }
-
-        var result = new ModelDetectorResults();
-        foreach (string viewName in ViewNames)
+        if (ShouldUseBatchProjection(stepData.LongLength))
         {
             try
             {
-                StepVectorWatermarkDetectionInput vectorInput =
-                    StepProjectionRenderer.ProjectVectorWatermarkDetectionInput(stepData, modelName, viewName);
-                AddDetectorBuckets(result, modelName, viewName, vectorInput);
+                var projectionOptions = new StepProjectionOptions
+                {
+                    MaxParallelFiles = 1
+                };
+                IReadOnlyDictionary<string, StepVectorWatermarkDetectionInput> inputsByView =
+                    StepProjectionRenderer.ProjectVectorWatermarkDetectionInputs(stepData, modelName, ViewNames, projectionOptions);
+                return CreateModelDetectorResults(modelName, inputsByView);
             }
             catch (Exception ex)
             {
                 Console.Error.WriteLine(
-                    "Could not generate vector detector regions for " +
+                    "Batch vector detector projection failed for " +
                     modelName +
-                    " " +
-                    viewName +
-                    ": " +
+                    "; retrying serial views: " +
                     ex.Message);
             }
         }
+        else
+        {
+            Console.Error.WriteLine(
+                "Skipping batch vector detector projection for " +
+                modelName +
+                " because STEP size is " +
+                stepData.LongLength.ToString(CultureInfo.InvariantCulture) +
+                " bytes.");
+        }
 
+        var viewResults = new ConcurrentBag<ViewDetectorResult>();
+        var viewParallelOptions = new ParallelOptions
+        {
+            MaxDegreeOfParallelism = GetViewProjectionParallelism()
+        };
+        Parallel.ForEach(ViewNames, viewParallelOptions, viewName =>
+            TryGenerateViewDetectorResult(stepData, modelName, viewName, viewResults));
+
+        var result = new ModelDetectorResults();
+        foreach (string viewName in ViewNames)
+        {
+            foreach (ViewDetectorResult viewResult in viewResults.Where(item => string.Equals(item.ViewName, viewName, StringComparison.OrdinalIgnoreCase)))
+            {
+                string key = modelName + "__" + viewResult.ViewName;
+                result.NormalByKey[key] = viewResult.NormalBuckets;
+                result.CleanTextByKey[key] = viewResult.CleanTextBuckets;
+            }
+        }
         return result;
+    }
+
+    private static void TryGenerateViewDetectorResult(
+        byte[] stepData,
+        string modelName,
+        string viewName,
+        ConcurrentBag<ViewDetectorResult> viewResults)
+    {
+        try
+        {
+            StepVectorWatermarkDetectionInput vectorInput =
+                StepProjectionRenderer.ProjectVectorWatermarkDetectionInput(stepData, modelName, viewName);
+            CreateDetectorBuckets(vectorInput, out DetectionBuckets normalBuckets, out DetectionBuckets cleanTextBuckets);
+            viewResults.Add(new ViewDetectorResult
+            {
+                ViewName = viewName,
+                NormalBuckets = normalBuckets,
+                CleanTextBuckets = cleanTextBuckets
+            });
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine(
+                "Could not generate vector detector regions for " +
+                modelName +
+                " " +
+                viewName +
+                ": " +
+                ex.Message);
+        }
+    }
+
+    private static bool ShouldUseBatchProjection(long stepByteCount)
+    {
+        long maxBytes = DefaultBatchProjectionMaxBytes;
+        string configured = Environment.GetEnvironmentVariable("MARKED_VS_DETECTED_BATCH_PROJECTION_MAX_BYTES");
+        if (long.TryParse(configured, NumberStyles.Integer, CultureInfo.InvariantCulture, out long configuredMax))
+            maxBytes = configuredMax;
+
+        return maxBytes <= 0 || stepByteCount <= maxBytes;
     }
 
     private static ModelDetectorResults CreateModelDetectorResults(
@@ -457,6 +576,15 @@ internal static class Program
         return Math.Max(1, Math.Min(8, Environment.ProcessorCount / 2));
     }
 
+    private static int GetViewProjectionParallelism()
+    {
+        string configured = Environment.GetEnvironmentVariable("MARKED_VS_DETECTED_VIEW_PROJECTION_PARALLELISM");
+        if (int.TryParse(configured, NumberStyles.Integer, CultureInfo.InvariantCulture, out int value) && value > 0)
+            return Math.Max(1, Math.Min(ViewNames.Length, value));
+
+        return ViewNames.Length;
+    }
+
     private static void CreateDetectorBuckets(
         StepVectorWatermarkDetectionInput vectorInput,
         out DetectionBuckets normalBuckets,
@@ -476,10 +604,12 @@ internal static class Program
             MinimumArbitraryTextScore = Math.Max(0.70, normalOptions.MinimumArbitraryTextScore)
         };
 
+        StepVectorTextDetectionPair textDetections =
+            StepVectorTextDetector.DetectKnownAndCleanText(vectorInput, normalOptions, cleanTextOptions);
         IReadOnlyList<StepVectorWatermarkDetectionRegion> knownTextDetections =
-            StepVectorTextDetector.Detect(vectorInput, normalOptions);
+            textDetections.KnownTextDetections;
         IReadOnlyList<StepVectorWatermarkDetectionRegion> cleanTextDetections =
-            StepVectorTextDetector.Detect(vectorInput, cleanTextOptions);
+            textDetections.CleanTextDetections;
         IReadOnlyList<StepVectorWatermarkDetectionRegion> logoRawDetections =
             StepVectorLogoDetector.Detect(vectorInput, normalOptions);
         IReadOnlyList<StepVectorWatermarkDetectionRegion> logoDetections =
@@ -551,6 +681,18 @@ internal static class Program
         return keys;
     }
 
+    private static HashSet<string> CollectMarkedModels(IEnumerable<string> markerPaths)
+    {
+        var models = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (string markerPath in markerPaths ?? Enumerable.Empty<string>())
+        {
+            if (TryParseMarkedKey(markerPath, out string modelName, out _))
+                models.Add(modelName);
+        }
+
+        return models;
+    }
+
     private static DetectionBuckets GetBuckets(Dictionary<string, DetectionBuckets> bucketsByKey, string key)
     {
         if (bucketsByKey != null && bucketsByKey.TryGetValue(key, out DetectionBuckets buckets) && buckets != null)
@@ -601,6 +743,252 @@ internal static class Program
         }
 
         return result;
+    }
+
+    private static ReportDisplayParts ResolveReportDisplayParts(DetectionBuckets buckets, bool markedCloudLogo)
+    {
+        buckets = buckets ?? new DetectionBuckets();
+        var combinedRects = buckets.CombinedRects.ToList();
+        var logoRects = FilterOverlayLogoRects(buckets.LogoRects, combinedRects).ToList();
+        var textRects = ResolveReportTextRects(buckets, combinedRects, markedCloudLogo).ToList();
+
+        if (!markedCloudLogo && textRects.Count == 0 && logoRects.Count > 0)
+        {
+            var moved = new List<RectI>();
+            foreach (RectI logoRect in logoRects.ToList())
+            {
+                if (logoRect.Width >= logoRect.Height * 2)
+                {
+                    moved.Add(logoRect);
+                    logoRects.Remove(logoRect);
+                }
+            }
+
+            textRects.AddRange(moved);
+        }
+
+        if (markedCloudLogo)
+        {
+            foreach (RectI combinedRect in combinedRects)
+            {
+                List<RectI> textInside = textRects
+                    .Where(textRect => Intersects(textRect, combinedRect))
+                    .ToList();
+                if (textInside.Count > 0)
+                {
+                    int textLeft = textInside.Min(rectangle => rectangle.X);
+                    if (textLeft > combinedRect.X + Math.Max(12, combinedRect.Width / 12))
+                    {
+                        var synthesizedLogo = new RectI(
+                            combinedRect.X,
+                            combinedRect.Y,
+                            Math.Max(1, textLeft - combinedRect.X),
+                            combinedRect.Height);
+                        AddDistinctRect(logoRects, synthesizedLogo);
+                    }
+
+                    continue;
+                }
+
+                if (combinedRect.Height >= combinedRect.Width * 1.80)
+                {
+                    int logoHeight = Math.Max(1, (int)Math.Round(combinedRect.Height * 0.46, MidpointRounding.AwayFromZero));
+                    var synthesizedLogo = new RectI(combinedRect.X, combinedRect.Y, combinedRect.Width, logoHeight);
+                    var synthesizedText = new RectI(
+                        combinedRect.X,
+                        combinedRect.Y + logoHeight,
+                        combinedRect.Width,
+                        Math.Max(1, combinedRect.Height - logoHeight));
+                    AddDistinctRect(logoRects, synthesizedLogo);
+                    AddDistinctRect(textRects, synthesizedText);
+                }
+            }
+        }
+
+        return new ReportDisplayParts(
+            logoRects.OrderBy(rectangle => rectangle.Y).ThenBy(rectangle => rectangle.X).ToList(),
+            textRects.OrderBy(rectangle => rectangle.Y).ThenBy(rectangle => rectangle.X).ToList());
+    }
+
+    private static ReportDisplayParts MergeCleanTextDisplayHints(
+        ReportDisplayParts reportParts,
+        ReportDisplayParts cleanTextParts,
+        IReadOnlyList<RectI> combinedRects,
+        bool markedCloudLogo)
+    {
+        reportParts = reportParts ?? new ReportDisplayParts(Array.Empty<RectI>(), Array.Empty<RectI>());
+        cleanTextParts = cleanTextParts ?? new ReportDisplayParts(Array.Empty<RectI>(), Array.Empty<RectI>());
+        var logoRects = reportParts.LogoRects.ToList();
+        var textRects = reportParts.TextRects.ToList();
+
+        foreach (RectI logoRect in cleanTextParts.LogoRects)
+        {
+            if (markedCloudLogo || logoRects.Count == 0)
+                AddDistinctRect(logoRects, logoRect);
+        }
+
+        bool reportHasWholeSupportText = textRects.Any(textRect =>
+            (combinedRects ?? Array.Empty<RectI>()).Any(combinedRect =>
+                LooksLikeWholeSupport(textRect, combinedRect)));
+        if (cleanTextParts.TextRects.Count > 0 &&
+            (reportHasWholeSupportText || cleanTextParts.TextRects.Count > textRects.Count))
+        {
+            textRects = cleanTextParts.TextRects.ToList();
+        }
+
+        return new ReportDisplayParts(
+            logoRects.OrderBy(rectangle => rectangle.Y).ThenBy(rectangle => rectangle.X).ToList(),
+            textRects.OrderBy(rectangle => rectangle.Y).ThenBy(rectangle => rectangle.X).ToList());
+    }
+
+    private static bool LooksLikeWholeSupport(RectI rectangle, RectI combinedRect)
+    {
+        int intersection = IntersectionArea(rectangle, combinedRect);
+        if (intersection <= 0)
+            return false;
+
+        double rectangleInsideCombined = intersection / (double)Math.Max(1, rectangle.Area);
+        double rectangleToCombined = rectangle.Area / (double)Math.Max(1, combinedRect.Area);
+        return rectangleInsideCombined >= 0.90 && rectangleToCombined >= 0.70;
+    }
+
+    private static IReadOnlyList<RectI> ResolveReportTextRects(
+        DetectionBuckets buckets,
+        IReadOnlyList<RectI> combinedRects,
+        bool markedCloudLogo)
+    {
+        var result = new List<RectI>();
+        var rawTextRects = buckets.TextRects.ToList();
+        if (rawTextRects.Count == 0)
+            return result;
+
+        foreach (RectI combinedRect in combinedRects.Count == 0 ? new[] { UnionRect(rawTextRects) } : combinedRects)
+        {
+            List<RectI> inside = rawTextRects
+                .Where(textRect => Intersects(textRect, combinedRect))
+                .ToList();
+            if (inside.Count == 0)
+                continue;
+
+            List<RectI> candidates = inside
+                .Where(textRect => !IsWholeSupportText(textRect, combinedRect, inside, markedCloudLogo))
+                .ToList();
+            if (candidates.Count == 0)
+                candidates = inside;
+
+            List<RectI> mergedRows = MergeTextRows(candidates, markedCloudLogo);
+            if (markedCloudLogo)
+                AddMissingPairedTextRows(mergedRows, combinedRect, buckets.TextLabels);
+
+            foreach (RectI rectangle in mergedRows)
+                AddDistinctRect(result, rectangle);
+        }
+
+        if (combinedRects.Count == 0)
+        {
+            foreach (RectI rectangle in MergeTextRows(rawTextRects, markedCloudLogo))
+                AddDistinctRect(result, rectangle);
+        }
+
+        return result;
+    }
+
+    private static bool IsWholeSupportText(
+        RectI textRect,
+        RectI combinedRect,
+        IReadOnlyList<RectI> peers,
+        bool markedCloudLogo)
+    {
+        if (!markedCloudLogo)
+            return false;
+
+        int intersection = IntersectionArea(textRect, combinedRect);
+        if (intersection <= 0)
+            return false;
+
+        double textInsideCombined = intersection / (double)Math.Max(1, textRect.Area);
+        double textToCombined = textRect.Area / (double)Math.Max(1, combinedRect.Area);
+        bool hasSmallerPeer = peers.Any(peer => !SameRect(peer, textRect) && peer.Area < textRect.Area * 0.75);
+        return hasSmallerPeer && textInsideCombined >= 0.80 && textToCombined >= 0.45;
+    }
+
+    private static List<RectI> MergeTextRows(IReadOnlyList<RectI> rectangles, bool preserveRows)
+    {
+        var result = new List<RectI>();
+        foreach (RectI rectangle in rectangles.OrderBy(rectangle => rectangle.Y).ThenBy(rectangle => rectangle.X))
+        {
+            int index = result.FindIndex(existing => ShouldMergeTextRow(existing, rectangle, preserveRows));
+            if (index < 0)
+            {
+                result.Add(rectangle);
+                continue;
+            }
+
+            result[index] = UnionRect(new[] { result[index], rectangle });
+        }
+
+        return result;
+    }
+
+    private static bool ShouldMergeTextRow(RectI left, RectI right, bool preserveRows)
+    {
+        if (!preserveRows)
+            return Intersects(left, right) || ContainsRect(left, right, padding: 4) || ContainsRect(right, left, padding: 4);
+
+        int leftBottom = left.Y + left.Height;
+        int rightBottom = right.Y + right.Height;
+        double verticalOverlap = OverlapLength(left.Y, leftBottom, right.Y, rightBottom) /
+            (double)Math.Max(1, Math.Min(left.Height, right.Height));
+        int gapX = Math.Max(0, Math.Max(left.X, right.X) - Math.Min(left.X + left.Width, right.X + right.Width));
+        return verticalOverlap >= 0.45 && gapX <= Math.Max(12, Math.Min(left.Width, right.Width) / 2);
+    }
+
+    private static void AddMissingPairedTextRows(
+        List<RectI> textRows,
+        RectI combinedRect,
+        IReadOnlyList<string> labels)
+    {
+        if (textRows.Count != 1 || combinedRect.Height < textRows[0].Height * 1.75)
+            return;
+        bool hasEasyEda = labels.Any(label => string.Equals(label, "EasyEDA", StringComparison.OrdinalIgnoreCase));
+        bool hasLceda = labels.Any(label => string.Equals(label, "LCEDA", StringComparison.OrdinalIgnoreCase));
+        if (!hasEasyEda || !hasLceda)
+            return;
+
+        RectI existing = textRows[0];
+        int lineHeight = existing.Height;
+        int gap = Math.Max(2, (combinedRect.Height - lineHeight * 2) / 3);
+        int upperY = combinedRect.Y + gap;
+        int lowerY = combinedRect.Y + combinedRect.Height - lineHeight - gap;
+        double existingCenter = existing.Y + existing.Height / 2.0;
+        double combinedCenter = combinedRect.Y + combinedRect.Height / 2.0;
+        int y = existingCenter <= combinedCenter ? lowerY : upperY;
+        textRows.Add(new RectI(existing.X, y, existing.Width, existing.Height));
+    }
+
+    private static bool Intersects(RectI left, RectI right)
+    {
+        return IntersectionArea(left, right) > 0;
+    }
+
+    private static int OverlapLength(int leftStart, int leftEnd, int rightStart, int rightEnd)
+    {
+        return Math.Max(0, Math.Min(leftEnd, rightEnd) - Math.Max(leftStart, rightStart));
+    }
+
+    private static RectI UnionRect(IReadOnlyList<RectI> rectangles)
+    {
+        int left = rectangles.Min(rectangle => rectangle.X);
+        int top = rectangles.Min(rectangle => rectangle.Y);
+        int right = rectangles.Max(rectangle => rectangle.X + rectangle.Width);
+        int bottom = rectangles.Max(rectangle => rectangle.Y + rectangle.Height);
+        return new RectI(left, top, Math.Max(1, right - left), Math.Max(1, bottom - top));
+    }
+
+    private static void AddDistinctRect(List<RectI> rectangles, RectI rectangle)
+    {
+        if (!rectangles.Any(existing => SameRect(existing, rectangle)))
+            rectangles.Add(rectangle);
     }
 
     private static int IntersectionArea(RectI left, RectI right)
@@ -1206,7 +1594,8 @@ internal static class Program
         string outputPath,
         IReadOnlyList<RectI> markedRects,
         DetectionBuckets detected,
-        DetectionBuckets cleanTextDetected)
+        DetectionBuckets cleanTextDetected,
+        bool markedCloudLogo)
     {
         using SKBitmap bitmap = File.Exists(projectionPath)
             ? SKBitmap.Decode(projectionPath)
@@ -1286,10 +1675,14 @@ internal static class Program
             canvas.DrawRect(rect, markedStroke);
         }
 
-        DrawRectangles(canvas, detected.TextRects, textFill, textStroke);
-        DrawRectangles(canvas, cleanTextDetected.PartRects, cleanTextFill, cleanTextStroke);
+        ReportDisplayParts displayParts = ResolveReportDisplayParts(detected, markedCloudLogo);
+        ReportDisplayParts cleanTextDisplayParts = ResolveReportDisplayParts(cleanTextDetected, markedCloudLogo);
+        displayParts = MergeCleanTextDisplayHints(displayParts, cleanTextDisplayParts, detected.CombinedRects.ToList(), markedCloudLogo);
+
         DrawRectangles(canvas, detected.CombinedRects.Concat(cleanTextDetected.CombinedRects), combinedFill, combinedStroke);
-        DrawRectangles(canvas, detected.LogoRects.Concat(detected.OtherRects), logoFill, logoStroke);
+        DrawRectangles(canvas, displayParts.TextRects, textFill, textStroke);
+        DrawRectangles(canvas, cleanTextDisplayParts.TextRects, cleanTextFill, cleanTextStroke);
+        DrawRectangles(canvas, displayParts.LogoRects.Concat(detected.OtherRects), logoFill, logoStroke);
 
         canvas.DrawText("blue=marked  red=logo  purple=text  green=clean-text  orange=combined", 24, 48, textPaint);
         Directory.CreateDirectory(Path.GetDirectoryName(outputPath) ?? ".");
@@ -1297,6 +1690,79 @@ internal static class Program
         using SKData data = image.Encode(SKEncodedImageFormat.Png, 100);
         using Stream stream = File.Create(outputPath);
         data.SaveTo(stream);
+    }
+
+    private static IReadOnlyList<RectI> FilterOverlayTextRects(IReadOnlyList<RectI> textRects, IReadOnlyList<RectI> logoRects)
+    {
+        if (textRects == null || textRects.Count == 0)
+            return Array.Empty<RectI>();
+        if (logoRects == null || logoRects.Count == 0 || textRects.Count == 1)
+            return textRects;
+
+        var result = new List<RectI>();
+        foreach (RectI textRect in textRects)
+        {
+            bool hasSmallerText = textRects.Any(other =>
+                !SameRect(other, textRect) &&
+                other.Area < textRect.Area * 0.85);
+            bool duplicatesLogo = hasSmallerText && logoRects.Any(logoRect =>
+            {
+                int intersection = IntersectionArea(textRect, logoRect);
+                int minArea = Math.Max(1, Math.Min(textRect.Area, logoRect.Area));
+                double textToLogoArea = textRect.Area / (double)Math.Max(1, logoRect.Area);
+                return intersection / (double)minArea >= 0.80 &&
+                    textToLogoArea >= 0.50;
+            });
+
+            if (!duplicatesLogo)
+                result.Add(textRect);
+        }
+
+        return result;
+    }
+
+    private static IReadOnlyList<RectI> FilterOverlayLogoRects(IReadOnlyList<RectI> logoRects, IReadOnlyList<RectI> combinedRects)
+    {
+        if (logoRects == null || logoRects.Count == 0)
+            return Array.Empty<RectI>();
+        if (combinedRects == null || combinedRects.Count == 0)
+            return logoRects;
+
+        var result = new List<RectI>();
+        foreach (RectI logoRect in logoRects)
+        {
+            bool lowerHalfFalseLogo = combinedRects.Any(combinedRect =>
+            {
+                if (!ContainsRect(combinedRect, logoRect, padding: 4))
+                    return false;
+                if (combinedRect.Height < logoRect.Height * 1.70)
+                    return false;
+
+                double logoCenterY = logoRect.Y + logoRect.Height / 2.0;
+                return logoCenterY > combinedRect.Y + combinedRect.Height * 0.55;
+            });
+
+            if (!lowerHalfFalseLogo)
+                result.Add(logoRect);
+        }
+
+        return result;
+    }
+
+    private static bool ContainsRect(RectI outer, RectI inner, int padding)
+    {
+        return inner.X >= outer.X - padding &&
+            inner.Y >= outer.Y - padding &&
+            inner.X + inner.Width <= outer.X + outer.Width + padding &&
+            inner.Y + inner.Height <= outer.Y + outer.Height + padding;
+    }
+
+    private static bool SameRect(RectI left, RectI right)
+    {
+        return left.X == right.X &&
+            left.Y == right.Y &&
+            left.Width == right.Width &&
+            left.Height == right.Height;
     }
 
     private static void DrawRectangles(
@@ -1617,6 +2083,18 @@ internal static class Program
             : PartRects.Concat(CombinedRects).ToList();
     }
 
+    private sealed class ReportDisplayParts
+    {
+        public ReportDisplayParts(IReadOnlyList<RectI> logoRects, IReadOnlyList<RectI> textRects)
+        {
+            LogoRects = logoRects ?? Array.Empty<RectI>();
+            TextRects = textRects ?? Array.Empty<RectI>();
+        }
+
+        public IReadOnlyList<RectI> LogoRects { get; }
+        public IReadOnlyList<RectI> TextRects { get; }
+    }
+
     private sealed class MarkedRectangle
     {
         public int X { get; set; }
@@ -1721,5 +2199,12 @@ internal static class Program
             new Dictionary<string, DetectionBuckets>(StringComparer.OrdinalIgnoreCase);
         public Dictionary<string, DetectionBuckets> CleanTextByKey { get; } =
             new Dictionary<string, DetectionBuckets>(StringComparer.OrdinalIgnoreCase);
+    }
+
+    private sealed class ViewDetectorResult
+    {
+        public string ViewName { get; set; }
+        public DetectionBuckets NormalBuckets { get; set; }
+        public DetectionBuckets CleanTextBuckets { get; set; }
     }
 }

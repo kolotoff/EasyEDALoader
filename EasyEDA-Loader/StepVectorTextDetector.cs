@@ -5,9 +5,18 @@ using System.Linq;
 
 namespace EasyEDA_Loader
 {
+    public sealed class StepVectorTextDetectionPair
+    {
+        public IReadOnlyList<StepVectorWatermarkDetectionRegion> KnownTextDetections { get; set; } =
+            Array.Empty<StepVectorWatermarkDetectionRegion>();
+        public IReadOnlyList<StepVectorWatermarkDetectionRegion> CleanTextDetections { get; set; } =
+            Array.Empty<StepVectorWatermarkDetectionRegion>();
+    }
+
     public static class StepVectorTextDetector
     {
         private static readonly int[] RightAngleOrientations = { 0, 90, 180, 270 };
+        private static readonly IReadOnlyList<TextTemplateOrientation> KnownTextTemplates = BuildKnownTextTemplates();
         private const double MaximumKnownTemplateChamfer = 18.0;
         private const int MaximumPointsPerScore = 900;
 
@@ -24,28 +33,89 @@ namespace EasyEDA_Loader
                 return Array.Empty<StepVectorWatermarkDetectionRegion>();
 
             List<VectorTextComponent> components = BuildComponents(strokes);
+            return DetectFromComponents(components, options);
+        }
+
+        public static StepVectorTextDetectionPair DetectKnownAndCleanText(
+            StepVectorWatermarkDetectionInput input,
+            StepTextLogoDetectionOptions knownTextOptions = null,
+            StepTextLogoDetectionOptions cleanTextOptions = null)
+        {
+            if (input == null)
+                throw new ArgumentNullException(nameof(input));
+
+            knownTextOptions = knownTextOptions ?? new StepTextLogoDetectionOptions { DetectArbitraryText = false };
+            cleanTextOptions = cleanTextOptions ?? new StepTextLogoDetectionOptions { DetectArbitraryText = true };
+
+            List<VectorTextStroke> strokes = ExtractStrokes(input);
+            if (strokes.Count == 0)
+            {
+                return new StepVectorTextDetectionPair
+                {
+                    KnownTextDetections = Array.Empty<StepVectorWatermarkDetectionRegion>(),
+                    CleanTextDetections = Array.Empty<StepVectorWatermarkDetectionRegion>()
+                };
+            }
+
+            List<VectorTextComponent> components = BuildComponents(strokes);
+            var knownDetections = new List<StepVectorWatermarkDetectionRegion>();
+            var cleanDetections = new List<StepVectorWatermarkDetectionRegion>();
+            foreach (VectorTextCandidate candidate in BuildCandidates(components, cleanTextOptions))
+            {
+                OrientedTextScore bestKnown = FindBestKnownText(candidate);
+                AddCandidateDetection(candidate, bestKnown, knownTextOptions, knownDetections);
+                AddCandidateDetection(candidate, bestKnown, cleanTextOptions, cleanDetections);
+            }
+
+            return new StepVectorTextDetectionPair
+            {
+                KnownTextDetections = FinalizeTextDetections(knownDetections),
+                CleanTextDetections = FinalizeTextDetections(cleanDetections)
+            };
+        }
+
+        private static IReadOnlyList<StepVectorWatermarkDetectionRegion> DetectFromComponents(
+            IReadOnlyList<VectorTextComponent> components,
+            StepTextLogoDetectionOptions options)
+        {
             var detections = new List<StepVectorWatermarkDetectionRegion>();
             foreach (VectorTextCandidate candidate in BuildCandidates(components, options))
             {
-                OrientedTextScore bestKnown = ScoreKnownText(candidate, options);
-                if (bestKnown.Score >= options.MinimumKnownTemplateScore)
-                {
-                    detections.Add(CreateRegion(candidate, bestKnown));
-                    continue;
-                }
-
-                if (!options.DetectArbitraryText)
-                    continue;
-
-                OrientedTextScore arbitrary = ScoreArbitraryText(candidate, options);
-                if (arbitrary.Score >= options.MinimumArbitraryTextScore)
-                    detections.Add(CreateRegion(candidate, arbitrary));
+                OrientedTextScore bestKnown = FindBestKnownText(candidate);
+                AddCandidateDetection(candidate, bestKnown, options, detections);
             }
 
-            return SuppressOverlappingDetections(detections)
+            return FinalizeTextDetections(detections);
+        }
+
+        private static void AddCandidateDetection(
+            VectorTextCandidate candidate,
+            OrientedTextScore bestKnown,
+            StepTextLogoDetectionOptions options,
+            List<StepVectorWatermarkDetectionRegion> detections)
+        {
+            if (AcceptsKnownText(bestKnown, options))
+            {
+                detections.Add(CreateRegion(candidate, bestKnown));
+                return;
+            }
+
+            if (!options.DetectArbitraryText)
+                return;
+
+            OrientedTextScore arbitrary = ScoreArbitraryText(candidate, options);
+            if (arbitrary.Score >= options.MinimumArbitraryTextScore)
+                detections.Add(CreateRegion(candidate, arbitrary));
+        }
+
+        private static IReadOnlyList<StepVectorWatermarkDetectionRegion> FinalizeTextDetections(
+            IReadOnlyList<StepVectorWatermarkDetectionRegion> detections)
+        {
+            List<StepVectorWatermarkDetectionRegion> textRegions = SuppressOverlappingDetections(detections)
                 .Where(detection => string.Equals(detection.Kind, "text", StringComparison.OrdinalIgnoreCase))
                 .OrderByDescending(detection => detection.Score)
                 .ToList();
+            return ExpandContextualLcedaRegions(CombineClosestArbitraryTextRegions(textRegions));
         }
 
         private static List<VectorTextStroke> ExtractStrokes(StepVectorWatermarkDetectionInput input)
@@ -227,52 +297,67 @@ namespace EasyEDA_Loader
             VectorTextCandidate candidate,
             StepTextLogoDetectionOptions options)
         {
-            OrientedTextScore best = OrientedTextScore.Rejected;
-            foreach (StepWatermarkTemplate template in StepWatermarkTemplateLibrary.GetKnownTemplates())
-            {
-                if (!string.Equals(template.Kind, "text", StringComparison.OrdinalIgnoreCase))
-                    continue;
+            OrientedTextScore best = FindBestKnownText(candidate);
+            return AcceptsKnownText(best, options) ? best : OrientedTextScore.Rejected;
+        }
 
-                foreach (int templateRotation in RightAngleOrientations)
-                {
-                    OrientedTextScore score = ScoreKnownTemplate(candidate, template, templateRotation);
-                    if (score.Score > best.Score)
-                        best = score;
-                }
-            }
+        private static bool AcceptsKnownText(
+            OrientedTextScore score,
+            StepTextLogoDetectionOptions options)
+        {
+            if (score == null)
+                return false;
 
             double minimumKnownScore = Math.Max(options.MinimumKnownTemplateScore, 0.56);
-            return best.Score >= minimumKnownScore ? best : OrientedTextScore.Rejected;
+            return score.Score >= minimumKnownScore;
+        }
+
+        private static OrientedTextScore FindBestKnownText(VectorTextCandidate candidate)
+        {
+            OrientedTextScore best = OrientedTextScore.Rejected;
+            List<VectorPoint> candidatePoints = Downsample(candidate.OrientedPoints, MaximumPointsPerScore);
+            if (candidatePoints.Count < 8)
+                return OrientedTextScore.Rejected;
+
+            StepVectorNearestPointIndex candidateIndex = CreateIndex(candidatePoints);
+            foreach (TextTemplateOrientation template in KnownTextTemplates)
+            {
+                OrientedTextScore score = ScoreKnownTemplate(candidate, candidatePoints, candidateIndex, template);
+                if (score.Score > best.Score)
+                    best = score;
+            }
+
+            return best;
         }
 
         private static OrientedTextScore ScoreKnownTemplate(
             VectorTextCandidate candidate,
-            StepWatermarkTemplate template,
-            int templateRotation)
+            IReadOnlyList<VectorPoint> candidatePoints,
+            StepVectorNearestPointIndex candidateIndex,
+            TextTemplateOrientation template)
         {
-            if (template == null || template.EdgePoints == null || template.EdgePoints.Count == 0)
+            if (template == null || template.Points == null || template.Points.Count == 0)
                 return OrientedTextScore.Rejected;
             if (candidate.OrientedBounds.Width <= 0.0 || candidate.OrientedBounds.Height <= 0.0)
                 return OrientedTextScore.Rejected;
 
-            GetRotatedTemplateSize(template, templateRotation, out int templateWidth, out int templateHeight);
             double candidateAspect = Aspect(candidate.OrientedBounds.Width, candidate.OrientedBounds.Height);
-            double templateAspect = Aspect(templateWidth, templateHeight);
+            double templateAspect = Aspect(template.Width, template.Height);
             double aspectScore = 1.0 - Math.Min(1.0, Math.Abs(Math.Log(candidateAspect / Math.Max(0.001, templateAspect))) / Math.Log(3.5));
             if (aspectScore <= 0.0)
                 return OrientedTextScore.Rejected;
 
-            List<VectorPoint> candidatePoints = Downsample(candidate.OrientedPoints, MaximumPointsPerScore);
-            List<VectorPoint> templatePoints = BuildScaledTemplatePoints(template, templateRotation, candidate.OrientedBounds);
+            List<VectorPoint> templatePoints = BuildScaledTemplatePoints(template, candidate.OrientedBounds);
             templatePoints = Downsample(templatePoints, MaximumPointsPerScore);
-            if (candidatePoints.Count < 8 || templatePoints.Count < 8)
+            if (templatePoints.Count < 8)
                 return OrientedTextScore.Rejected;
 
+            StepVectorNearestPointIndex templateIndex = CreateIndex(templatePoints);
             double tolerance = Math.Max(2.0, Math.Min(candidate.OrientedBounds.Width, candidate.OrientedBounds.Height) * 0.12);
-            double precision = ClosePointRatio(candidatePoints, templatePoints, tolerance);
-            double recall = ClosePointRatio(templatePoints, candidatePoints, tolerance);
+            double precision = ClosePointRatio(candidatePoints, templateIndex, tolerance);
+            double recall = ClosePointRatio(templatePoints, candidateIndex, tolerance);
             double f1 = precision + recall <= 0.0 ? 0.0 : 2.0 * precision * recall / (precision + recall);
-            double chamfer = AverageNearestDistance(templatePoints, candidatePoints);
+            double chamfer = AverageNearestDistance(templatePoints, candidateIndex);
             if (f1 < 0.34 || recall < 0.34 || chamfer > MaximumKnownTemplateChamfer)
                 return OrientedTextScore.Rejected;
 
@@ -425,8 +510,17 @@ namespace EasyEDA_Loader
                 string.Equals(score.Text, "LCEDA", StringComparison.OrdinalIgnoreCase) &&
                 candidate.OrientationDegrees == 0)
             {
-                int expandLeft = (int)Math.Ceiling(candidate.Bounds.Width * 0.88);
+                int expandLeft = (int)Math.Ceiling(candidate.Bounds.Width * 0.96);
                 left = Math.Max(0, left - expandLeft);
+            }
+            else if (string.Equals(score.Text, "LCEDA", StringComparison.OrdinalIgnoreCase))
+            {
+                int orientation = NormalizeOrientation(score.TextOrientationDegrees);
+                int expandX = (int)Math.Ceiling(candidate.Bounds.Width * 0.30);
+                if (orientation == 180)
+                {
+                    left = Math.Max(0, left - expandX);
+                }
             }
 
             return new StepVectorWatermarkDetectionRegion
@@ -443,10 +537,224 @@ namespace EasyEDA_Loader
                 LogoOrientationDegrees = 0,
                 Score = Math.Round(score.Score * 100.0, 3),
                 ChamferDistance = Math.Round(score.ChamferDistance, 3),
-                PrimitiveCount = candidate.PrimitiveCount
+                PrimitiveCount = candidate.PrimitiveCount,
+                PrimitiveSourceIndices = GetCandidatePrimitiveSourceIndices(candidate)
             };
         }
 
+        private static IReadOnlyList<int> GetCandidatePrimitiveSourceIndices(VectorTextCandidate candidate)
+        {
+            if (candidate == null || candidate.Components == null)
+                return Array.Empty<int>();
+
+            return candidate.Components
+                .SelectMany(component => component.Strokes ?? Enumerable.Empty<VectorTextStroke>())
+                .Select(stroke => stroke.SourceIndex)
+                .Distinct()
+                .OrderBy(index => index)
+                .ToList();
+        }
+
+        private static List<StepVectorWatermarkDetectionRegion> CombineClosestArbitraryTextRegions(
+            IReadOnlyList<StepVectorWatermarkDetectionRegion> regions)
+        {
+            var result = new List<StepVectorWatermarkDetectionRegion>();
+            var arbitrary = new List<StepVectorWatermarkDetectionRegion>();
+            foreach (StepVectorWatermarkDetectionRegion region in regions ?? Array.Empty<StepVectorWatermarkDetectionRegion>())
+            {
+                if (IsArbitraryTextRegion(region))
+                    arbitrary.Add(region);
+                else
+                    result.Add(region);
+            }
+
+            foreach (var group in arbitrary.GroupBy(region => NormalizeOrientation(region.TextOrientationDegrees)))
+            {
+                var clusters = new List<List<StepVectorWatermarkDetectionRegion>>();
+                foreach (StepVectorWatermarkDetectionRegion region in group.OrderByDescending(region => region.Score))
+                {
+                    List<StepVectorWatermarkDetectionRegion> cluster = clusters.FirstOrDefault(existing =>
+                        existing.Any(member => ShouldMergeClosestArbitraryText(member, region)));
+                    if (cluster == null)
+                    {
+                        cluster = new List<StepVectorWatermarkDetectionRegion>();
+                        clusters.Add(cluster);
+                    }
+
+                    cluster.Add(region);
+                }
+
+                foreach (List<StepVectorWatermarkDetectionRegion> cluster in clusters)
+                    result.Add(CreateMergedArbitraryTextRegion(cluster));
+            }
+
+            return result
+                .Where(region => region != null)
+                .OrderByDescending(region => region.Score)
+                .ToList();
+        }
+
+        private static List<StepVectorWatermarkDetectionRegion> ExpandContextualLcedaRegions(
+            IReadOnlyList<StepVectorWatermarkDetectionRegion> regions)
+        {
+            var result = new List<StepVectorWatermarkDetectionRegion>();
+            foreach (StepVectorWatermarkDetectionRegion region in regions ?? Array.Empty<StepVectorWatermarkDetectionRegion>())
+            {
+                if (!string.Equals(region.Text, "LCEDA", StringComparison.OrdinalIgnoreCase))
+                {
+                    result.Add(region);
+                    continue;
+                }
+
+                int orientation = NormalizeOrientation(region.TextOrientationDegrees);
+                StepVectorWatermarkDetectionRegion envelope = regions
+                    .Where(candidate => string.Equals(candidate.Text, "EasyEDA", StringComparison.OrdinalIgnoreCase))
+                    .Where(candidate => Math.Abs(candidate.X - region.X) <= 16)
+                    .Where(candidate =>
+                    {
+                        int regionBottom = region.Y + region.Height;
+                        int candidateBottom = candidate.Y + candidate.Height;
+                        double verticalOverlap = OverlapLength(region.Y, regionBottom, candidate.Y, candidateBottom) /
+                            (double)Math.Max(1, Math.Min(region.Height, candidate.Height));
+                        return verticalOverlap >= 0.45;
+                    })
+                    .Where(candidate => candidate.Width >= region.Width * 1.45)
+                    .OrderByDescending(candidate => candidate.Width)
+                    .FirstOrDefault();
+                if (envelope != null && orientation == 90)
+                {
+                    int right = Math.Max(region.X + region.Width, envelope.X + envelope.Width);
+                    result.Add(CloneWithBounds(region, region.X, region.Y, right - region.X, region.Height));
+                    continue;
+                }
+
+                envelope = regions
+                    .Where(candidate => string.Equals(candidate.Text, "EasyEDA", StringComparison.OrdinalIgnoreCase))
+                    .Where(candidate => candidate.X <= region.X)
+                    .Where(candidate => candidate.X + candidate.Width >= region.X + region.Width)
+                    .Where(candidate => candidate.Width >= region.Width * 1.45)
+                    .OrderByDescending(candidate => candidate.Width)
+                    .FirstOrDefault();
+                if (envelope != null && orientation == 270)
+                {
+                    int expandLeft = (int)Math.Ceiling(region.Width * 0.25);
+                    int left = Math.Max(envelope.X, region.X - expandLeft);
+                    int lineGap = Math.Max(0, envelope.Height - region.Height * 2);
+                    int top = envelope.Y + (int)Math.Round(lineGap / 3.0, MidpointRounding.AwayFromZero);
+                    result.Add(CloneWithBounds(region, left, top, region.X + region.Width - left, region.Height));
+                    continue;
+                }
+
+                    result.Add(region);
+            }
+
+            return result;
+        }
+
+        private static StepVectorWatermarkDetectionRegion CloneWithBounds(
+            StepVectorWatermarkDetectionRegion region,
+            int x,
+            int y,
+            int width,
+            int height)
+        {
+            return new StepVectorWatermarkDetectionRegion
+            {
+                TemplateName = region.TemplateName,
+                Kind = region.Kind,
+                Text = region.Text,
+                X = x,
+                Y = y,
+                Width = Math.Max(1, width),
+                Height = Math.Max(1, height),
+                OrientationDegrees = region.OrientationDegrees,
+                LogoOrientationDegrees = region.LogoOrientationDegrees,
+                TextOrientationDegrees = region.TextOrientationDegrees,
+                Score = region.Score,
+                ChamferDistance = region.ChamferDistance,
+                PrimitiveCount = region.PrimitiveCount,
+                PrimitiveSourceIndices = region.PrimitiveSourceIndices ?? Array.Empty<int>()
+            };
+        }
+
+        private static bool IsArbitraryTextRegion(StepVectorWatermarkDetectionRegion region)
+        {
+            return region != null &&
+                string.Equals(region.Kind, "text", StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(region.TemplateName, "vector-arbitrary-text", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool ShouldMergeClosestArbitraryText(
+            StepVectorWatermarkDetectionRegion left,
+            StepVectorWatermarkDetectionRegion right)
+        {
+            if (left == null || right == null)
+                return false;
+            if (NormalizeOrientation(left.TextOrientationDegrees) != NormalizeOrientation(right.TextOrientationDegrees))
+                return false;
+
+            int leftRight = left.X + left.Width;
+            int rightRight = right.X + right.Width;
+            int leftBottom = left.Y + left.Height;
+            int rightBottom = right.Y + right.Height;
+            int gapX = Math.Max(0, Math.Max(left.X, right.X) - Math.Min(leftRight, rightRight));
+            int gapY = Math.Max(0, Math.Max(left.Y, right.Y) - Math.Min(leftBottom, rightBottom));
+            int maxWidth = Math.Max(left.Width, right.Width);
+            int maxHeight = Math.Max(left.Height, right.Height);
+            double verticalOverlap = OverlapLength(left.Y, leftBottom, right.Y, rightBottom) /
+                (double)Math.Max(1, Math.Min(left.Height, right.Height));
+            double horizontalOverlap = OverlapLength(left.X, leftRight, right.X, rightRight) /
+                (double)Math.Max(1, Math.Min(left.Width, right.Width));
+
+            if (gapX <= Math.Max(96, maxWidth * 1.35) &&
+                (gapY <= Math.Max(36, maxHeight) || verticalOverlap >= 0.20))
+                return true;
+
+            return gapY <= Math.Max(72, maxHeight * 1.60) &&
+                (gapX <= Math.Max(48, maxWidth) || horizontalOverlap >= 0.20);
+        }
+
+        private static StepVectorWatermarkDetectionRegion CreateMergedArbitraryTextRegion(
+            IReadOnlyList<StepVectorWatermarkDetectionRegion> cluster)
+        {
+            if (cluster == null || cluster.Count == 0)
+                return null;
+            if (cluster.Count == 1)
+                return cluster[0];
+
+            int left = cluster.Min(region => region.X);
+            int top = cluster.Min(region => region.Y);
+            int right = cluster.Max(region => region.X + region.Width);
+            int bottom = cluster.Max(region => region.Y + region.Height);
+            StepVectorWatermarkDetectionRegion best = cluster.OrderByDescending(region => region.Score).First();
+            return new StepVectorWatermarkDetectionRegion
+            {
+                TemplateName = "vector-arbitrary-text",
+                Kind = "text",
+                Text = string.Empty,
+                X = left,
+                Y = top,
+                Width = Math.Max(1, right - left),
+                Height = Math.Max(1, bottom - top),
+                OrientationDegrees = best.OrientationDegrees,
+                LogoOrientationDegrees = best.LogoOrientationDegrees,
+                TextOrientationDegrees = best.TextOrientationDegrees,
+                Score = Math.Round(Math.Min(100.0, cluster.Max(region => region.Score) + (cluster.Count - 1) * 4.0), 3),
+                ChamferDistance = Math.Round(cluster.Min(region => region.ChamferDistance), 3),
+                PrimitiveCount = cluster.Sum(region => Math.Max(0, region.PrimitiveCount)),
+                PrimitiveSourceIndices = MergePrimitiveSourceIndices(cluster)
+            };
+        }
+
+        private static IReadOnlyList<int> MergePrimitiveSourceIndices(
+            IEnumerable<StepVectorWatermarkDetectionRegion> regions)
+        {
+            return (regions ?? Array.Empty<StepVectorWatermarkDetectionRegion>())
+                .SelectMany(region => region.PrimitiveSourceIndices ?? Array.Empty<int>())
+                .Distinct()
+                .OrderBy(index => index)
+                .ToList();
+        }
         private static List<StepVectorWatermarkDetectionRegion> SuppressOverlappingDetections(
             IReadOnlyList<StepVectorWatermarkDetectionRegion> detections)
         {
@@ -612,41 +920,66 @@ namespace EasyEDA_Loader
             return total <= 0.0 ? 0.0 : selected / total;
         }
 
+        private static IReadOnlyList<TextTemplateOrientation> BuildKnownTextTemplates()
+        {
+            var templates = new List<TextTemplateOrientation>();
+            foreach (StepWatermarkTemplate template in StepWatermarkTemplateLibrary.GetKnownTemplates())
+            {
+                if (!string.Equals(template.Kind, "text", StringComparison.OrdinalIgnoreCase))
+                    continue;
+                if (template.EdgePoints == null || template.EdgePoints.Count == 0)
+                    continue;
+
+                foreach (int rotation in RightAngleOrientations)
+                {
+                    GetRotatedTemplateSize(template, rotation, out int rotatedWidth, out int rotatedHeight);
+                    double widthScale = rotatedWidth <= 1 ? 0.0 : 1.0 / (rotatedWidth - 1);
+                    double heightScale = rotatedHeight <= 1 ? 0.0 : 1.0 / (rotatedHeight - 1);
+                    var points = new List<VectorPoint>(template.EdgePoints.Count);
+                    foreach (StepWatermarkTemplatePoint point in template.EdgePoints)
+                    {
+                        RotateTemplatePoint(point.X, point.Y, template.Width, template.Height, rotation, out int rx, out int ry);
+                        points.Add(new VectorPoint(rx * widthScale, ry * heightScale));
+                    }
+
+                    templates.Add(new TextTemplateOrientation
+                    {
+                        Name = template.Name,
+                        Text = template.Text,
+                        Width = rotatedWidth,
+                        Height = rotatedHeight,
+                        Points = points
+                    });
+                }
+            }
+
+            return templates;
+        }
+
         private static List<VectorPoint> BuildScaledTemplatePoints(
-            StepWatermarkTemplate template,
-            int rotation,
+            TextTemplateOrientation template,
             VectorBounds targetBounds)
         {
-            GetRotatedTemplateSize(template, rotation, out int rotatedWidth, out int rotatedHeight);
-            var result = new List<VectorPoint>(template.EdgePoints.Count);
-            foreach (StepWatermarkTemplatePoint point in template.EdgePoints)
-            {
-                RotateTemplatePoint(point.X, point.Y, template.Width, template.Height, rotation, out int rx, out int ry);
-                double x = rotatedWidth <= 1
-                    ? 0.0
-                    : rx * targetBounds.Width / (rotatedWidth - 1);
-                double y = rotatedHeight <= 1
-                    ? 0.0
-                    : ry * targetBounds.Height / (rotatedHeight - 1);
-                result.Add(new VectorPoint(x, y));
-            }
+            var result = new List<VectorPoint>(template.Points.Count);
+            foreach (VectorPoint point in template.Points)
+                result.Add(new VectorPoint(point.X * targetBounds.Width, point.Y * targetBounds.Height));
 
             return result;
         }
 
         private static double ClosePointRatio(
             IReadOnlyList<VectorPoint> source,
-            IReadOnlyList<VectorPoint> target,
+            StepVectorNearestPointIndex target,
             double tolerance)
         {
-            if (source.Count == 0 || target.Count == 0)
+            if (source.Count == 0 || target == null)
                 return 0.0;
 
             double toleranceSquared = tolerance * tolerance;
             int close = 0;
             foreach (VectorPoint point in source)
             {
-                if (NearestDistanceSquared(point, target) <= toleranceSquared)
+                if (target.NearestDistanceSquared(point.X, point.Y) <= toleranceSquared)
                     close++;
             }
 
@@ -655,31 +988,21 @@ namespace EasyEDA_Loader
 
         private static double AverageNearestDistance(
             IReadOnlyList<VectorPoint> source,
-            IReadOnlyList<VectorPoint> target)
+            StepVectorNearestPointIndex target)
         {
-            if (source.Count == 0 || target.Count == 0)
+            if (source.Count == 0 || target == null)
                 return MaximumKnownTemplateChamfer;
 
             double sum = 0.0;
             foreach (VectorPoint point in source)
-                sum += Math.Sqrt(NearestDistanceSquared(point, target));
+                sum += target.NearestDistance(point.X, point.Y);
 
             return sum / source.Count;
         }
 
-        private static double NearestDistanceSquared(VectorPoint point, IReadOnlyList<VectorPoint> target)
+        private static StepVectorNearestPointIndex CreateIndex(IReadOnlyList<VectorPoint> points)
         {
-            double best = double.MaxValue;
-            foreach (VectorPoint candidate in target)
-            {
-                double dx = point.X - candidate.X;
-                double dy = point.Y - candidate.Y;
-                double distance = dx * dx + dy * dy;
-                if (distance < best)
-                    best = distance;
-            }
-
-            return best;
+            return new StepVectorNearestPointIndex(points.Select(point => new StepVectorNearestPoint(point.X, point.Y)));
         }
 
         private static List<VectorPoint> Downsample(IReadOnlyList<VectorPoint> points, int maximumCount)
@@ -910,6 +1233,15 @@ namespace EasyEDA_Loader
             public int TextOrientationDegrees { get; set; }
             public double Score { get; set; }
             public double ChamferDistance { get; set; }
+        }
+
+        private sealed class TextTemplateOrientation
+        {
+            public string Name { get; set; }
+            public string Text { get; set; }
+            public int Width { get; set; }
+            public int Height { get; set; }
+            public IReadOnlyList<VectorPoint> Points { get; set; }
         }
 
         private struct VectorPoint

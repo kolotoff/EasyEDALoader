@@ -8,6 +8,7 @@ namespace EasyEDA_Loader
     public static class StepVectorLogoDetector
     {
         private static readonly int[] LogoOrientations = { 0, 90, 180, 270 };
+        private static readonly LogoTemplateCache EasyEdaLogoTemplate = BuildLogoTemplateCache();
         private const int MaximumReturnedDetections = 1;
         private const double MinimumLogoScore = 0.58;
         private const double MaximumLogoChamferPixels = 18.0;
@@ -19,13 +20,11 @@ namespace EasyEDA_Loader
             if (input == null)
                 throw new ArgumentNullException(nameof(input));
 
-            StepWatermarkTemplate logoTemplate = StepWatermarkTemplateLibrary.GetKnownTemplates()
-                .FirstOrDefault(template =>
-                    string.Equals(template.Name, "easyeda-logo", StringComparison.OrdinalIgnoreCase) &&
-                    string.Equals(template.Kind, "logo", StringComparison.OrdinalIgnoreCase));
+            LogoTemplateCache logoTemplate = EasyEdaLogoTemplate;
             if (logoTemplate == null ||
-                logoTemplate.EdgePoints == null ||
-                logoTemplate.EdgePoints.Count == 0 ||
+                logoTemplate.Template == null ||
+                logoTemplate.Orientations == null ||
+                logoTemplate.Orientations.Count == 0 ||
                 input.Primitives == null ||
                 input.Primitives.Count == 0)
             {
@@ -37,8 +36,9 @@ namespace EasyEDA_Loader
                 options == null ? 0.0 : options.MinimumKnownTemplateScore);
 
             List<VectorPrimitiveStroke> strokes = input.Primitives
-                .Where(IsUsablePrimitive)
-                .Select(VectorPrimitiveStroke.FromPrimitive)
+                .Select((primitive, index) => new { Primitive = primitive, Index = index })
+                .Where(item => IsUsablePrimitive(item.Primitive))
+                .Select(item => VectorPrimitiveStroke.FromPrimitive(item.Primitive, item.Index))
                 .Where(stroke => stroke != null && !LooksLikeObviousMechanicalPrimitive(stroke, input))
                 .ToList();
             if (strokes.Count == 0)
@@ -53,13 +53,13 @@ namespace EasyEDA_Loader
                 if (LooksLikeWholeBodyOrMechanicalCluster(cluster, input))
                     continue;
 
-                LogoClusterScore best = ScoreCluster(cluster, logoTemplate);
+                LogoClusterScore best = ScoreCluster(cluster, logoTemplate.Orientations);
                 if (best.Score < minimumScore)
                     continue;
                 if (best.ChamferDistance > MaximumLogoChamferPixels)
                     continue;
 
-                detections.Add(ToRegion(cluster, logoTemplate, best, input));
+                detections.Add(ToRegion(cluster, logoTemplate.Template, best, input));
             }
 
             return SuppressOverlappingDetections(detections)
@@ -142,13 +142,19 @@ namespace EasyEDA_Loader
             return BoundsGap(left.Bounds, right.Bounds) <= localGap;
         }
 
-        private static LogoClusterScore ScoreCluster(VectorStrokeCluster cluster, StepWatermarkTemplate logoTemplate)
+        private static LogoClusterScore ScoreCluster(
+            VectorStrokeCluster cluster,
+            IReadOnlyList<LogoTemplateOrientation> logoTemplates)
         {
             LogoClusterScore best = LogoClusterScore.Rejected;
-            foreach (int orientation in LogoOrientations)
+            List<UnitPoint> candidatePoints = NormalizePoints(cluster.Points, cluster.Bounds, 700);
+            if (candidatePoints.Count == 0)
+                return best;
+
+            StepVectorNearestPointIndex candidateIndex = CreateIndex(candidatePoints);
+            foreach (LogoTemplateOrientation rotated in logoTemplates)
             {
-                RotatedTemplate rotated = RotatedTemplate.Create(logoTemplate, orientation);
-                if (rotated.Points.Count == 0)
+                if (rotated.Points == null || rotated.Points.Count == 0)
                     continue;
 
                 double candidateAspect = cluster.Bounds.Width / Math.Max(1.0, cluster.Bounds.Height);
@@ -159,16 +165,15 @@ namespace EasyEDA_Loader
                 if (aspectScore < 0.22)
                     continue;
 
-                List<UnitPoint> candidatePoints = NormalizePoints(cluster.Points, cluster.Bounds, 700);
-                List<UnitPoint> templatePoints = NormalizeTemplatePoints(rotated, 700);
-                double forward = AverageNearestDistance(candidatePoints, templatePoints);
-                double reverse = AverageNearestDistance(templatePoints, candidatePoints);
+                IReadOnlyList<UnitPoint> templatePoints = rotated.Points;
+                double forward = AverageNearestDistance(candidatePoints, rotated.Index);
+                double reverse = AverageNearestDistance(templatePoints, candidateIndex);
                 double distance = (forward + reverse) * 0.5;
                 double chamferPixels = distance * Math.Max(cluster.Bounds.Width, cluster.Bounds.Height);
                 double chamferScore = 1.0 - Math.Min(1.0, distance / 0.135);
 
-                double candidateSupport = SupportRatio(candidatePoints, templatePoints, 0.042);
-                double templateSupport = SupportRatio(templatePoints, candidatePoints, 0.042);
+                double candidateSupport = SupportRatio(candidatePoints, rotated.Index, 0.042);
+                double templateSupport = SupportRatio(templatePoints, candidateIndex, 0.042);
                 double overlapScore = Math.Sqrt(Math.Max(0.0, candidateSupport * templateSupport));
                 double longDimension = Math.Max(cluster.Bounds.Width, cluster.Bounds.Height);
                 double shortDimension = Math.Min(cluster.Bounds.Width, cluster.Bounds.Height);
@@ -187,7 +192,7 @@ namespace EasyEDA_Loader
                     {
                         Score = score,
                         ChamferDistance = chamferPixels,
-                        OrientationDegrees = orientation
+                        OrientationDegrees = rotated.OrientationDegrees
                     };
                 }
             }
@@ -224,7 +229,12 @@ namespace EasyEDA_Loader
                 TextOrientationDegrees = 0,
                 Score = Math.Round(score.Score * 100.0, 3),
                 ChamferDistance = Math.Round(score.ChamferDistance, 3),
-                PrimitiveCount = cluster.Strokes.Count
+                PrimitiveCount = cluster.Strokes.Count,
+                PrimitiveSourceIndices = cluster.Strokes
+                    .Select(stroke => stroke.SourceIndex)
+                    .Distinct()
+                    .OrderBy(index => index)
+                    .ToList()
             };
         }
 
@@ -357,13 +367,42 @@ namespace EasyEDA_Loader
                 .ToList();
         }
 
-        private static List<UnitPoint> NormalizeTemplatePoints(RotatedTemplate template, int maximumPoints)
+        private static LogoTemplateCache BuildLogoTemplateCache()
         {
-            double width = Math.Max(1.0, template.Width - 1.0);
-            double height = Math.Max(1.0, template.Height - 1.0);
-            return Downsample(template.Points, maximumPoints)
-                .Select(point => new UnitPoint(point.X / width, point.Y / height))
-                .ToList();
+            StepWatermarkTemplate template = StepWatermarkTemplateLibrary.GetKnownTemplates()
+                .FirstOrDefault(candidate =>
+                    string.Equals(candidate.Name, "easyeda-logo", StringComparison.OrdinalIgnoreCase) &&
+                    string.Equals(candidate.Kind, "logo", StringComparison.OrdinalIgnoreCase));
+            if (template == null || template.EdgePoints == null || template.EdgePoints.Count == 0)
+                return null;
+
+            var orientations = new List<LogoTemplateOrientation>();
+            foreach (int orientation in LogoOrientations)
+            {
+                RotatedTemplate rotated = RotatedTemplate.Create(template, orientation);
+                if (rotated.Points.Count == 0)
+                    continue;
+
+                double width = Math.Max(1.0, rotated.Width - 1.0);
+                double height = Math.Max(1.0, rotated.Height - 1.0);
+                List<UnitPoint> points = Downsample(rotated.Points, 700)
+                    .Select(point => new UnitPoint(point.X / width, point.Y / height))
+                    .ToList();
+                orientations.Add(new LogoTemplateOrientation
+                {
+                    OrientationDegrees = orientation,
+                    Width = rotated.Width,
+                    Height = rotated.Height,
+                    Points = points,
+                    Index = CreateIndex(points)
+                });
+            }
+
+            return new LogoTemplateCache
+            {
+                Template = template,
+                Orientations = orientations
+            };
         }
 
         private static IEnumerable<T> Downsample<T>(IReadOnlyList<T> points, int maximumPoints)
@@ -375,45 +414,35 @@ namespace EasyEDA_Loader
             return points.Where((_, index) => index % step == 0).Take(maximumPoints);
         }
 
-        private static double AverageNearestDistance(IReadOnlyList<UnitPoint> source, IReadOnlyList<UnitPoint> target)
+        private static double AverageNearestDistance(IReadOnlyList<UnitPoint> source, StepVectorNearestPointIndex target)
         {
-            if (source.Count == 0 || target.Count == 0)
+            if (source.Count == 0 || target == null)
                 return 1.0;
 
             double sum = 0.0;
             foreach (UnitPoint point in source)
-                sum += NearestDistance(point, target);
+                sum += target.NearestDistance(point.X, point.Y);
             return sum / source.Count;
         }
 
-        private static double SupportRatio(IReadOnlyList<UnitPoint> source, IReadOnlyList<UnitPoint> target, double maximumDistance)
+        private static double SupportRatio(IReadOnlyList<UnitPoint> source, StepVectorNearestPointIndex target, double maximumDistance)
         {
-            if (source.Count == 0 || target.Count == 0)
+            if (source.Count == 0 || target == null)
                 return 0.0;
 
             int supported = 0;
             foreach (UnitPoint point in source)
             {
-                if (NearestDistance(point, target) <= maximumDistance)
+                if (target.NearestDistance(point.X, point.Y) <= maximumDistance)
                     supported++;
             }
 
             return supported / (double)source.Count;
         }
 
-        private static double NearestDistance(UnitPoint point, IReadOnlyList<UnitPoint> target)
+        private static StepVectorNearestPointIndex CreateIndex(IReadOnlyList<UnitPoint> points)
         {
-            double best = double.MaxValue;
-            foreach (UnitPoint candidate in target)
-            {
-                double dx = point.X - candidate.X;
-                double dy = point.Y - candidate.Y;
-                double distance = Math.Sqrt(dx * dx + dy * dy);
-                if (distance < best)
-                    best = distance;
-            }
-
-            return best;
+            return new StepVectorNearestPointIndex(points.Select(point => new StepVectorNearestPoint(point.X, point.Y)));
         }
 
         private static double BoundsGap(StepVectorWatermarkBounds left, StepVectorWatermarkBounds right)
@@ -451,12 +480,13 @@ namespace EasyEDA_Loader
 
         private sealed class VectorPrimitiveStroke
         {
+            public int SourceIndex { get; private set; }
             public StepVectorWatermarkBounds Bounds { get; private set; }
             public IReadOnlyList<StepVectorWatermarkPoint> Points { get; private set; }
             public double CenterX => (Bounds.Left + Bounds.Right) * 0.5;
             public double CenterY => (Bounds.Top + Bounds.Bottom) * 0.5;
 
-            public static VectorPrimitiveStroke FromPrimitive(StepVectorWatermarkPrimitive primitive)
+            public static VectorPrimitiveStroke FromPrimitive(StepVectorWatermarkPrimitive primitive, int sourceIndex)
             {
                 IReadOnlyList<StepVectorWatermarkPoint> points = primitive.SampledImagePoints;
                 if (points == null || points.Count == 0)
@@ -464,6 +494,7 @@ namespace EasyEDA_Loader
 
                 return new VectorPrimitiveStroke
                 {
+                    SourceIndex = sourceIndex,
                     Bounds = primitive.ImageBounds ?? BoundsForPoints(points),
                     Points = points
                 };
@@ -555,6 +586,21 @@ namespace EasyEDA_Loader
                         return;
                 }
             }
+        }
+
+        private sealed class LogoTemplateCache
+        {
+            public StepWatermarkTemplate Template { get; set; }
+            public IReadOnlyList<LogoTemplateOrientation> Orientations { get; set; }
+        }
+
+        private sealed class LogoTemplateOrientation
+        {
+            public int OrientationDegrees { get; set; }
+            public int Width { get; set; }
+            public int Height { get; set; }
+            public IReadOnlyList<UnitPoint> Points { get; set; }
+            public StepVectorNearestPointIndex Index { get; set; }
         }
 
         private sealed class LogoClusterScore

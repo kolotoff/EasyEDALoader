@@ -13,14 +13,13 @@
     <Compile Include="..\EasyEDA-Loader\StepWatermarkCleaner.cs" Link="StepWatermarkCleaner.cs" />
     <Compile Include="..\EasyEDA-Loader\StepWatermarkVisualOracle.cs" Link="StepWatermarkVisualOracle.cs" />
     <Compile Include="..\EasyEDA-Loader\StepTextLogoDetectionOptions.cs" Link="StepTextLogoDetectionOptions.cs" />
-    <Compile Include="..\EasyEDA-Loader\StepTextLogoProjectionDetector.cs" Link="StepTextLogoProjectionDetector.cs" />
+    <Compile Include="..\EasyEDA-Loader\StepVectorNearestPointIndex.cs" Link="StepVectorNearestPointIndex.cs" />
     <Compile Include="..\EasyEDA-Loader\StepVectorLogoDetector.cs" Link="StepVectorLogoDetector.cs" />
     <Compile Include="..\EasyEDA-Loader\StepVectorTextDetector.cs" Link="StepVectorTextDetector.cs" />
     <Compile Include="..\EasyEDA-Loader\StepVectorWatermarkDetectionInput.cs" Link="StepVectorWatermarkDetectionInput.cs" />
     <Compile Include="..\EasyEDA-Loader\StepVectorWatermarkDetectionInputAdapter.cs" Link="StepVectorWatermarkDetectionInputAdapter.cs" />
     <Compile Include="..\EasyEDA-Loader\StepVectorWatermarkRegionCombiner.cs" Link="StepVectorWatermarkRegionCombiner.cs" />
     <Compile Include="..\EasyEDA-Loader\StepWatermarkTemplateLibrary.cs" Link="StepWatermarkTemplateLibrary.cs" />
-    <Compile Include="..\EasyEDA-Loader\StepProjectionImageOpenCv.cs" Link="StepProjectionImageOpenCv.cs" />
     <Compile Include="..\EasyEDA-Loader\StepProjectionRenderer.cs" Link="StepProjectionRenderer.cs" />
     <Compile Include="..\EasyEDA-Loader\StepSilhouetteProjection.cs" Link="StepSilhouetteProjection.cs" />
     <Compile Include="..\EasyEDA-Loader\ModelImportTrace.cs" Link="ModelImportTrace.cs" />

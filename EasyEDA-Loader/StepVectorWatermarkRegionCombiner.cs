@@ -29,7 +29,7 @@ namespace EasyEDA_Loader
             List<List<StepVectorWatermarkDetectionRegion>> clusters = BuildClusters(parts, input);
             List<StepVectorWatermarkDetectionRegion> regions = clusters
                 .Select(cluster => CreateRegion(cluster, input))
-                .Select(region => ExpandRegionToNearbySupport(region, input, options))
+                .Select(region => ExpandTallLogoOnlyRegion(region, input))
                 .Where(region => region != null && region.Width > 0 && region.Height > 0)
                 .Where(region => IsAcceptedOutput(region, options))
                 .OrderByDescending(OutputPriority)
@@ -111,10 +111,13 @@ namespace EasyEDA_Loader
 
             bool hasLogo = cluster.Any(IsLogo);
             bool hasText = cluster.Any(IsText);
-            int left = cluster.Min(region => region.X);
-            int top = cluster.Min(region => region.Y);
-            int right = cluster.Max(region => region.X + region.Width);
-            int bottom = cluster.Max(region => region.Y + region.Height);
+            IEnumerable<StepVectorWatermarkDetectionRegion> boundsSource = hasText
+                ? cluster.Where(IsText)
+                : cluster;
+            int left = boundsSource.Min(region => region.X);
+            int top = boundsSource.Min(region => region.Y);
+            int right = boundsSource.Max(region => region.X + region.Width);
+            int bottom = boundsSource.Max(region => region.Y + region.Height);
             left = Math.Max(0, left);
             top = Math.Max(0, top);
             if (input.ImageWidth > 0)
@@ -158,8 +161,19 @@ namespace EasyEDA_Loader
                 TextOrientationDegrees = bestText == null ? 0 : bestText.TextOrientationDegrees,
                 Score = Math.Round(Math.Min(100.0, cluster.Max(region => region.Score) + (cluster.Count - 1) * 6.0), 3),
                 ChamferDistance = Math.Round(cluster.Min(region => region.ChamferDistance), 3),
-                PrimitiveCount = cluster.Sum(region => Math.Max(0, region.PrimitiveCount))
+                PrimitiveCount = cluster.Sum(region => Math.Max(0, region.PrimitiveCount)),
+                PrimitiveSourceIndices = MergePrimitiveSourceIndices(cluster)
             };
+        }
+
+        private static IReadOnlyList<int> MergePrimitiveSourceIndices(
+            IEnumerable<StepVectorWatermarkDetectionRegion> regions)
+        {
+            return (regions ?? Array.Empty<StepVectorWatermarkDetectionRegion>())
+                .SelectMany(region => region.PrimitiveSourceIndices ?? Array.Empty<int>())
+                .Distinct()
+                .OrderBy(index => index)
+                .ToList();
         }
 
         private static StepVectorWatermarkDetectionRegion Clone(
@@ -189,64 +203,46 @@ namespace EasyEDA_Loader
                 TextOrientationDegrees = region.TextOrientationDegrees,
                 Score = region.Score,
                 ChamferDistance = region.ChamferDistance,
-                PrimitiveCount = region.PrimitiveCount
+                PrimitiveCount = region.PrimitiveCount,
+                PrimitiveSourceIndices = region.PrimitiveSourceIndices ?? Array.Empty<int>()
             };
         }
 
-        private static StepVectorWatermarkDetectionRegion ExpandRegionToNearbySupport(
+        private static StepVectorWatermarkDetectionRegion ExpandTallLogoOnlyRegion(
             StepVectorWatermarkDetectionRegion region,
-            StepVectorWatermarkDetectionInput input,
-            StepTextLogoDetectionOptions options)
+            StepVectorWatermarkDetectionInput input)
         {
             if (region == null || input == null || input.Primitives == null || input.Primitives.Count == 0)
                 return region;
-            if (options == null || !options.DetectArbitraryText)
-                return region;
-            if (!ShouldExpandRegionSupport(region))
+            if (!IsLogo(region) || region.Height < 90 || region.Width < 60)
                 return region;
 
             int imageWidth = Math.Max(1, input.ImageWidth);
             int imageHeight = Math.Max(1, input.ImageHeight);
-            bool logoOnly = IsLogo(region);
-            double maxWidth = Math.Min(
-                imageWidth * 0.50,
-                logoOnly
-                    ? Math.Max(region.Width + 220.0, region.Width * 2.45)
-                    : region.Width + 120.0);
-            double maxHeight = Math.Min(
-                imageHeight * 0.35,
-                logoOnly
-                    ? Math.Max(region.Height + 280.0, region.Height * 2.85)
-                    : region.Height + 105.0);
-            double marginX = logoOnly
-                ? Math.Min(190.0, Math.Max(95.0, region.Width * 1.05))
-                : Math.Min(80.0, Math.Max(46.0, region.Width * 0.14));
-            double marginY = logoOnly
-                ? Math.Min(260.0, Math.Max(90.0, region.Height * 1.35))
-                : Math.Min(72.0, Math.Max(38.0, region.Height * 0.36));
-
+            double maxWidth = Math.Min(imageWidth * 0.50, Math.Max(region.Width + 220.0, region.Width * 2.45));
+            double maxHeight = Math.Min(imageHeight * 0.35, Math.Max(region.Height + 280.0, region.Height * 2.85));
             RectD expanded = RectD.FromRegion(region);
+            var primitiveIndices = new HashSet<int>(region.PrimitiveSourceIndices ?? Array.Empty<int>());
             bool changed;
             do
             {
                 changed = false;
-                foreach (StepVectorWatermarkPrimitive primitive in input.Primitives)
+                for (int primitiveIndex = 0; primitiveIndex < input.Primitives.Count; primitiveIndex++)
                 {
+                    StepVectorWatermarkPrimitive primitive = input.Primitives[primitiveIndex];
                     if (!IsPlausibleWatermarkSupportPrimitive(primitive, input))
                         continue;
 
                     RectD primitiveRect = RectD.FromBounds(primitive.ImageBounds);
-                    if (!IsNear(expanded, primitiveRect, marginX, marginY, logoOnly))
+                    if (!IsNear(expanded, primitiveRect, 190.0, 260.0))
                         continue;
 
                     RectD union = RectD.Union(expanded, primitiveRect);
-                    if (union.Width > maxWidth || union.Height > maxHeight)
-                        continue;
-
-                    if (expanded.Contains(primitiveRect))
+                    if (union.Width > maxWidth || union.Height > maxHeight || expanded.Contains(primitiveRect))
                         continue;
 
                     expanded = union;
+                    primitiveIndices.Add(primitiveIndex);
                     changed = true;
                 }
             }
@@ -262,7 +258,7 @@ namespace EasyEDA_Loader
             return new StepVectorWatermarkDetectionRegion
             {
                 TemplateName = region.TemplateName,
-                Kind = region.Kind,
+                Kind = "watermark-combined",
                 Text = region.Text,
                 X = left,
                 Y = top,
@@ -273,20 +269,11 @@ namespace EasyEDA_Loader
                 TextOrientationDegrees = region.TextOrientationDegrees,
                 Score = region.Score,
                 ChamferDistance = region.ChamferDistance,
-                PrimitiveCount = region.PrimitiveCount
+                PrimitiveCount = region.PrimitiveCount,
+                PrimitiveSourceIndices = primitiveIndices
+                    .OrderBy(index => index)
+                    .ToList()
             };
-        }
-
-        private static bool ShouldExpandRegionSupport(StepVectorWatermarkDetectionRegion region)
-        {
-            if (region == null)
-                return false;
-            if (IsLogo(region))
-                return region.Height >= 90 && region.Width >= 60;
-
-            string templateName = region.TemplateName ?? string.Empty;
-            return templateName.IndexOf("vector-arbitrary-text", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                templateName.IndexOf("LCEDA-full-vector-fallback", StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
         private static bool IsPlausibleWatermarkSupportPrimitive(
@@ -317,20 +304,10 @@ namespace EasyEDA_Loader
             return true;
         }
 
-        private static bool IsNear(RectD left, RectD right, double marginX, double marginY, bool logoOnly)
+        private static bool IsNear(RectD left, RectD right, double marginX, double marginY)
         {
             double gapX = Math.Max(0.0, Math.Max(left.Left, right.Left) - Math.Min(left.Right, right.Right));
             double gapY = Math.Max(0.0, Math.Max(left.Top, right.Top) - Math.Min(left.Bottom, right.Bottom));
-            if (!logoOnly &&
-                gapY > 28.0 &&
-                OverlapLength(left.Top, left.Bottom, right.Top, right.Bottom) <= 0.0)
-            {
-                return false;
-            }
-
-            if (!logoOnly && gapX > 24.0 && gapY > 20.0)
-                return false;
-
             return gapX <= marginX && gapY <= marginY;
         }
 
