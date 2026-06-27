@@ -43,6 +43,8 @@ namespace EasyEDA_Loader
             RegisterCommand("EasyEDA-Loader:EasyEDAReproject3D", new CommandProc(ReprojectActiveFootprint3D));
             RegisterCommand("EasyEDAAlign3DModel", new CommandProc(AlignActiveFootprint3DModel));
             RegisterCommand("EasyEDA-Loader:EasyEDAAlign3DModel", new CommandProc(AlignActiveFootprint3DModel));
+            RegisterCommand("EasyEDACreateCustomPadFromSelected", new CommandProc(CreateCustomPadFromSelected));
+            RegisterCommand("EasyEDA-Loader:EasyEDACreateCustomPadFromSelected", new CommandProc(CreateCustomPadFromSelected));
             RegisterCommand("EasyEDASwitchTopSignalLayer", new CommandProc(SwitchTopSignalLayer));
             RegisterCommand("EasyEDA-Loader:EasyEDASwitchTopSignalLayer", new CommandProc(SwitchTopSignalLayer));
             RegisterCommand("EasyEDASwitchBottomSignalLayer", new CommandProc(SwitchBottomSignalLayer));
@@ -361,7 +363,6 @@ namespace EasyEDA_Loader
             MarkCurrentDocumentModified();
             EEPCB.GetPcbGroupBoard(component)?.ViewManager_FullUpdate();
             Trace($"ReprojectActiveFootprint3D completed. Removed={removedCount} Projection={projectionCount}");
-            ShowInfo($"Reprojected 3D silhouette: removed {removedCount}, added {projectionCount} projection primitive(s).");
         }
 
         private void AlignActiveFootprint3DModel(
@@ -387,7 +388,31 @@ namespace EasyEDA_Loader
             MarkCurrentDocumentModified();
             EEPCB.GetPcbGroupBoard(component)?.ViewManager_FullUpdate();
             Trace($"AlignActiveFootprint3DModel completed. Aligned={alignedCount}");
-            ShowInfo($"Aligned {alignedCount} 3D model body/bodies to pad bounds.");
+        }
+
+        private void CreateCustomPadFromSelected(
+          IServerDocumentView argContext,
+          ref string argParameters)
+        {
+            Trace("CreateCustomPadFromSelected entered.");
+            IPCB_Group component = GetActivePcbLibComponentOrThrow();
+            IServerDocument document = GetCurrentDocument();
+            int replacedCount = 0;
+            BeginPcbLibraryEdit(document);
+            AltiumApi.GlobalVars.PCBServer.PreProcess();
+            try
+            {
+                replacedCount = EEPCB.CreateCustomPadFromSelected(component);
+            }
+            finally
+            {
+                AltiumApi.GlobalVars.PCBServer.PostProcess();
+                EndPcbLibraryEdit(document);
+            }
+
+            MarkCurrentDocumentModified();
+            EEPCB.GetPcbGroupBoard(component)?.ViewManager_FullUpdate();
+            Trace($"CreateCustomPadFromSelected completed. Replaced={replacedCount}");
         }
 
         private void SwitchTopSignalLayer(

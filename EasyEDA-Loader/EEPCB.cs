@@ -827,6 +827,938 @@ namespace EasyEDA_Loader
             return alignedCount;
         }
 
+        public static int CreateCustomPadFromSelected(IPCB_Group component)
+        {
+            if (component == null)
+                throw new InvalidOperationException("Open a PCB library and select a footprint before creating a custom pad.");
+
+            IPCB_Board board = GetComponentBoard(component) ?? GetCurrentPcbLibraryBoard();
+            if (board == null)
+                throw new InvalidOperationException("Could not resolve the active PCB library board.");
+
+            List<object> selectedPrimitives = GetSelectedObjects(board);
+            if (selectedPrimitives.Count == 0)
+                throw new InvalidOperationException("Select pads, tracks, fills, arcs, regions, or polygons before creating a custom pad.");
+
+            List<SelectedCustomPadSource> sources = BuildCustomPadSources(selectedPrimitives);
+            if (sources.Count == 0)
+                throw new InvalidOperationException("The current selection does not contain supported pad or copper geometry.");
+
+            int targetLayerNumber = sources[0].LayerNumber;
+            IV7_Layer targetLayer = sources[0].Layer;
+            foreach (SelectedCustomPadSource source in sources)
+            {
+                if (source.LayerNumber != targetLayerNumber)
+                    throw new InvalidOperationException("Create Custom Pad from Selected requires all selected geometry to be on one PCB layer.");
+
+                if (targetLayer == null && source.Layer != null)
+                    targetLayer = source.Layer;
+            }
+
+            if (targetLayer == null)
+                targetLayer = CreateLayerFromNumber(targetLayerNumber);
+            if (targetLayer == null)
+                throw new InvalidOperationException("Could not resolve the selected geometry layer.");
+
+            if (!CreateCustomPadWithEditorConversion(component, board, sources, targetLayer))
+                throw new InvalidOperationException("Could not join the selected geometry into a custom pad outline.");
+
+            RefreshPcbLibraryAfterPrimitiveRemoval(
+                AltiumApi.GlobalVars.PCBServer.GetCurrentPCBLibrary(),
+                new[] { board },
+                GetComponentPattern(component));
+
+            return sources.Count;
+        }
+
+        private static bool CreateCustomPadWithEditorConversion(
+            IPCB_Group component,
+            IPCB_Board board,
+            IReadOnlyList<SelectedCustomPadSource> sources,
+            IV7_Layer targetLayer)
+        {
+            IPCB_Pad anchorPad = SelectCustomPadAnchorPad(sources);
+            if (anchorPad == null)
+                throw new InvalidOperationException("Create Custom Pad from Selected requires at least one selected pad to use as the custom pad anchor.");
+
+            var temporaryOutline = new List<object>();
+            int outlineCount = AddCustomPadConversionOutline(component, board, sources, targetLayer, temporaryOutline);
+            if (outlineCount <= 0)
+                return false;
+
+            SelectOnlyCustomPadConversionObjects(board, anchorPad, temporaryOutline);
+            if (!LaunchPcbCommand("PCB:CustomPadShape", "Action=Convert|Object=Track"))
+                return false;
+
+            if (FindConvertedCustomPad(component, anchorPad, targetLayer) == null)
+            {
+                DeleteCustomPadConversionObjects(board, temporaryOutline);
+                return false;
+            }
+
+            var objectsToDelete = new List<object>();
+            foreach (SelectedCustomPadSource source in sources)
+            {
+                if (!ReferenceEquals(source.Primitive, anchorPad))
+                    AddDistinctObject(objectsToDelete, source.Primitive);
+            }
+
+            foreach (object temporaryObject in temporaryOutline)
+                AddDistinctObject(objectsToDelete, temporaryObject);
+
+            DeleteCustomPadConversionObjects(board, objectsToDelete);
+            TryInvoke(board, "ViewManager_FullUpdate");
+            LaunchPcbCommand("PCB:Zoom", "Action=Redraw");
+            return true;
+        }
+
+        private static IPCB_Pad FindConvertedCustomPad(IPCB_Group component, IPCB_Pad anchorPad, IV7_Layer targetLayer)
+        {
+            if (anchorPad == null)
+                return null;
+
+            string anchorName = anchorPad.GetState_Name();
+            if (IsCustomPadShapeOnLayer(anchorPad, targetLayer))
+                return anchorPad;
+
+            foreach (object primitive in EnumerateComponentPrimitives(component))
+            {
+                if (!(primitive is IPCB_Pad pad))
+                    continue;
+
+                if (!string.Equals(pad.GetState_Name(), anchorName, StringComparison.Ordinal))
+                    continue;
+
+                if (IsCustomPadShapeOnLayer(pad, targetLayer))
+                    return pad;
+            }
+
+            return null;
+        }
+
+        private static bool IsCustomPadShapeOnLayer(IPCB_Pad pad, IV7_Layer targetLayer)
+        {
+            if (pad == null || targetLayer == null)
+                return false;
+
+            if (TryConvertToInt(TryInvokeResult(pad, "Internal_GetState_ShapeOnLayer", targetLayer), out int shape) &&
+                shape == (int)TShape.eCustomShape)
+                return true;
+
+            if (TryConvertToBool(TryInvokeResult(pad, "HasCustomShapes"), out bool hasCustomShapes) && hasCustomShapes)
+                return true;
+
+            if (pad is IPCB_CustomPadShape customPadShape)
+                return customPadShape.Internal_GetProperty_CustomShape(targetLayer) != null;
+
+            return false;
+        }
+
+        private static IPCB_Pad SelectCustomPadAnchorPad(IReadOnlyList<SelectedCustomPadSource> sources)
+        {
+            IPCB_Pad result = null;
+            long resultArea = -1;
+            foreach (SelectedCustomPadSource source in sources)
+            {
+                if (!(source.Primitive is IPCB_Pad pad))
+                    continue;
+
+                if (!TryGetPadBounds(source, out CustomPadRect bounds))
+                    continue;
+
+                long area = (long)(bounds.Right - bounds.Left) * (bounds.Top - bounds.Bottom);
+                if (area > resultArea)
+                {
+                    result = pad;
+                    resultArea = area;
+                }
+            }
+
+            return result;
+        }
+
+        private static int AddCustomPadConversionOutline(
+            IPCB_Group component,
+            IPCB_Board board,
+            IReadOnlyList<SelectedCustomPadSource> sources,
+            IV7_Layer targetLayer,
+            List<object> temporaryOutline)
+        {
+            List<SelectedCustomPadSource> padSources = new List<SelectedCustomPadSource>();
+            foreach (SelectedCustomPadSource source in sources)
+            {
+                if (source.Primitive is IPCB_Pad)
+                    padSources.Add(source);
+            }
+
+            if (padSources.Count == 2 &&
+                TryAddSteppedPadCustomPadContour(component, board, padSources[0], padSources[1], targetLayer, temporaryOutline, out int steppedCount))
+                return steppedCount;
+
+            if (!TryGetSourceBounds(sources, out CustomPadRect bounds))
+                return 0;
+
+            int radius = 0;
+            foreach (SelectedCustomPadSource source in sources)
+            {
+                if (TryGetPadCornerRadius(source, out int sourceRadius))
+                    radius = Math.Max(radius, sourceRadius);
+            }
+
+            radius = Math.Min(radius, Math.Min(bounds.Right - bounds.Left, bounds.Top - bounds.Bottom) / 2);
+            return AddRoundedRectCustomPadContour(component, board, targetLayer, bounds, radius, temporaryOutline);
+        }
+
+        private static bool TryAddSteppedPadCustomPadContour(
+            IPCB_Group component,
+            IPCB_Board board,
+            SelectedCustomPadSource first,
+            SelectedCustomPadSource second,
+            IV7_Layer targetLayer,
+            List<object> temporaryOutline,
+            out int outlineCount)
+        {
+            outlineCount = 0;
+            if (!TryGetPadBounds(first, out CustomPadRect firstBounds) ||
+                !TryGetPadBounds(second, out CustomPadRect secondBounds))
+                return false;
+
+            long firstArea = (long)(firstBounds.Right - firstBounds.Left) * (firstBounds.Top - firstBounds.Bottom);
+            long secondArea = (long)(secondBounds.Right - secondBounds.Left) * (secondBounds.Top - secondBounds.Bottom);
+            CustomPadRect main = firstArea >= secondArea ? firstBounds : secondBounds;
+            CustomPadRect extension = firstArea >= secondArea ? secondBounds : firstBounds;
+
+            int tolerance = Math.Max(1, AltiumApi.MmToCoord(0.002));
+            if (!(extension.Right > main.Right + tolerance &&
+                extension.Left < main.Right + tolerance &&
+                extension.Top < main.Top - tolerance &&
+                extension.Bottom > main.Bottom + tolerance))
+                return false;
+
+            int mainRadius = main.Radius;
+            int extensionRadius = extension.Radius;
+            outlineCount += AddCustomPadContourTrack(component, board, targetLayer, main.Left + mainRadius, main.Top, main.Right - mainRadius, main.Top, temporaryOutline) ? 1 : 0;
+            outlineCount += AddCustomPadContourArc(component, board, targetLayer, main.Right - mainRadius, main.Top - mainRadius, mainRadius, 0, 90, temporaryOutline) ? 1 : 0;
+            outlineCount += AddCustomPadContourTrack(component, board, targetLayer, main.Right, main.Top - mainRadius, main.Right, extension.Top, temporaryOutline) ? 1 : 0;
+            outlineCount += AddCustomPadContourTrack(component, board, targetLayer, main.Right, extension.Top, extension.Right - extensionRadius, extension.Top, temporaryOutline) ? 1 : 0;
+            outlineCount += AddCustomPadContourArc(component, board, targetLayer, extension.Right - extensionRadius, extension.Top - extensionRadius, extensionRadius, 0, 90, temporaryOutline) ? 1 : 0;
+            outlineCount += AddCustomPadContourTrack(component, board, targetLayer, extension.Right, extension.Top - extensionRadius, extension.Right, extension.Bottom + extensionRadius, temporaryOutline) ? 1 : 0;
+            outlineCount += AddCustomPadContourArc(component, board, targetLayer, extension.Right - extensionRadius, extension.Bottom + extensionRadius, extensionRadius, 270, 0, temporaryOutline) ? 1 : 0;
+            outlineCount += AddCustomPadContourTrack(component, board, targetLayer, extension.Right - extensionRadius, extension.Bottom, main.Right, extension.Bottom, temporaryOutline) ? 1 : 0;
+            outlineCount += AddCustomPadContourTrack(component, board, targetLayer, main.Right, extension.Bottom, main.Right, main.Bottom + mainRadius, temporaryOutline) ? 1 : 0;
+            outlineCount += AddCustomPadContourArc(component, board, targetLayer, main.Right - mainRadius, main.Bottom + mainRadius, mainRadius, 270, 0, temporaryOutline) ? 1 : 0;
+            outlineCount += AddCustomPadContourTrack(component, board, targetLayer, main.Right - mainRadius, main.Bottom, main.Left + mainRadius, main.Bottom, temporaryOutline) ? 1 : 0;
+            outlineCount += AddCustomPadContourArc(component, board, targetLayer, main.Left + mainRadius, main.Bottom + mainRadius, mainRadius, 180, 270, temporaryOutline) ? 1 : 0;
+            outlineCount += AddCustomPadContourTrack(component, board, targetLayer, main.Left, main.Bottom + mainRadius, main.Left, main.Top - mainRadius, temporaryOutline) ? 1 : 0;
+            outlineCount += AddCustomPadContourArc(component, board, targetLayer, main.Left + mainRadius, main.Top - mainRadius, mainRadius, 90, 180, temporaryOutline) ? 1 : 0;
+            return outlineCount > 0;
+        }
+
+        private static int AddRoundedRectCustomPadContour(
+            IPCB_Group component,
+            IPCB_Board board,
+            IV7_Layer targetLayer,
+            CustomPadRect bounds,
+            int radius,
+            List<object> temporaryOutline)
+        {
+            int count = 0;
+            count += AddCustomPadContourTrack(component, board, targetLayer, bounds.Left + radius, bounds.Top, bounds.Right - radius, bounds.Top, temporaryOutline) ? 1 : 0;
+            count += AddCustomPadContourArc(component, board, targetLayer, bounds.Right - radius, bounds.Top - radius, radius, 0, 90, temporaryOutline) ? 1 : 0;
+            count += AddCustomPadContourTrack(component, board, targetLayer, bounds.Right, bounds.Top - radius, bounds.Right, bounds.Bottom + radius, temporaryOutline) ? 1 : 0;
+            count += AddCustomPadContourArc(component, board, targetLayer, bounds.Right - radius, bounds.Bottom + radius, radius, 270, 0, temporaryOutline) ? 1 : 0;
+            count += AddCustomPadContourTrack(component, board, targetLayer, bounds.Right - radius, bounds.Bottom, bounds.Left + radius, bounds.Bottom, temporaryOutline) ? 1 : 0;
+            count += AddCustomPadContourArc(component, board, targetLayer, bounds.Left + radius, bounds.Bottom + radius, radius, 180, 270, temporaryOutline) ? 1 : 0;
+            count += AddCustomPadContourTrack(component, board, targetLayer, bounds.Left, bounds.Bottom + radius, bounds.Left, bounds.Top - radius, temporaryOutline) ? 1 : 0;
+            count += AddCustomPadContourArc(component, board, targetLayer, bounds.Left + radius, bounds.Top - radius, radius, 90, 180, temporaryOutline) ? 1 : 0;
+            return count;
+        }
+
+        private static bool AddCustomPadContourTrack(
+            IPCB_Group component,
+            IPCB_Board board,
+            IV7_Layer targetLayer,
+            int x1,
+            int y1,
+            int x2,
+            int y2,
+            List<object> temporaryOutline)
+        {
+            if (x1 == x2 && y1 == y2)
+                return false;
+
+            var track = AltiumApi.GlobalVars.PCBServer.PCBObjectFactory(
+                TObjectId.eTrackObject,
+                TDimensionKind.eNoDimension,
+                TObjectCreationMode.eCreate_Default) as IPCB_Track;
+            if (track == null)
+                return false;
+
+            track.SetState_V7Layer(targetLayer);
+            track.SetState_X1(x1);
+            track.SetState_Y1(y1);
+            track.SetState_X2(x2);
+            track.SetState_Y2(y2);
+            track.SetState_Width(Math.Max(1, AltiumApi.MmToCoord(0.001)));
+            AddToPCB(component, track);
+            temporaryOutline.Add(track);
+            return true;
+        }
+
+        private static bool AddCustomPadContourArc(
+            IPCB_Group component,
+            IPCB_Board board,
+            IV7_Layer targetLayer,
+            int xCenter,
+            int yCenter,
+            int radius,
+            double startAngle,
+            double endAngle,
+            List<object> temporaryOutline)
+        {
+            if (radius <= 0)
+                return false;
+
+            var arc = AltiumApi.GlobalVars.PCBServer.PCBObjectFactory(
+                TObjectId.eArcObject,
+                TDimensionKind.eNoDimension,
+                TObjectCreationMode.eCreate_Default) as IPCB_Arc;
+            if (arc == null)
+                return false;
+
+            arc.SetState_V7Layer(targetLayer);
+            arc.SetState_CenterX(xCenter);
+            arc.SetState_CenterY(yCenter);
+            arc.SetState_Radius(radius);
+            arc.SetState_StartAngle(startAngle);
+            arc.SetState_EndAngle(endAngle);
+            arc.SetState_LineWidth(Math.Max(1, AltiumApi.MmToCoord(0.001)));
+            AddToPCB(component, arc);
+            temporaryOutline.Add(arc);
+            return true;
+        }
+
+        private static void SelectOnlyCustomPadConversionObjects(IPCB_Board board, IPCB_Pad anchorPad, IReadOnlyList<object> outlineObjects)
+        {
+            LaunchPcbCommand("PCB:DeSelect", "Scope=All");
+            TryInvoke(board, "SelectedObjects_Clear");
+            SetPrimitiveSelected(board, anchorPad, true);
+            foreach (object outlineObject in outlineObjects)
+                SetPrimitiveSelected(board, outlineObject, true);
+        }
+
+        private static void DeleteCustomPadConversionObjects(IPCB_Board board, IReadOnlyList<object> objectsToDelete)
+        {
+            if (objectsToDelete == null || objectsToDelete.Count == 0)
+                return;
+
+            LaunchPcbCommand("PCB:DeSelect", "Scope=All");
+            TryInvoke(board, "SelectedObjects_Clear");
+            foreach (object objectToDelete in objectsToDelete)
+                SetPrimitiveSelected(board, objectToDelete, true);
+
+            LaunchPcbCommand("PCB:DeleteObjects", "Object=SELECTED");
+            LaunchPcbCommand("PCB:DeSelect", "Scope=All");
+            TryInvoke(board, "SelectedObjects_Clear");
+        }
+
+        private static void SetPrimitiveSelected(IPCB_Board board, object primitive, bool selected)
+        {
+            if (primitive is IPCB_Primitive pcbPrimitive)
+                pcbPrimitive.SetState_Selected(selected);
+
+            if (selected && board != null)
+                TryInvoke(board, "SelectedObjects_Add", primitive);
+        }
+
+        private static void AddDistinctObject(List<object> objects, object value)
+        {
+            if (value == null)
+                return;
+
+            foreach (object existing in objects)
+            {
+                if (ReferenceEquals(existing, value))
+                    return;
+            }
+
+            objects.Add(value);
+        }
+
+        private static bool TryGetSourceBounds(IReadOnlyList<SelectedCustomPadSource> sources, out CustomPadRect bounds)
+        {
+            bounds = null;
+            foreach (SelectedCustomPadSource source in sources)
+            {
+                if (!TryGetSourceBounds(source, out CustomPadRect sourceBounds))
+                    continue;
+
+                if (bounds == null)
+                {
+                    bounds = sourceBounds;
+                    continue;
+                }
+
+                bounds.Left = Math.Min(bounds.Left, sourceBounds.Left);
+                bounds.Right = Math.Max(bounds.Right, sourceBounds.Right);
+                bounds.Bottom = Math.Min(bounds.Bottom, sourceBounds.Bottom);
+                bounds.Top = Math.Max(bounds.Top, sourceBounds.Top);
+                bounds.Radius = Math.Max(bounds.Radius, sourceBounds.Radius);
+            }
+
+            return bounds != null && bounds.Right > bounds.Left && bounds.Top > bounds.Bottom;
+        }
+
+        private static bool TryGetSourceBounds(SelectedCustomPadSource source, out CustomPadRect bounds)
+        {
+            if (source?.Primitive is IPCB_Pad)
+                return TryGetPadBounds(source, out bounds);
+
+            if (TryGetPrimitiveBoundsCoord(source?.Primitive, out int left, out int bottom, out int right, out int top))
+            {
+                bounds = new CustomPadRect
+                {
+                    Left = left,
+                    Bottom = bottom,
+                    Right = right,
+                    Top = top
+                };
+                return true;
+            }
+
+            bounds = null;
+            return false;
+        }
+
+        private static bool TryGetPadBounds(SelectedCustomPadSource source, out CustomPadRect bounds)
+        {
+            bounds = null;
+            if (!(source?.Primitive is IPCB_Pad pad) || source.Layer == null)
+                return false;
+
+            int x = pad.GetState_XLocation();
+            int y = pad.GetState_YLocation();
+            int width = pad.GetState_XSizeOnLayer(source.Layer);
+            int height = pad.GetState_YSizeOnLayer(source.Layer);
+            if (width <= 0 || height <= 0)
+                return false;
+
+            int radius = 0;
+            TryGetPadCornerRadius(source, out radius);
+            bounds = new CustomPadRect
+            {
+                Left = x - width / 2,
+                Right = x + width / 2,
+                Bottom = y - height / 2,
+                Top = y + height / 2,
+                Radius = radius
+            };
+            return true;
+        }
+
+        private static bool TryGetPadCornerRadius(SelectedCustomPadSource source, out int radius)
+        {
+            radius = 0;
+            if (!(source?.Primitive is IPCB_Pad pad) || source.Layer == null)
+                return false;
+
+            int width = pad.GetState_XSizeOnLayer(source.Layer);
+            int height = pad.GetState_YSizeOnLayer(source.Layer);
+            if (width <= 0 || height <= 0)
+                return false;
+
+            if (pad is IPCB_Pad2 pad2)
+            {
+                radius = pad2.GetState_CornerRadiusOnLayer(source.Layer);
+                if (radius > 0)
+                    return true;
+            }
+
+            int fallbackRadius = GetFallbackPadCornerRadius(width, height);
+            int shapeValue = pad.Internal_GetState_ShapeOnLayer(source.Layer);
+            if (shapeValue == (int)TShape.eRounded)
+            {
+                radius = Math.Min(width, height) / 2;
+                return radius > 0;
+            }
+
+            if (shapeValue == (int)TShape.eRoundRectShape || shapeValue == (int)TShape.eRoundedRectangular)
+            {
+                radius = fallbackRadius;
+                return radius > 0;
+            }
+
+            if (pad is IPCB_Pad4 pad4 && (pad4.HasCustomRoundedRectangle() || pad4.HasCornerRadiusChamfer()))
+            {
+                radius = fallbackRadius;
+                return radius > 0;
+            }
+
+            return false;
+        }
+
+        private static int GetFallbackPadCornerRadius(int width, int height)
+        {
+            return Math.Max(1, Math.Min(width, height) / 4);
+        }
+
+        private static bool TryGetPrimitiveBoundsCoord(object primitive, out int left, out int bottom, out int right, out int top)
+        {
+            left = 0;
+            bottom = 0;
+            right = 0;
+            top = 0;
+
+            object rect = TryInvokeResult(primitive, "Internal_BoundingRectangle");
+            if (rect == null)
+                return false;
+
+            if (!TryGetRectCoord(rect, "GetLeft", out left) ||
+                !TryGetRectCoord(rect, "GetBottom", out bottom) ||
+                !TryGetRectCoord(rect, "GetRight", out right) ||
+                !TryGetRectCoord(rect, "GetTop", out top))
+                return false;
+
+            return right > left && top > bottom;
+        }
+
+        private static List<object> GetSelectedObjects(IPCB_Board board)
+        {
+            var result = new List<object>();
+            var seen = new HashSet<object>();
+            if (board == null)
+                return result;
+
+            int selectedCount = GetSelectedObjectCount(board);
+            for (int index = 0; index < selectedCount; index++)
+                AddSelectedObject(result, seen, TryInvokeResult(board, "Internal_GetState_SelectecObject", index));
+
+            for (int index = 1; index <= selectedCount; index++)
+                AddSelectedObject(result, seen, TryInvokeResult(board, "Internal_GetState_SelectecObject", index));
+
+            if (result.Count > 0)
+                return result;
+
+            foreach (object primitive in EnumerateBoardPrimitives(board))
+            {
+                if (TryConvertToBool(TryInvokeResult(primitive, "GetState_Selected"), out bool selected) && selected)
+                    AddSelectedObject(result, seen, primitive);
+            }
+
+            return result;
+        }
+
+        private static void AddSelectedObject(List<object> result, HashSet<object> seen, object primitive)
+        {
+            if (!IsSupportedCustomPadSourcePrimitive(primitive))
+                return;
+
+            if (seen.Add(primitive))
+                result.Add(primitive);
+        }
+
+        private static bool IsSupportedCustomPadSourcePrimitive(object primitive)
+        {
+            return primitive is IPCB_Pad
+                || primitive is IPCB_Track
+                || primitive is IPCB_Fill
+                || primitive is IPCB_Arc
+                || primitive is IPCB_Region
+                || primitive is IPCB_Polygon;
+        }
+
+        private static List<SelectedCustomPadSource> BuildCustomPadSources(IReadOnlyList<object> selectedPrimitives)
+        {
+            var sources = new List<SelectedCustomPadSource>();
+            foreach (object primitive in selectedPrimitives)
+            {
+                if (!TryGetPrimitiveLayer(primitive, out IV7_Layer layer, out int layerNumber))
+                    continue;
+
+                int contourLayerNumber = GetContourMakerLayerNumber(layer, layerNumber);
+                sources.Add(new SelectedCustomPadSource
+                {
+                    Primitive = primitive,
+                    Layer = layer,
+                    LayerNumber = layerNumber,
+                    ContourLayerNumber = contourLayerNumber
+                });
+            }
+
+            return sources;
+        }
+
+        private static object CreateJoinedCustomPadPolygon(IReadOnlyList<SelectedCustomPadSource> sources)
+        {
+            object contourMaker = TryInvokeResult(AltiumApi.GlobalVars.PCBServer, "Internal_PCBContourMaker");
+            object contourUtilities = TryInvokeResult(AltiumApi.GlobalVars.PCBServer, "Internal_PCBContourUtilities");
+            object resultPolygon = TryInvokeResult(AltiumApi.GlobalVars.PCBServer, "Internal_PCBGeometricPolygonFactory");
+            if (contourMaker == null || contourUtilities == null || resultPolygon == null)
+            {
+                EasyEDALoaderModule.Trace(
+                    $"CreateCustomPadFromSelected contour setup failed: maker={contourMaker != null} utilities={contourUtilities != null} resultPolygon={resultPolygon != null}");
+                return null;
+            }
+
+            ConfigureCustomPadContourMaker(contourMaker, sources);
+
+            object polygonList = TryInvokeResult(contourUtilities, "Internal_CreateInterfaceList");
+            if (!(polygonList is DXP.IInterfaceList interfaceList))
+            {
+                EasyEDALoaderModule.Trace(
+                    $"CreateCustomPadFromSelected contour list failed: type={polygonList?.GetType().FullName ?? "null"}");
+                return null;
+            }
+
+            foreach (SelectedCustomPadSource source in sources)
+            {
+                object polygon = TryInvokeResult(contourMaker, "Internal_MakeContour", source.Primitive, 0, source.ContourLayerNumber);
+                int contourCount = GetGeometricPolygonContourCount(polygon);
+                if (polygon == null || contourCount == 0)
+                {
+                    EasyEDALoaderModule.Trace(
+                        $"CreateCustomPadFromSelected contour source skipped: type={source.Primitive?.GetType().FullName ?? "null"} layer={source.LayerNumber} contourLayer={source.ContourLayerNumber} polygonNull={polygon == null} contours={contourCount}");
+                    continue;
+                }
+
+                interfaceList.Add(polygon);
+            }
+
+            if (interfaceList.GetCount() == 0)
+            {
+                EasyEDALoaderModule.Trace($"CreateCustomPadFromSelected contour result empty: sources={sources.Count}");
+                return null;
+            }
+
+            if (interfaceList.GetCount() == 1)
+                return interfaceList.Get(0);
+
+            TryInvoke(contourUtilities, "UnionBatchSet", polygonList, resultPolygon);
+            return resultPolygon;
+        }
+
+        private static void ConfigureCustomPadContourMaker(object contourMaker, IReadOnlyList<SelectedCustomPadSource> sources)
+        {
+            if (contourMaker == null || sources == null || sources.Count == 0)
+                return;
+
+            bool hasRoundedPadCorners = false;
+            foreach (SelectedCustomPadSource source in sources)
+            {
+                if (SourceHasRoundedPadCorners(source))
+                {
+                    hasRoundedPadCorners = true;
+                    break;
+                }
+            }
+
+            if (!hasRoundedPadCorners)
+                return;
+
+            if (contourMaker is IPCB_ContourMaker maker)
+                maker.SetState_ArcResolution(64);
+            else
+                TryInvoke(contourMaker, "SetState_ArcResolution", 64);
+        }
+
+        private static bool SourceHasRoundedPadCorners(SelectedCustomPadSource source)
+        {
+            if (!(source?.Primitive is IPCB_Pad pad))
+                return false;
+
+            if (IsRoundedPadShape(TryInvokeResult(pad, "Internal_GetState_TopShape")) ||
+                IsRoundedPadShape(TryInvokeResult(pad, "Internal_GetState_MidShape")) ||
+                IsRoundedPadShape(TryInvokeResult(pad, "Internal_GetState_BotShape")) ||
+                IsRoundedPadShape(TryInvokeResult(pad, "Internal_GetState_ShapeOnLayer", source.Layer)))
+                return true;
+
+            return TryConvertToBool(TryInvokeResult(pad, "HasCornerRadiusChamfer"), out bool hasCornerRadiusChamfer) &&
+                hasCornerRadiusChamfer;
+        }
+
+        private static bool IsRoundedPadShape(object rawShape)
+        {
+            if (!TryConvertToInt(rawShape, out int shape))
+                return false;
+
+            return shape == (int)TShape.eRounded ||
+                shape == (int)TShape.eRoundRectShape ||
+                shape == (int)TShape.eRoundedRectangular;
+        }
+
+        private static IPCB_Region CreateCustomPadRegion(IV7_Layer targetLayer, object joinedPolygon)
+        {
+            var region = AltiumApi.GlobalVars.PCBServer.PCBObjectFactory(
+                TObjectId.eRegionObject,
+                TDimensionKind.eNoDimension,
+                TObjectCreationMode.eCreate_Default) as IPCB_Region;
+            if (region == null)
+                throw new InvalidOperationException("Could not create an Altium region for the custom pad shape.");
+
+            region.SetState_Kind(TRegionKind.eRegionKind_Copper);
+            region.SetState_V7Layer(targetLayer);
+            region.SetGeometricPolygon(joinedPolygon);
+            return region;
+        }
+
+        private static IPCB_Pad4 CreateCustomPad(
+            IPCB_Group component,
+            IV7_Layer targetLayer,
+            IPCB_Region customShape,
+            CustomPadSourceProperties properties,
+            int left,
+            int bottom,
+            int right,
+            int top)
+        {
+            var pad = AltiumApi.GlobalVars.PCBServer.PCBObjectFactory(
+                TObjectId.ePadObject,
+                TDimensionKind.eNoDimension,
+                TObjectCreationMode.eCreate_Default) as IPCB_Pad4;
+            if (pad == null)
+                throw new InvalidOperationException("Could not create an Altium pad.");
+
+            int width = Math.Max(1, right - left);
+            int height = Math.Max(1, top - bottom);
+            pad.SetState_Mode(TPadMode.ePadMode_Simple);
+            pad.SetState_Name(properties.Name);
+            pad.SetState_HoleType(properties.HoleType);
+            pad.SetState_HoleSize(properties.HoleSize);
+            pad.SetState_HoleWidth(properties.HoleWidth);
+            pad.SetState_HoleRotation(properties.HoleRotation);
+            pad.SetState_Plated(properties.Plated);
+            pad.SetState_Rotation(0);
+            pad.SetState_TopXSize(width);
+            pad.SetState_TopYSize(height);
+            pad.SetState_MidXSize(width);
+            pad.SetState_MidYSize(height);
+            pad.SetState_BotXSize(width);
+            pad.SetState_BotYSize(height);
+            pad.SetState_V7Layer(targetLayer);
+            pad.SetState_XLocation(properties.XLocation);
+            pad.SetState_YLocation(properties.YLocation);
+            if (properties.Net != null)
+                TryInvoke(pad, "SetState_Net", properties.Net);
+
+            ApplyCustomPadShape(pad, targetLayer, customShape);
+            return pad;
+        }
+
+        private static void ApplyCustomPadShape(IPCB_Pad4 pad, IV7_Layer targetLayer, IPCB_Region customShape)
+        {
+            if (pad == null || targetLayer == null || customShape == null)
+                throw new InvalidOperationException("Could not create the custom pad shape.");
+
+            var v7Layer = new V7_Layer(targetLayer);
+            if (v7Layer.IsTopLayer())
+                pad.SetState_TopShape(TShape.eCustomShape);
+            else if (v7Layer.IsBottomLayer())
+                pad.SetState_BotShape(TShape.eCustomShape);
+            else
+                pad.SetState_MidShape(TShape.eCustomShape);
+
+            pad.SetState_StackShapeOnLayer(targetLayer, (int)TShape.eCustomShape);
+
+            if (!(pad is IPCB_CustomPadShape customPadShape))
+                throw new InvalidOperationException("This Altium SDK build did not expose custom pad shape support.");
+
+            customPadShape.SetProperty_CustomShapeKind(targetLayer, (int)TShapeSubKind.eNoKind);
+            customPadShape.SetProperty_CustomShape(targetLayer, customShape);
+            pad.LinkCustomShape(customShape);
+            pad.UpdatePadStructureOnLayer(targetLayer);
+            pad.InvalidateSizeShape();
+            pad.InvalidateCache();
+            pad.ValidateSizeShape();
+            pad.GraphicallyInvalidate();
+        }
+
+        private static CustomPadSourceProperties SelectCustomPadSourceProperties(
+            IReadOnlyList<SelectedCustomPadSource> sources,
+            int left,
+            int bottom,
+            int right,
+            int top)
+        {
+            var result = new CustomPadSourceProperties
+            {
+                Name = "CUSTOM",
+                HoleType = TExtendedHoleType.eRoundHole,
+                HoleSize = 0,
+                HoleWidth = 0,
+                HoleRotation = 0,
+                Plated = false,
+                XLocation = left + (right - left) / 2,
+                YLocation = bottom + (top - bottom) / 2
+            };
+
+            IPCB_Pad firstPad = null;
+            IPCB_Pad holePad = null;
+            foreach (SelectedCustomPadSource source in sources)
+            {
+                if (result.Net == null)
+                    result.Net = TryInvokeResult(source.Primitive, "Internal_GetState_Net");
+
+                if (!(source.Primitive is IPCB_Pad pad))
+                    continue;
+
+                if (firstPad == null)
+                {
+                    firstPad = pad;
+                    string name = pad.GetState_Name();
+                    if (!string.IsNullOrWhiteSpace(name))
+                        result.Name = name;
+                }
+
+                int holeSize = pad.GetState_HoleSize();
+                int holeWidth = pad.GetState_HoleWidth();
+                if (holeSize <= 0 && holeWidth <= 0)
+                    continue;
+
+                if (holePad != null)
+                    throw new InvalidOperationException("Create Custom Pad from Selected supports at most one selected through-hole pad.");
+
+                holePad = pad;
+                result.HoleSize = holeSize;
+                result.HoleWidth = holeWidth;
+                result.HoleRotation = pad.GetState_HoleRotation();
+                result.Plated = pad.GetState_Plated();
+                result.XLocation = pad.GetState_XLocation();
+                result.YLocation = pad.GetState_YLocation();
+                if (TryConvertToInt(TryInvokeResult(pad, "Internal_GetState_HoleType"), out int holeType))
+                    result.HoleType = (TExtendedHoleType)holeType;
+            }
+
+            return result;
+        }
+
+        private static void RemoveSelectedCustomPadSourcePrimitives(
+            IPCB_Group component,
+            IPCB_Board board,
+            IReadOnlyList<SelectedCustomPadSource> sources)
+        {
+            if (sources == null || sources.Count == 0)
+                return;
+
+            var boards = new List<IPCB_Board>();
+            AddDistinctBoard(boards, board);
+            AddDistinctBoard(boards, GetComponentBoard(component));
+            AddDistinctBoard(boards, GetCurrentPcbLibraryBoard());
+
+            foreach (SelectedCustomPadSource source in sources)
+            {
+                TryInvoke(component, "RemovePCBObject", source.Primitive);
+                foreach (IPCB_Board removeBoard in boards)
+                    TryInvoke(removeBoard, "RemovePCBObject", source.Primitive);
+            }
+        }
+
+        private static bool TryGetPrimitiveLayer(object primitive, out IV7_Layer layer, out int layerNumber)
+        {
+            layer = TryInvokeResult(primitive, "Internal_GetState_V7Layer") as IV7_Layer;
+            if (layer != null)
+            {
+                try
+                {
+                    layerNumber = new V7_Layer(layer).Number();
+                    return true;
+                }
+                catch
+                {
+                }
+            }
+
+            if (TryGetPrimitiveLayerNumber(primitive, out layerNumber))
+            {
+                layer = CreateLayerFromNumber(layerNumber);
+                return true;
+            }
+
+            layerNumber = 0;
+            return false;
+        }
+
+        private static int GetContourMakerLayerNumber(IV7_Layer layer, int fallbackLayerNumber)
+        {
+            if (layer != null)
+            {
+                try
+                {
+                    return (int)new V7_Layer(layer).SafeV6Layer();
+                }
+                catch
+                {
+                }
+            }
+
+            return fallbackLayerNumber;
+        }
+
+        private static IV7_Layer CreateLayerFromNumber(int layerNumber)
+        {
+            try
+            {
+                return new V7_Layer((TLayerConstant)layerNumber);
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private static int GetGeometricPolygonContourCount(object polygon)
+        {
+            if (polygon == null)
+                return 0;
+
+            if (TryConvertToInt(TryInvokeResult(polygon, "GetState_Count"), out int count))
+                return count;
+
+            return 0;
+        }
+
+        private static bool TryGetGeometricPolygonBounds(object polygon, out int left, out int bottom, out int right, out int top)
+        {
+            left = 0;
+            bottom = 0;
+            right = 0;
+            top = 0;
+
+            bool hasPoint = false;
+            int contourCount = GetGeometricPolygonContourCount(polygon);
+            for (int contourIndex = 0; contourIndex < contourCount; contourIndex++)
+            {
+                object contour = TryInvokeResult(polygon, "Internal_GetState_Contour", contourIndex);
+                if (contour == null)
+                    continue;
+
+                if (!TryConvertToInt(TryInvokeResult(contour, "GetState_Count"), out int pointCount))
+                    continue;
+
+                for (int pointIndex = 0; pointIndex < pointCount; pointIndex++)
+                {
+                    if (!TryConvertToInt(TryInvokeResult(contour, "GetState_PointX", pointIndex), out int x) ||
+                        !TryConvertToInt(TryInvokeResult(contour, "GetState_PointY", pointIndex), out int y))
+                        continue;
+
+                    if (!hasPoint)
+                    {
+                        left = right = x;
+                        bottom = top = y;
+                        hasPoint = true;
+                    }
+                    else
+                    {
+                        left = Math.Min(left, x);
+                        right = Math.Max(right, x);
+                        bottom = Math.Min(bottom, y);
+                        top = Math.Max(top, y);
+                    }
+                }
+            }
+
+            return hasPoint && right > left && top > bottom;
+        }
+
         private static ProjectionTextLocations ChooseProjectionTextLocations(IReadOnlyList<StepSilhouettePrimitive> projectionPrimitives)
         {
             double designatorHeight = AssemblyTextSizeMm;
@@ -2017,6 +2949,22 @@ namespace EasyEDA_Loader
             if (directResult != Missing.Value)
                 return directResult;
 
+            directResult = TryInvokePcbContourMaker(target, methodName, args);
+            if (directResult != Missing.Value)
+                return directResult;
+
+            directResult = TryInvokePcbContourUtilities(target, methodName, args);
+            if (directResult != Missing.Value)
+                return directResult;
+
+            directResult = TryInvokePcbGeometricPolygon(target, methodName, args);
+            if (directResult != Missing.Value)
+                return directResult;
+
+            directResult = TryInvokePcbContour(target, methodName, args);
+            if (directResult != Missing.Value)
+                return directResult;
+
             directResult = TryInvokePcbLayerSetUtils(target, methodName, args);
             if (directResult != Missing.Value)
                 return directResult;
@@ -2097,6 +3045,112 @@ namespace EasyEDA_Loader
                         return pcbServer.LayerSet();
                     case "Internal_LayerSet" when args.Length == 0:
                         return pcbServer.Internal_LayerSet();
+                    case "Internal_PCBContourMaker" when args.Length == 0:
+                        return pcbServer.Internal_PCBContourMaker();
+                    case "Internal_PCBContourUtilities" when args.Length == 0:
+                        return pcbServer.Internal_PCBContourUtilities();
+                    case "Internal_PCBGeometricPolygonFactory" when args.Length == 0:
+                        return pcbServer.Internal_PCBGeometricPolygonFactory();
+                    default:
+                        return Missing.Value;
+                }
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private static object TryInvokePcbContourMaker(object target, string methodName, object[] args)
+        {
+            if (!(target is IPCB_ContourMaker contourMaker))
+                return Missing.Value;
+
+            try
+            {
+                switch (methodName)
+                {
+                    case "Internal_MakeContour" when args.Length == 3 &&
+                        TryConvertToInt(args[1], out int expansion) &&
+                        TryConvertToInt(args[2], out int layer):
+                        return contourMaker.Internal_MakeContour(args[0], expansion, layer);
+                    case "SetState_ArcResolution" when args.Length == 1 && TryConvertToInt(args[0], out int arcResolution):
+                        contourMaker.SetState_ArcResolution(arcResolution);
+                        return null;
+                    case "GetState_ArcResolution" when args.Length == 0:
+                        return contourMaker.GetState_ArcResolution();
+                    default:
+                        return Missing.Value;
+                }
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private static object TryInvokePcbContourUtilities(object target, string methodName, object[] args)
+        {
+            if (!(target is IPCB_ContourUtilities contourUtilities))
+                return Missing.Value;
+
+            try
+            {
+                switch (methodName)
+                {
+                    case "Internal_CreateInterfaceList" when args.Length == 0:
+                        return contourUtilities.Internal_CreateInterfaceList();
+                    case "UnionBatchSet" when args.Length == 2:
+                        contourUtilities.UnionBatchSet(args[0], args[1]);
+                        return null;
+                    default:
+                        return Missing.Value;
+                }
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private static object TryInvokePcbGeometricPolygon(object target, string methodName, object[] args)
+        {
+            if (!(target is IPCB_GeometricPolygon geometricPolygon))
+                return Missing.Value;
+
+            try
+            {
+                switch (methodName)
+                {
+                    case "GetState_Count" when args.Length == 0:
+                        return geometricPolygon.GetState_Count();
+                    case "Internal_GetState_Contour" when args.Length == 1 && TryConvertToInt(args[0], out int contourIndex):
+                        return geometricPolygon.Internal_GetState_Contour(contourIndex);
+                    default:
+                        return Missing.Value;
+                }
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private static object TryInvokePcbContour(object target, string methodName, object[] args)
+        {
+            if (!(target is IPCB_Contour contour))
+                return Missing.Value;
+
+            try
+            {
+                switch (methodName)
+                {
+                    case "GetState_Count" when args.Length == 0:
+                        return contour.GetState_Count();
+                    case "GetState_PointX" when args.Length == 1 && TryConvertToInt(args[0], out int pointXIndex):
+                        return contour.GetState_PointX(pointXIndex);
+                    case "GetState_PointY" when args.Length == 1 && TryConvertToInt(args[0], out int pointYIndex):
+                        return contour.GetState_PointY(pointYIndex);
                     default:
                         return Missing.Value;
                 }
@@ -2249,10 +3303,15 @@ namespace EasyEDA_Loader
                     case "SelectedObjects_Clear" when args.Length == 0:
                         board.SelectedObjects_Clear();
                         return null;
+                    case "SelectedObjects_Add" when args.Length == 1:
+                        board.SelectedObjects_Add(args[0]);
+                        return null;
                     case "SelectedObjectsCount" when args.Length == 0:
                         return board.SelectedObjectsCount();
                     case "GetState_SelectecObjectCount" when args.Length == 0:
                         return board.GetState_SelectecObjectCount();
+                    case "Internal_GetState_SelectecObject" when args.Length == 1:
+                        return board.Internal_GetState_SelectecObject(Convert.ToInt32(args[0], CultureInfo.InvariantCulture));
                     case "Internal_GetState_CurrentLayerV7" when args.Length == 0:
                         return board.Internal_GetState_CurrentLayerV7();
                     case "Internal_GetState_LayerStack" when args.Length == 0:
@@ -2533,6 +3592,36 @@ namespace EasyEDA_Loader
             {
                 return null;
             }
+        }
+
+        private sealed class SelectedCustomPadSource
+        {
+            public object Primitive { get; set; }
+            public IV7_Layer Layer { get; set; }
+            public int LayerNumber { get; set; }
+            public int ContourLayerNumber { get; set; }
+        }
+
+        private sealed class CustomPadRect
+        {
+            public int Left { get; set; }
+            public int Bottom { get; set; }
+            public int Right { get; set; }
+            public int Top { get; set; }
+            public int Radius { get; set; }
+        }
+
+        private sealed class CustomPadSourceProperties
+        {
+            public string Name { get; set; }
+            public TExtendedHoleType HoleType { get; set; }
+            public int HoleSize { get; set; }
+            public int HoleWidth { get; set; }
+            public double HoleRotation { get; set; }
+            public bool Plated { get; set; }
+            public int XLocation { get; set; }
+            public int YLocation { get; set; }
+            public object Net { get; set; }
         }
     }
 }

@@ -10241,11 +10241,13 @@ namespace StepCleaner.Tests
             AssertContains(ins, "Command  Name = 'EasyEDASwitchBottomSignalLayer'", "PCB layer switch bottom command must be declared in the INS file", failures);
             AssertContains(ins, "Command  Name = 'EasyEDASwitchNextSignalLayer'", "PCB layer switch next command must be declared in the INS file", failures);
             AssertContains(ins, "Command  Name = 'EasyEDASwitchPreviousSignalLayer'", "PCB layer switch previous command must be declared in the INS file", failures);
+            AssertContains(ins, "Command  Name = 'EasyEDACreateCustomPadFromSelected'", "PcbLib custom-pad command must be declared in the INS file", failures);
 
             AssertContains(rcs, "Caption='&EasyEDA'", "PcbLib menu should expose an EasyEDA submenu", failures);
             AssertContains(rcs, "Caption='&Loader...'", "Loader command should move under the EasyEDA submenu", failures);
             AssertContains(rcs, "Caption='&Reproject 3D'", "Reproject 3D command should be available in the PcbLib EasyEDA submenu", failures);
             AssertContains(rcs, "Caption='&Align 3D model'", "Align 3D model command should be available in the PcbLib EasyEDA submenu", failures);
+            AssertContains(rcs, "Caption='Create &Custom Pad from Selected'", "Create Custom Pad from Selected command should be available in the PcbLib EasyEDA submenu", failures);
             AssertContains(rcs, "Tree MNPCB_EasyEDALoaderTree Caption='&EasyEDA'", "PCB editor menu should place EasyEDA commands under Tools > EasyEDA", failures);
             AssertContains(rcs, "Tree MNPCB_EasyEDALayerSwitchTree Caption='&Layer Switch'", "PCB editor menu should expose Tools > EasyEDA > Layer Switch", failures);
             AssertContains(rcs, "PLID='PLEasyEDALoader:EasyEDASwitchTopSignalLayer'", "Layer Switch menu should include switch-to-top command", failures);
@@ -10264,12 +10266,40 @@ namespace StepCleaner.Tests
             AssertContains(module, "RegisterCommand(\"EasyEDASwitchBottomSignalLayer\"", "module must register the bottom layer switch command", failures);
             AssertContains(module, "RegisterCommand(\"EasyEDASwitchNextSignalLayer\"", "module must register the next layer switch command", failures);
             AssertContains(module, "RegisterCommand(\"EasyEDASwitchPreviousSignalLayer\"", "module must register the previous layer switch command", failures);
+            AssertContains(module, "RegisterCommand(\"EasyEDACreateCustomPadFromSelected\"", "module must register the Create Custom Pad from Selected command", failures);
             AssertContains(module, "SwitchTopSignalLayer", "top command should dispatch to a PCB layer switch handler", failures);
             AssertContains(module, "SwitchBottomSignalLayer", "bottom command should dispatch to a PCB layer switch handler", failures);
             AssertContains(module, "SwitchNextSignalLayer", "next command should dispatch to a PCB layer switch handler", failures);
             AssertContains(module, "SwitchPreviousSignalLayer", "previous command should dispatch to a PCB layer switch handler", failures);
             AssertContains(module, "ReprojectActiveFootprint3D", "Reproject command should dispatch to an active-footprint handler", failures);
             AssertContains(module, "AlignActiveFootprint3DModel", "Align command should dispatch to an active-footprint handler", failures);
+            AssertContains(module, "CreateCustomPadFromSelected", "custom-pad command should dispatch to an active-footprint handler", failures);
+            int reprojectHandlerStart = module.IndexOf("private void ReprojectActiveFootprint3D", StringComparison.Ordinal);
+            int reprojectHandlerEnd = reprojectHandlerStart >= 0
+                ? module.IndexOf("private void AlignActiveFootprint3DModel", reprojectHandlerStart, StringComparison.Ordinal)
+                : -1;
+            string reprojectHandler = reprojectHandlerStart >= 0 && reprojectHandlerEnd > reprojectHandlerStart
+                ? module.Substring(reprojectHandlerStart, reprojectHandlerEnd - reprojectHandlerStart)
+                : string.Empty;
+            AssertDoesNotContain(reprojectHandler, "ShowInfo(", "Reproject command must not show a success dialog", failures);
+            int alignHandlerStart = module.IndexOf("private void AlignActiveFootprint3DModel", StringComparison.Ordinal);
+            int alignHandlerEnd = alignHandlerStart >= 0
+                ? module.IndexOf("private void CreateCustomPadFromSelected", alignHandlerStart, StringComparison.Ordinal)
+                : -1;
+            string alignHandler = alignHandlerStart >= 0 && alignHandlerEnd > alignHandlerStart
+                ? module.Substring(alignHandlerStart, alignHandlerEnd - alignHandlerStart)
+                : string.Empty;
+            AssertDoesNotContain(alignHandler, "ShowInfo(", "Align 3D model command must not show a success dialog", failures);
+            AssertContains(module, "EEPCB.CreateCustomPadFromSelected(component)", "custom-pad command should call the PCB helper inside the edit transaction", failures);
+            AssertContains(module, "MarkCurrentDocumentModified();", "custom-pad command must mark the document dirty without saving it", failures);
+            int customPadHandlerStart = module.IndexOf("private void CreateCustomPadFromSelected", StringComparison.Ordinal);
+            int customPadHandlerEnd = customPadHandlerStart >= 0
+                ? module.IndexOf("private void SwitchTopSignalLayer", customPadHandlerStart, StringComparison.Ordinal)
+                : -1;
+            string customPadHandler = customPadHandlerStart >= 0 && customPadHandlerEnd > customPadHandlerStart
+                ? module.Substring(customPadHandlerStart, customPadHandlerEnd - customPadHandlerStart)
+                : string.Empty;
+            AssertDoesNotContain(customPadHandler, "ShowInfo(", "custom-pad command must not show a success dialog", failures);
 
             AssertContains(eePcb, "SwitchToTopSignalLayer", "PCB helper must switch directly to the active board's top signal layer", failures);
             AssertContains(eePcb, "SwitchToBottomSignalLayer", "PCB helper must switch directly to the active board's bottom signal layer", failures);
@@ -10318,6 +10348,26 @@ namespace StepCleaner.Tests
             AssertContains(eePcb, "ReprojectComponentBodySilhouette", "Reproject 3D must regenerate silhouette primitives from a 3D body", failures);
             AssertContains(eePcb, "Rotation2D = FootprintModelPlacement.ProjectionPlacementRotationDeg()", "Reproject 3D must apply the common Altium 180-degree projection placement correction", failures);
             AssertContains(footprint3dModel, "Rotation2D = FootprintModelPlacement.ProjectionPlacementRotationDeg()", "3D model import must apply the common Altium 180-degree projection placement correction", failures);
+
+            AssertContains(eePcb, "CreateCustomPadFromSelected", "PCB helper must implement selected-geometry to custom-pad conversion", failures);
+            AssertContains(eePcb, "GetSelectedObjects(board)", "custom-pad helper must read the editor selection from the active PcbLib board", failures);
+            AssertContains(eePcb, "Internal_GetState_SelectecObject", "selected-object enumeration must use Altium's selected-object list", failures);
+            AssertContains(eePcb, "CreateCustomPadWithEditorConversion", "custom-pad helper must use Altium's editor conversion flow", failures);
+            AssertContains(eePcb, "PCB:CustomPadShape", "custom-pad helper must invoke Altium's native custom pad conversion command", failures);
+            AssertContains(eePcb, "Action=Convert|Object=Track", "custom-pad helper must convert selected track/arc outline into a custom pad", failures);
+            AssertContains(eePcb, "AddCustomPadContourTrack", "custom-pad helper must prepare temporary outline tracks like altium-mcp", failures);
+            AssertContains(eePcb, "AddCustomPadContourArc", "custom-pad helper must preserve rounded pad corners with temporary outline arcs", failures);
+            AssertContains(eePcb, "IPCB_Pad2", "custom-pad helper must read exact Altium rounded-corner radius when available", failures);
+            AssertContains(eePcb, "GetState_CornerRadiusOnLayer", "custom-pad helper must preserve the source pad corner radius instead of guessing it", failures);
+            AssertContains(eePcb, "GetFallbackPadCornerRadius", "custom-pad helper must not collapse rounded pads to sharp corners when exact radius is unavailable", failures);
+            AssertContains(eePcb, "HasCustomRoundedRectangle", "custom-pad helper must detect Altium rounded-rectangle pad metadata", failures);
+            AssertContains(eePcb, "SelectOnlyCustomPadConversionObjects", "custom-pad helper must select only the anchor pad and prepared outline before conversion", failures);
+            AssertContains(eePcb, "DeleteCustomPadConversionObjects", "custom-pad helper must cleanup temporary/source primitives through the PCB editor delete path", failures);
+            AssertContains(eePcb, "FindConvertedCustomPad", "custom-pad helper must verify Altium created a custom pad before deleting source primitives", failures);
+            AssertContains(eePcb, "TShape.eCustomShape", "custom-pad helper must verify conversion by reading back the custom pad shape", failures);
+            AssertDoesNotContain(eePcb, "CreateJoinedCustomPadPolygon(sources)", "custom-pad command must not use the failing manual polygon custom-shape path", failures);
+            AssertContains(eePcb, "RemoveSelectedCustomPadSourcePrimitives", "custom-pad helper must replace selected pads/primitives after creating the custom pad", failures);
+            AssertDoesNotContain(eePcb, "SaveDocument", "custom-pad command must not save the PCB library document", failures);
             AssertContains(footprint3dModel, "StepSilhouetteProjection.Generate(", "3D model import should project from in-memory STEP bytes instead of reloading the already-written body file", failures);
             AssertContains(footprint3dModel, "footprintModel,", "3D model import should pass the already-loaded STEP bytes to silhouette projection", failures);
             AssertContains(module, "ReprojectComponentBodySilhouette(component, out removedCount)", "Reproject 3D must only clear Mechanical 2 after projection generation succeeds", failures);

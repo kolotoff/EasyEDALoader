@@ -3,6 +3,7 @@ PL PLEasyEDALoader:EasyEDARunPcb Command='EasyEDA-Loader:EasyEDARun' Caption='&L
 PL PLEasyEDALoader:EasyEDARunPcbLib Command='EasyEDA-Loader:EasyEDARun' Caption='&Loader...' Description='Load EasyEDA components into Altium libraries' End
 PL PLEasyEDALoader:EasyEDAReproject3D Command='EasyEDA-Loader:EasyEDAReproject3D' Caption='&Reproject 3D' Description='Regenerate 3D model projection and assembly labels for the active footprint' End
 PL PLEasyEDALoader:EasyEDAAlign3DModel Command='EasyEDA-Loader:EasyEDAAlign3DModel' Caption='&Align 3D model' Description='Align 3D model bodies to the active footprint pads' End
+PL PLEasyEDALoader:EasyEDACreateCustomPadFromSelected Command='EasyEDA-Loader:EasyEDACreateCustomPadFromSelected' Caption='Create &Custom Pad from Selected' Description='Replace selected pads and copper primitives with one custom pad' End
 PL PLEasyEDALoader:EasyEDASwitchTopSignalLayer Command='EasyEDA-Loader:EasyEDASwitchTopSignalLayer' Caption='&Top' Shortcut1='Ctrl+Plus' Description='Switch to the top signal layer' End
 PL PLEasyEDALoader:EasyEDASwitchBottomSignalLayer Command='EasyEDA-Loader:EasyEDASwitchBottomSignalLayer' Caption='&Bottom' Shortcut1='Ctrl+Minus' Description='Switch to the bottom signal layer' End
 PL PLEasyEDALoader:EasyEDASwitchNextSignalLayer Command='EasyEDA-Loader:EasyEDASwitchNextSignalLayer' Caption='&Next Signal' Shortcut1='Ctrl+Shift+Plus' Description='Switch to the next displayed signal layer' End
@@ -31,6 +32,7 @@ Insertion MNPCBLib_EasyEDALoader TargetID='MNPCBLib_Tools10' InsertType='After' 
         Separator MNPCBLib_EasyEDALoader20 End
         Link MNPCBLib_EasyEDALoader30 PLID='PLEasyEDALoader:EasyEDAReproject3D' End
         Link MNPCBLib_EasyEDALoader40 PLID='PLEasyEDALoader:EasyEDAAlign3DModel' End
+        Link MNPCBLib_EasyEDALoader50 PLID='PLEasyEDALoader:EasyEDACreateCustomPadFromSelected' End
     End
 End
 
