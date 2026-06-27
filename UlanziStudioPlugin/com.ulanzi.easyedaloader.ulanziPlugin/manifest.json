@@ -1,0 +1,192 @@
+{
+  "Version": "1.0.0",
+  "Author": "EasyEDALoader",
+  "Name": "EasyEDA Loader",
+  "Description": "Controls EasyEDALoader commands in active Altium windows from Ulanzi Dial.",
+  "Icon": "assets/icons/plugin.svg",
+  "Category": "Altium",
+  "CategoryIcon": "assets/icons/plugin.svg",
+  "CodePath": "plugin/app.js",
+  "Type": "JavaScript",
+  "PrivateAPI": false,
+  "UUID": "com.ulanzi.ulanzideck.easyedaloader",
+  "Actions": [
+    {
+      "Name": "EasyEDA Loader Dial",
+      "Icon": "assets/icons/plugin.svg",
+      "state": 0,
+      "States": [
+        {
+          "Name": "Default",
+          "Image": "assets/icons/plugin.svg"
+        }
+      ],
+      "Tooltip": "Rotate to switch signal layers; press as a key to open EasyEDA Loader.",
+      "UUID": "com.ulanzi.ulanzideck.easyedaloader.dial",
+      "SupportedInMultiActions": false,
+      "Controllers": [
+        "Keypad",
+        "Encoder"
+      ],
+      "Encoder": {
+        "layout": "$UA1"
+      }
+    },
+    {
+      "Name": "Open Loader",
+      "Icon": "assets/icons/plugin.svg",
+      "state": 0,
+      "States": [
+        {
+          "Name": "Default",
+          "Image": "assets/icons/plugin.svg"
+        }
+      ],
+      "Tooltip": "Open the EasyEDA Loader dialog in active Altium.",
+      "UUID": "com.ulanzi.ulanzideck.easyedaloader.openloader",
+      "SupportedInMultiActions": false,
+      "Controllers": [
+        "Keypad",
+        "Encoder"
+      ],
+      "Encoder": {
+        "layout": "$UA1"
+      }
+    },
+    {
+      "Name": "Next Signal Layer",
+      "Icon": "assets/icons/plugin.svg",
+      "state": 0,
+      "States": [
+        {
+          "Name": "Default",
+          "Image": "assets/icons/plugin.svg"
+        }
+      ],
+      "Tooltip": "Switch active Altium PCB editor to the next displayed signal layer.",
+      "UUID": "com.ulanzi.ulanzideck.easyedaloader.layernext",
+      "SupportedInMultiActions": false,
+      "Controllers": [
+        "Keypad",
+        "Encoder"
+      ],
+      "Encoder": {
+        "layout": "$UA1"
+      }
+    },
+    {
+      "Name": "Previous Signal Layer",
+      "Icon": "assets/icons/plugin.svg",
+      "state": 0,
+      "States": [
+        {
+          "Name": "Default",
+          "Image": "assets/icons/plugin.svg"
+        }
+      ],
+      "Tooltip": "Switch active Altium PCB editor to the previous displayed signal layer.",
+      "UUID": "com.ulanzi.ulanzideck.easyedaloader.layerprevious",
+      "SupportedInMultiActions": false,
+      "Controllers": [
+        "Keypad",
+        "Encoder"
+      ],
+      "Encoder": {
+        "layout": "$UA1"
+      }
+    },
+    {
+      "Name": "Top Signal Layer",
+      "Icon": "assets/icons/plugin.svg",
+      "state": 0,
+      "States": [
+        {
+          "Name": "Default",
+          "Image": "assets/icons/plugin.svg"
+        }
+      ],
+      "Tooltip": "Switch active Altium PCB editor to the top signal layer.",
+      "UUID": "com.ulanzi.ulanzideck.easyedaloader.layertop",
+      "SupportedInMultiActions": false,
+      "Controllers": [
+        "Keypad",
+        "Encoder"
+      ],
+      "Encoder": {
+        "layout": "$UA1"
+      }
+    },
+    {
+      "Name": "Bottom Signal Layer",
+      "Icon": "assets/icons/plugin.svg",
+      "state": 0,
+      "States": [
+        {
+          "Name": "Default",
+          "Image": "assets/icons/plugin.svg"
+        }
+      ],
+      "Tooltip": "Switch active Altium PCB editor to the bottom signal layer.",
+      "UUID": "com.ulanzi.ulanzideck.easyedaloader.layerbottom",
+      "SupportedInMultiActions": false,
+      "Controllers": [
+        "Keypad",
+        "Encoder"
+      ],
+      "Encoder": {
+        "layout": "$UA1"
+      }
+    },
+    {
+      "Name": "Reproject 3D",
+      "Icon": "assets/icons/plugin.svg",
+      "state": 0,
+      "States": [
+        {
+          "Name": "Default",
+          "Image": "assets/icons/plugin.svg"
+        }
+      ],
+      "Tooltip": "Regenerate the active footprint's 3D projection in Altium.",
+      "UUID": "com.ulanzi.ulanzideck.easyedaloader.reproject3d",
+      "SupportedInMultiActions": false,
+      "Controllers": [
+        "Keypad",
+        "Encoder"
+      ],
+      "Encoder": {
+        "layout": "$UA1"
+      }
+    },
+    {
+      "Name": "Align 3D Model",
+      "Icon": "assets/icons/plugin.svg",
+      "state": 0,
+      "States": [
+        {
+          "Name": "Default",
+          "Image": "assets/icons/plugin.svg"
+        }
+      ],
+      "Tooltip": "Align the active footprint's 3D model to its pads in Altium.",
+      "UUID": "com.ulanzi.ulanzideck.easyedaloader.align3dmodel",
+      "SupportedInMultiActions": false,
+      "Controllers": [
+        "Keypad",
+        "Encoder"
+      ],
+      "Encoder": {
+        "layout": "$UA1"
+      }
+    }
+  ],
+  "OS": [
+    {
+      "Platform": "windows",
+      "MinimumVersion": "10"
+    }
+  ],
+  "Software": {
+    "MinVersion": "2.1.4"
+  }
+}

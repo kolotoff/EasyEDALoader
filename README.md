@@ -60,6 +60,70 @@ environment:
 If F3D is missing, footprint import can still download and attach STEP models,
 but the right-side interactive STEP preview will not be available.
 
+## Ulanzi Studio plugin
+
+This repository includes a Windows-only Ulanzi Studio plugin that lets a Ulanzi
+Dial call EasyEDALoader commands through a local named-pipe bridge inside the
+Altium extension.
+
+Install it with:
+
+```powershell
+.\BuildAndInstall-UlanziStudio.ps1
+```
+
+The installer closes a running Ulanzi Studio/UlanziDeck process, installs the
+plugin, then starts the app again so the plugin list is rescanned. Pass
+`-NoRestart` if you want to leave Ulanzi Studio running.
+
+The installer searches common Ulanzi Studio plugin folders, including the
+current Windows user folders:
+
+```text
+%APPDATA%\Ulanzi\UlanziDeck\Plugins
+%APPDATA%\Ulanzi\UlanziDeck\System\Plugins
+```
+
+It also checks LocalAppData, ProgramData, Documents, and installed Ulanzi
+application folders.
+If needed, pass the plugin folder explicitly:
+
+```powershell
+.\BuildAndInstall-UlanziStudio.ps1 -UlanziPluginRoot "C:\Path\To\UlanziStudio\plugins"
+```
+
+After installation, assign either the combined `EasyEDA Loader Dial` action or
+one of the separate actions, such as `Next Signal Layer`, `Top Signal Layer`,
+or `Reproject 3D`. The separate actions are intended to behave like
+`System > Hotkey`: each action entry maps to one EasyEDALoader command and can
+be assigned independently. The manifest intentionally does not filter by device
+model, because some Ulanzi Studio builds hide filtered plugins when a different
+Deck/Dial model is the currently connected device.
+
+Command mapping:
+
+- Dial clockwise: switch to the next displayed signal layer.
+- Dial counter-clockwise: switch to the previous displayed signal layer.
+- Hold and rotate clockwise: switch to the bottom signal layer.
+- Hold and rotate counter-clockwise: switch to the top signal layer.
+- Keypad/run action: open the EasyEDA Loader dialog.
+
+Altium window must be active before the bridge executes a command. If another
+application is focused, the bridge rejects the request with `altium-not-active`
+instead of changing the Altium document from the background. Dial press is not
+bound to any command.
+
+If Ulanzi Studio shows `EasyEDALoader bridge pipe was not found` or a raw
+`ENOENT \\.\pipe\EasyEDA-Loader.CommandBridge` error, the Altium extension that
+hosts the pipe is not loaded. Close Altium and run:
+
+```powershell
+.\BuildAndInstall-Altium.ps1
+```
+
+Then keep Altium running with an Altium window active before triggering the
+Ulanzi action.
+
 ### Altium `MSVCP140.dll` compatibility
 
 The in-process F3D preview also needs a compatible Visual C++ runtime. Some

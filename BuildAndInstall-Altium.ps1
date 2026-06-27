@@ -609,7 +609,13 @@ if ($updatedRegistryText -eq $registryText) {
     throw "EasyEDA-Loader registry item was not updated; pattern did not match."
 }
 
-Set-Content -LiteralPath $registryPath -Value $updatedRegistryText -NoNewline -Encoding utf8
+$registryBackupDir = Join-Path $AltiumProfile "ExtensionBackups\RegistryBackups"
+New-Item -ItemType Directory -Force -Path $registryBackupDir | Out-Null
+$registryBackupPath = Join-Path $registryBackupDir ("ExtensionsRegistry.xml.bak-before-easyeda-install-" + (Get-Date -Format "yyyyMMdd-HHmmss"))
+Copy-Item -LiteralPath $registryPath -Destination $registryBackupPath -Force
+
+$utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+[System.IO.File]::WriteAllText($registryPath, $updatedRegistryText, $utf8NoBom)
 
 [xml]$registryXml = Get-Content -LiteralPath $registryPath
 $registryItems = @($registryXml.Extensions.Item).Count
@@ -637,6 +643,7 @@ if (-not [string]::IsNullOrWhiteSpace($f3dNativeHash)) {
     Write-Host "Installed F3D native library: not bundled; f3d_c_api.dll was not found"
 }
 Write-Host "Registry Items=$registryItems NonItem=$nonItemNodes EasyEDA=$($easyEdaItem.Version) VersionGuid=$($easyEdaItem.VersionGuid)"
+Write-Host "Registry backup: $registryBackupPath"
 
 if (-not $NoLaunch) {
     Write-Step "Launching Altium"

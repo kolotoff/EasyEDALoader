@@ -16,12 +16,19 @@ namespace EasyEDA_Loader
     public class EasyEDALoaderModule : ServerModule
     {
         private bool noGUIMode;
+        private readonly EasyEdaCommandBridge commandBridge;
+        private readonly SynchronizationContext bridgeSynchronizationContext;
+        private int loaderDialogOpen;
         private static readonly List<CommandProc> registeredCommandProcs = new List<CommandProc>();
 
         public EasyEDALoaderModule(IClient argClient)
           : base(argClient, "EasyEDA-Loader")
         {
             noGUIMode = argClient.ProductInfo().SupportsUIFeature("NoGUI", false);
+            bridgeSynchronizationContext = SynchronizationContext.Current;
+            commandBridge = new EasyEdaCommandBridge();
+            commandBridge.CommandReceived += HandleBridgeCommand;
+            commandBridge.Start();
             Trace("Module constructed.");
         }
 
@@ -311,9 +318,23 @@ namespace EasyEDA_Loader
           ref string argParameters)
         {
             Trace("Run entered.");
-            Dialog dialog = new Dialog((selections, progress) => ImportSelectedComponents(selections, progress));
-            DialogResult result = dialog.ShowDialog();
-            Trace("Dialog closed with result: " + result);
+            if (IsLoaderDialogOpen())
+            {
+                Trace("Run ignored because dialog is already open.");
+                return;
+            }
+
+            Interlocked.Exchange(ref loaderDialogOpen, 1);
+            try
+            {
+                Dialog dialog = new Dialog((selections, progress) => ImportSelectedComponents(selections, progress));
+                DialogResult result = dialog.ShowDialog();
+                Trace("Dialog closed with result: " + result);
+            }
+            finally
+            {
+                Interlocked.Exchange(ref loaderDialogOpen, 0);
+            }
         }
 
         private void ReprojectActiveFootprint3D(
@@ -403,6 +424,102 @@ namespace EasyEDA_Loader
             Trace("SwitchPreviousSignalLayer entered.");
             if (!EEPCB.SwitchToPreviousSignalLayer())
                 throw new InvalidOperationException("Could not switch to the previous displayed signal layer. Open a PCB document with displayed signal layers and try again.");
+        }
+
+        private EasyEdaCommandBridge.CommandResponse HandleBridgeCommand(string command)
+        {
+            if (IsLoaderDialogOpen())
+            {
+                return EasyEdaCommandBridge.CommandResponse.Error(
+                    "loader-dialog-open",
+                    "EasyEDALoader window is open. Close it before running Ulanzi commands.",
+                    command);
+            }
+
+            if (bridgeSynchronizationContext != null &&
+                SynchronizationContext.Current != bridgeSynchronizationContext)
+            {
+                EasyEdaCommandBridge.CommandResponse response = null;
+                Exception exception = null;
+                using (var completed = new ManualResetEventSlim(false))
+                {
+                    bridgeSynchronizationContext.Post(
+                        _ =>
+                        {
+                            try
+                            {
+                                response = HandleBridgeCommandOnAltiumThread(command);
+                            }
+                            catch (Exception ex)
+                            {
+                                exception = ex;
+                            }
+                            finally
+                            {
+                                completed.Set();
+                            }
+                        },
+                        null);
+
+                    if (!completed.Wait(TimeSpan.FromSeconds(30)))
+                    {
+                        return EasyEdaCommandBridge.CommandResponse.Error(
+                            "command-timeout",
+                            "Timed out waiting for Altium to execute EasyEDALoader command.",
+                            command);
+                    }
+                }
+
+                if (exception != null)
+                    throw exception;
+
+                return response;
+            }
+
+            return HandleBridgeCommandOnAltiumThread(command);
+        }
+
+        private bool IsLoaderDialogOpen()
+        {
+            return Interlocked.CompareExchange(ref loaderDialogOpen, 0, 0) != 0;
+        }
+
+        private EasyEdaCommandBridge.CommandResponse HandleBridgeCommandOnAltiumThread(string command)
+        {
+            string parameters = string.Empty;
+            IServerDocumentView context = null;
+
+            switch (command)
+            {
+                case EasyEdaCommandBridge.CommandOpenLoader:
+                    Run(context, ref parameters);
+                    break;
+                case EasyEdaCommandBridge.CommandReproject3D:
+                    ReprojectActiveFootprint3D(context, ref parameters);
+                    break;
+                case EasyEdaCommandBridge.CommandAlign3DModel:
+                    AlignActiveFootprint3DModel(context, ref parameters);
+                    break;
+                case EasyEdaCommandBridge.CommandLayerTop:
+                    SwitchTopSignalLayer(context, ref parameters);
+                    break;
+                case EasyEdaCommandBridge.CommandLayerBottom:
+                    SwitchBottomSignalLayer(context, ref parameters);
+                    break;
+                case EasyEdaCommandBridge.CommandLayerNext:
+                    SwitchNextSignalLayer(context, ref parameters);
+                    break;
+                case EasyEdaCommandBridge.CommandLayerPrevious:
+                    SwitchPreviousSignalLayer(context, ref parameters);
+                    break;
+                default:
+                    return EasyEdaCommandBridge.CommandResponse.Error(
+                        "invalid-command",
+                        "Unknown EasyEDALoader bridge command.",
+                        command);
+            }
+
+            return EasyEdaCommandBridge.CommandResponse.Ok(command);
         }
 
         private static IPCB_Group GetActivePcbLibComponentOrThrow()

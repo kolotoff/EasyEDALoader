@@ -227,6 +227,9 @@ namespace StepCleaner.Tests
             if (IsOption(args[0], "--pcblib-actions"))
                 return RunPcbLibActionTests();
 
+            if (IsOption(args[0], "--ulanzi-plugin"))
+                return RunUlanziPluginTests();
+
             if (IsOption(args[0], "--model-cache"))
                 return RunModelCacheTests();
 
@@ -400,6 +403,7 @@ namespace StepCleaner.Tests
             Console.Error.WriteLine("Usage: StepCleaner.Tests --footprint-placement");
             Console.Error.WriteLine("Usage: StepCleaner.Tests --footprint-layers");
             Console.Error.WriteLine("Usage: StepCleaner.Tests --pcblib-actions");
+            Console.Error.WriteLine("Usage: StepCleaner.Tests --ulanzi-plugin");
             Console.Error.WriteLine("Usage: StepCleaner.Tests --model-cache");
             Console.Error.WriteLine("Usage: StepCleaner.Tests --measure-model-import [part-number] [--repeat count] [--clean-text]");
             Console.Error.WriteLine("Usage: StepCleaner.Tests --silhouette-cleanup");
@@ -10278,7 +10282,7 @@ namespace StepCleaner.Tests
             AssertContains(eePcb, "Internal_GetState_TopSignalLayer", "Top layer command must use the layer stack top signal layer", failures);
             AssertContains(eePcb, "Internal_GetState_BottomSignalLayer", "Bottom layer command must use the layer stack bottom signal layer", failures);
             AssertContains(eePcb, "SetState_CurrentLayerV7", "Layer switching must set the board current V7 layer", failures);
-            AssertContains(eePcb, "SetState_RouteToolPathLayer", "Layer switching should update the route tool path layer with the current layer", failures);
+            AssertDoesNotContain(eePcb, "SetState_RouteToolPathLayer", "Layer switching must not update Altium's route tool path layer because it can rename the active signal layer", failures);
             AssertContains(eePcb, "ViewManager_UpdateLayerTabs", "Layer switching should refresh PCB layer tabs", failures);
             AssertContains(eePcb, "LaunchPcbCommand(\"PCB:Zoom\", \"Action=Redraw\")", "Layer switching should redraw the PCB editor after changing layer", failures);
             AssertContains(eePcb, "ClearMechanical2Projection", "Reproject 3D must clear Mechanical Layer 2 before regenerating projection", failures);
@@ -10337,6 +10341,170 @@ namespace StepCleaner.Tests
             }
 
             Console.WriteLine("PcbLib action regression test passed.");
+            return 0;
+        }
+
+        private static int RunUlanziPluginTests()
+        {
+            var failures = new List<string>();
+            string repoRoot = FindRepoRoot();
+            string bridgePath = Path.Combine(repoRoot, "EasyEDA-Loader", "EasyEdaCommandBridge.cs");
+            string modulePath = Path.Combine(repoRoot, "EasyEDA-Loader", "EasyEDALoader.cs");
+            string projectPath = Path.Combine(repoRoot, "EasyEDA-Loader", "EasyEDA-Loader.csproj");
+            string insPath = Path.Combine(repoRoot, "EasyEDA-Loader", "EasyEDA-Loader.ins");
+            string pluginRoot = Path.Combine(repoRoot, "UlanziStudioPlugin", "com.ulanzi.easyedaloader.ulanziPlugin");
+            string manifestPath = Path.Combine(pluginRoot, "manifest.json");
+            string appPath = Path.Combine(pluginRoot, "plugin", "app.js");
+            string pipeClientPath = Path.Combine(pluginRoot, "plugin", "easyedaBridgeClient.js");
+            string packagePath = Path.Combine(pluginRoot, "package.json");
+            string installScriptPath = Path.Combine(repoRoot, "BuildAndInstall-UlanziStudio.ps1");
+            string altiumInstallScriptPath = Path.Combine(repoRoot, "BuildAndInstall-Altium.ps1");
+            string readmePath = Path.Combine(repoRoot, "README.md");
+
+            AssertFileExists(bridgePath, "EasyEDALoader must include the named-pipe command bridge", failures);
+            AssertFileExists(insPath, "EasyEDALoader must include an Altium INS registration file", failures);
+            AssertFileExists(manifestPath, "Ulanzi Studio plugin must include a manifest", failures);
+            AssertFileExists(appPath, "Ulanzi Studio plugin must include a Node main service", failures);
+            AssertFileExists(pipeClientPath, "Ulanzi Studio plugin must include a named-pipe client", failures);
+            AssertFileExists(packagePath, "Ulanzi Studio plugin must include package metadata for ws dependency install", failures);
+            AssertFileExists(installScriptPath, "Ulanzi Studio plugin must include an installer script", failures);
+            AssertFileExists(altiumInstallScriptPath, "Altium extension must include an installer script", failures);
+
+            string bridge = ReadFileIfExists(bridgePath);
+            string module = ReadFileIfExists(modulePath);
+            string project = ReadFileIfExists(projectPath);
+            string ins = ReadFileIfExists(insPath);
+            string manifestText = ReadFileIfExists(manifestPath);
+            string app = ReadFileIfExists(appPath);
+            string pipeClient = ReadFileIfExists(pipeClientPath);
+            string packageText = ReadFileIfExists(packagePath);
+            string installScript = ReadFileIfExists(installScriptPath);
+            string altiumInstallScript = ReadFileIfExists(altiumInstallScriptPath);
+            string readme = ReadFileIfExists(readmePath);
+
+            AssertContains(bridge, "NamedPipeServerStream", "Bridge must listen through a Windows named pipe", failures);
+            AssertContains(bridge, "EasyEDA-Loader.CommandBridge", "Bridge must expose a stable pipe name for the Ulanzi plugin", failures);
+            AssertContains(bridge, "GetForegroundWindow", "Bridge must check the active foreground window before dispatch", failures);
+            AssertContains(bridge, "GetWindowThreadProcessId", "Bridge must compare the foreground window owner process with Altium", failures);
+            AssertContains(bridge, "Process.GetCurrentProcess().Id", "Bridge active-window check must require the Altium process to own the foreground window", failures);
+            AssertContains(bridge, "altium-not-active", "Bridge must report a clear inactive-Altium error", failures);
+            AssertContains(bridge, "CommandReceived", "Bridge must dispatch commands through an event back into EasyEDALoaderModule", failures);
+
+            AssertContains(module, "EasyEdaCommandBridge", "EasyEDALoaderModule must create the bridge", failures);
+            AssertContains(module, "HandleBridgeCommand", "EasyEDALoaderModule must route bridge commands to existing handlers", failures);
+            AssertContains(module, "IsLoaderDialogOpen", "Bridge commands must be rejected while the EasyEDALoader dialog is open so Ulanzi inputs cannot queue behind the modal window", failures);
+            AssertContains(module, "loader-dialog-open", "Bridge must report a clear busy error while the EasyEDALoader dialog is open", failures);
+            AssertContains(module, "Interlocked.Exchange(ref loaderDialogOpen", "Dialog open state must be updated in a thread-visible way before ShowDialog blocks the UI thread", failures);
+            AssertContains(module, "finally", "Dialog open state must be cleared even if ShowDialog throws", failures);
+            AssertContains(module, "case EasyEdaCommandBridge.CommandOpenLoader", "Bridge must expose Open Loader", failures);
+            AssertContains(module, "case EasyEdaCommandBridge.CommandReproject3D", "Bridge must expose Reproject 3D", failures);
+            AssertContains(module, "case EasyEdaCommandBridge.CommandAlign3DModel", "Bridge must expose Align 3D model", failures);
+            AssertContains(module, "case EasyEdaCommandBridge.CommandLayerTop", "Bridge must expose Top layer", failures);
+            AssertContains(module, "case EasyEdaCommandBridge.CommandLayerBottom", "Bridge must expose Bottom layer", failures);
+            AssertContains(module, "case EasyEdaCommandBridge.CommandLayerNext", "Bridge must expose Next signal layer", failures);
+            AssertContains(module, "case EasyEdaCommandBridge.CommandLayerPrevious", "Bridge must expose Previous signal layer", failures);
+            AssertContains(project, "EasyEdaCommandBridge.cs", "EasyEDA project must explicitly compile the command bridge", failures);
+            AssertContains(ins, "SystemExtension   = True", "Altium must load EasyEDALoader as a system extension so the bridge starts without opening the EasyEDALoader dialog", failures);
+
+            if (!string.IsNullOrWhiteSpace(manifestText))
+            {
+                try
+                {
+                    using (JsonDocument manifest = JsonDocument.Parse(manifestText))
+                    {
+                        JsonElement root = manifest.RootElement;
+                        AssertEqual("com.ulanzi.ulanzideck.easyedaloader", root.GetProperty("UUID").GetString(), "Plugin UUID must match the installed UlanziDeck plugin namespace", failures);
+                        AssertEqual("plugin/app.js", root.GetProperty("CodePath").GetString(), "Plugin must use the Node main service", failures);
+                        JsonElement actions = root.GetProperty("Actions");
+                        AssertJsonActionExists(actions, "EasyEDA Loader Dial", "com.ulanzi.ulanzideck.easyedaloader.dial", failures);
+                        AssertJsonActionExists(actions, "Open Loader", "com.ulanzi.ulanzideck.easyedaloader.openloader", failures);
+                        AssertJsonActionExists(actions, "Next Signal Layer", "com.ulanzi.ulanzideck.easyedaloader.layernext", failures);
+                        AssertJsonActionExists(actions, "Previous Signal Layer", "com.ulanzi.ulanzideck.easyedaloader.layerprevious", failures);
+                        AssertJsonActionExists(actions, "Top Signal Layer", "com.ulanzi.ulanzideck.easyedaloader.layertop", failures);
+                        AssertJsonActionExists(actions, "Bottom Signal Layer", "com.ulanzi.ulanzideck.easyedaloader.layerbottom", failures);
+                        AssertJsonActionExists(actions, "Reproject 3D", "com.ulanzi.ulanzideck.easyedaloader.reproject3d", failures);
+                        AssertJsonActionExists(actions, "Align 3D Model", "com.ulanzi.ulanzideck.easyedaloader.align3dmodel", failures);
+                        foreach (JsonElement action in actions.EnumerateArray())
+                        {
+                            AssertJsonArrayContains(action.GetProperty("Controllers"), "Encoder", "Each EasyEDA action must be assignable to the Ulanzi knob like System Hotkey", failures);
+                            if (action.TryGetProperty("Devices", out JsonElement devices) && devices.ValueKind == JsonValueKind.Array && devices.GetArrayLength() > 0)
+                                failures.Add("EasyEDA actions must not filter Devices because Ulanzi Studio hides filtered plugins for the currently connected Deck model");
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    failures.Add("Ulanzi manifest must parse as JSON: " + ex.Message);
+                }
+            }
+
+            AssertContains(app, "onDialRotateLeft", "Plugin must handle counter-clockwise dial rotation", failures);
+            AssertContains(app, "onDialRotateRight", "Plugin must handle clockwise dial rotation", failures);
+            AssertContains(app, "com.ulanzi.ulanzideck.easyedaloader", "Plugin runtime UUID must match the installed UlanziDeck plugin namespace", failures);
+            AssertContains(app, "commandByActionId", "Plugin must map separate action assignments to EasyEDALoader commands", failures);
+            AssertContains(app, "resolveCommand", "Plugin must resolve action-specific commands from Ulanzi event context", failures);
+            AssertContains(app, "message?.uuid", "Plugin button resolution must use Ulanzi's action UUID field, not the per-slot actionid instance field", failures);
+            AssertContains(app, "decodedContext.uuid", "Plugin button resolution must recover the action UUID from SDK contexts generated as uuid/key/actionid", failures);
+            AssertContains(app, "onKeyDown", "Plugin must handle button action key-down events because Ulanzi button slots do not always emit run", failures);
+            AssertContains(app, "runCommandFromEvent", "Plugin must share command dispatch between run, key, and encoder events", failures);
+            AssertContains(app, "recentKeyCommands", "Plugin must de-duplicate button key-down and run events for the same action", failures);
+            AssertContains(app, "actionInstances.get", "Plugin must resolve button commands from the action stored during onAdd when key events omit actionid", failures);
+            AssertContains(app, "runCommandFromEvent(message, null)", "Button events must not default to Open Loader when the action cannot be resolved", failures);
+            AssertContains(app, "if (!command)", "Plugin must ignore unresolved button events instead of running Open Loader", failures);
+            AssertContains(app, "com.ulanzi.ulanzideck.easyedaloader.layernext", "Plugin must handle the separate Next Signal Layer action", failures);
+            AssertContains(app, "com.ulanzi.ulanzideck.easyedaloader.layerprevious", "Plugin must handle the separate Previous Signal Layer action", failures);
+            AssertContains(app, "com.ulanzi.ulanzideck.easyedaloader.layertop", "Plugin must handle the separate Top Signal Layer action", failures);
+            AssertContains(app, "com.ulanzi.ulanzideck.easyedaloader.layerbottom", "Plugin must handle the separate Bottom Signal Layer action", failures);
+            AssertContains(app, "CommandLayerPrevious", "Left rotation must call previous signal layer", failures);
+            AssertContains(app, "CommandLayerNext", "Right rotation must call next signal layer", failures);
+            AssertContains(app, "CommandOpenLoader", "Plugin must expose Open Loader as a keypad/run action", failures);
+            AssertContains(app, "CommandLayerTop", "Plugin must expose Top layer command", failures);
+            AssertContains(app, "CommandLayerBottom", "Plugin must expose Bottom layer command", failures);
+            AssertDoesNotContain(app, "onDialDown", "Plugin must not bind a dial press command", failures);
+            AssertDoesNotContain(app, "onDialUp", "Plugin must not bind a dial release command", failures);
+            AssertContains(pipeClient, "\\\\\\\\.\\\\pipe\\\\EasyEDA-Loader.CommandBridge", "Plugin pipe client must connect to the EasyEDALoader pipe", failures);
+            AssertContains(pipeClient, "net.createConnection", "Plugin pipe client must use Node named-pipe support", failures);
+            AssertContains(pipeClient, "commandQueue", "Plugin pipe client must serialize bridge requests so fast knob movement cannot race the named-pipe listener", failures);
+            AssertContains(pipeClient, "activeCommand === CommandOpenLoader", "Plugin pipe client must reject inputs while Open Loader is still showing its modal window instead of queueing them for later replay", failures);
+            AssertContains(pipeClient, "activeCommandStartedAt", "Plugin pipe client must track long-running bridge commands so later inputs are not queued indefinitely", failures);
+            AssertContains(pipeClient, "EasyEDALoader is busy", "Plugin pipe client must report busy state instead of replaying queued commands after the loader window closes", failures);
+            AssertContains(pipeClient, "connectWithRetry", "Plugin pipe client must retry transient pipe connection gaps from rapid events", failures);
+            AssertContains(pipeClient, "isTransientPipeError", "Plugin pipe client must distinguish transient pipe errors from a missing bridge", failures);
+            AssertContains(pipeClient, "code === 'ENOENT'", "Plugin pipe client must translate missing bridge pipe errors into an actionable message", failures);
+            AssertContains(pipeClient, "Reinstall or restart the EasyEDALoader Altium extension", "Missing bridge pipe message must explain the Altium-side fix", failures);
+            AssertContains(packageText, "\"ws\"", "Plugin package must declare the Ulanzi SDK websocket dependency", failures);
+
+            AssertContains(installScript, "Resolve-UlanziStudioPluginRoot", "Installer must auto-detect Ulanzi Studio plugin folders", failures);
+            AssertContains(installScript, "com.ulanzi.easyedaloader.ulanziPlugin", "Installer must copy the EasyEDALoader plugin package", failures);
+            AssertContains(installScript, "npm install --omit=dev", "Installer must install Node runtime dependencies when npm is available", failures);
+            AssertContains(installScript, "$env:APPDATA", "Installer must search user AppData Ulanzi plugin locations", failures);
+            AssertContains(installScript, "$env:LOCALAPPDATA", "Installer must search LocalAppData Ulanzi plugin locations", failures);
+            AssertContains(installScript, "$env:PROGRAMDATA", "Installer must search ProgramData Ulanzi plugin locations", failures);
+            AssertContains(installScript, "Ulanzi\\UlanziDeck\\Plugins", "Installer must search the actual UlanziDeck user plugin folder", failures);
+            AssertContains(installScript, "Ulanzi\\UlanziDeck\\System\\Plugins", "Installer must also search UlanziDeck system plugin folders used by visible bundled plugins", failures);
+            AssertContains(installScript, "Install-UlanziPluginPackage", "Installer must install the package into every selected Ulanzi plugin root", failures);
+            AssertContains(installScript, "Restart-UlanziStudio", "Installer must be able to restart Ulanzi Studio after plugin installation", failures);
+            AssertContains(installScript, "CloseMainWindow", "Installer restart must try a clean Ulanzi Studio shutdown before forcing processes", failures);
+            AssertContains(installScript, "Start-Process", "Installer restart must restore Ulanzi Studio after copying the plugin", failures);
+            AssertContains(installScript, "$npmOutput", "Installer must capture npm stdout so installed path reporting stays clean", failures);
+            AssertContains(altiumInstallScript, "UTF8Encoding($false)", "Altium installer must preserve the no-BOM UTF-8 registry encoding required by Altium's extension loader", failures);
+            AssertContains(altiumInstallScript, "Registry backup:", "Altium installer must report the registry backup created before rewriting ExtensionsRegistry.xml", failures);
+
+            AssertContains(readme, "Ulanzi Studio plugin", "README must document the Ulanzi Studio plugin", failures);
+            AssertContains(readme, "BuildAndInstall-UlanziStudio.ps1", "README must document the Ulanzi installer script", failures);
+            AssertContains(readme, "Altium window must be active", "README must document the active-Altium-window guard", failures);
+            AssertContains(readme, "Dial clockwise", "README must document clockwise dial behavior", failures);
+            AssertContains(readme, "Dial counter-clockwise", "README must document counter-clockwise dial behavior", failures);
+
+            if (failures.Count > 0)
+            {
+                Console.Error.WriteLine("Ulanzi Studio plugin regression test failed.");
+                foreach (string failure in failures)
+                    Console.Error.WriteLine("  " + failure);
+                return 1;
+            }
+
+            Console.WriteLine("Ulanzi Studio plugin regression test passed.");
             return 0;
         }
 
@@ -10800,6 +10968,54 @@ namespace StepCleaner.Tests
         {
             if (text == null || text.IndexOf(expectedSubstring, StringComparison.Ordinal) < 0)
                 failures.Add(message + ": missing '" + expectedSubstring + "'.");
+        }
+
+        private static void AssertFileExists(string filePath, string message, List<string> failures)
+        {
+            if (!File.Exists(filePath))
+                failures.Add(message + ": missing file '" + filePath + "'.");
+        }
+
+        private static string ReadFileIfExists(string filePath)
+        {
+            return File.Exists(filePath) ? File.ReadAllText(filePath) : string.Empty;
+        }
+
+        private static void AssertJsonArrayContains(JsonElement array, string expectedValue, string message, List<string> failures)
+        {
+            if (array.ValueKind != JsonValueKind.Array)
+            {
+                failures.Add(message + ": JSON value is not an array.");
+                return;
+            }
+
+            foreach (JsonElement item in array.EnumerateArray())
+            {
+                if (string.Equals(item.GetString(), expectedValue, StringComparison.Ordinal))
+                    return;
+            }
+
+            failures.Add(message + ": missing '" + expectedValue + "'.");
+        }
+
+        private static void AssertJsonActionExists(JsonElement actions, string expectedName, string expectedUuid, List<string> failures)
+        {
+            if (actions.ValueKind != JsonValueKind.Array)
+            {
+                failures.Add("Ulanzi manifest Actions value is not an array.");
+                return;
+            }
+
+            foreach (JsonElement action in actions.EnumerateArray())
+            {
+                string name = action.TryGetProperty("Name", out JsonElement nameElement) ? nameElement.GetString() : string.Empty;
+                string uuid = action.TryGetProperty("UUID", out JsonElement uuidElement) ? uuidElement.GetString() : string.Empty;
+                if (string.Equals(name, expectedName, StringComparison.Ordinal) &&
+                    string.Equals(uuid, expectedUuid, StringComparison.Ordinal))
+                    return;
+            }
+
+            failures.Add("Ulanzi manifest must expose action '" + expectedName + "' with UUID '" + expectedUuid + "'.");
         }
 
         private static void AssertDoesNotContain(string text, string unexpectedSubstring, string message, List<string> failures)

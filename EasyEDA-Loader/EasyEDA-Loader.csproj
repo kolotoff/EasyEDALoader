@@ -14,6 +14,10 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Compile Update="EasyEdaCommandBridge.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="SkiaSharp" Version="3.119.2" />
     <PackageReference Include="SkiaSharp.NativeAssets.Win32" Version="3.119.2" />
   </ItemGroup>

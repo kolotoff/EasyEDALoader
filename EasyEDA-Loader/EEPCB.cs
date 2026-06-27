@@ -385,7 +385,6 @@ namespace EasyEDA_Loader
                 return false;
 
             TryInvoke(board, "SetState_CurrentLayerV7", layer);
-            TryInvoke(board, "SetState_RouteToolPathLayer", layer);
             TryInvoke(board, "ViewManager_UpdateLayerTabs");
             LaunchPcbCommand("PCB:Zoom", "Action=Redraw");
             return true;
@@ -2266,9 +2265,6 @@ namespace EasyEDA_Loader
                         return board.GetState_LayerIsDisplayed(displayLayer);
                     case "SetState_CurrentLayerV7" when args.Length == 1 && args[0] is IV7_Layer currentLayer:
                         board.SetState_CurrentLayerV7(currentLayer);
-                        return null;
-                    case "SetState_RouteToolPathLayer" when args.Length == 1 && args[0] is IV7_Layer routeLayer:
-                        board.SetState_RouteToolPathLayer(routeLayer);
                         return null;
                     case "ViewManager_FullUpdate" when args.Length == 0:
                         board.ViewManager_FullUpdate();

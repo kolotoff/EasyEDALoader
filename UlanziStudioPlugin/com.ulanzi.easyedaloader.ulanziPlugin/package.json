@@ -1,0 +1,13 @@
+{
+  "name": "com.ulanzi.easyedaloader.ulanzi-plugin",
+  "version": "1.0.0",
+  "description": "Ulanzi Studio plugin for EasyEDALoader Altium commands",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start": "node plugin/app.js"
+  },
+  "dependencies": {
+    "ws": "8.18.0"
+  }
+}
