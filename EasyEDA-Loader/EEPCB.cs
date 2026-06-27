@@ -221,6 +221,176 @@ namespace EasyEDA_Loader
                 ?? TryInvokeResult(pcbLib, "Internal_GetState_Board") as IPCB_Board;
         }
 
+        public static bool SwitchToTopSignalLayer()
+        {
+            return SwitchToFirstDisplayedSignalLayer();
+        }
+
+        public static bool SwitchToBottomSignalLayer()
+        {
+            return SwitchToLastDisplayedSignalLayer();
+        }
+
+        public static bool SwitchToNextSignalLayer()
+        {
+            return SwitchToAdjacentSignalLayer(true);
+        }
+
+        public static bool SwitchToPreviousSignalLayer()
+        {
+            return SwitchToAdjacentSignalLayer(false);
+        }
+
+        private static IPCB_Board GetCurrentPcbBoard()
+        {
+            return TryInvokeResult(AltiumApi.GlobalVars.PCBServer, "GetCurrentPCBBoard") as IPCB_Board
+                ?? TryInvokeResult(AltiumApi.GlobalVars.PCBServer, "Internal_GetCurrentPCBBoard") as IPCB_Board;
+        }
+
+        private static bool SwitchToFirstDisplayedSignalLayer()
+        {
+            IPCB_Board board = GetCurrentPcbBoard();
+            if (board == null)
+                return false;
+
+            List<IV7_Layer> layers = GetDisplayedSignalLayers(board);
+            if (layers.Count > 0)
+                return SwitchToSignalLayer(board, layers[0]);
+
+            return SwitchToLayerStackSignalLayer(board, true);
+        }
+
+        private static bool SwitchToLastDisplayedSignalLayer()
+        {
+            IPCB_Board board = GetCurrentPcbBoard();
+            if (board == null)
+                return false;
+
+            List<IV7_Layer> layers = GetDisplayedSignalLayers(board);
+            if (layers.Count > 0)
+                return SwitchToSignalLayer(board, layers[layers.Count - 1]);
+
+            return SwitchToLayerStackSignalLayer(board, false);
+        }
+
+        private static bool SwitchToAdjacentSignalLayer(bool forward)
+        {
+            IPCB_Board board = GetCurrentPcbBoard();
+            if (board == null)
+                return false;
+
+            List<IV7_Layer> layers = GetDisplayedSignalLayers(board);
+            if (layers.Count == 0)
+                return false;
+
+            IV7_Layer currentLayer = TryInvokeResult(board, "Internal_GetState_CurrentLayerV7") as IV7_Layer;
+            int currentIndex = IndexOfLayer(layers, currentLayer);
+            int targetIndex;
+            if (currentIndex < 0)
+                targetIndex = forward ? 0 : layers.Count - 1;
+            else if (forward)
+                targetIndex = (currentIndex + 1) % layers.Count;
+            else
+                targetIndex = (currentIndex + layers.Count - 1) % layers.Count;
+
+            return SwitchToSignalLayer(board, layers[targetIndex]);
+        }
+
+        private static object GetLayerStack(IPCB_Board board)
+        {
+            if (board == null)
+                return null;
+
+            return TryInvokeResult(board, "Internal_GetState_LayerStack_V7")
+                ?? TryInvokeResult(board, "Internal_GetState_LayerStack");
+        }
+
+        private static bool SwitchToLayerStackSignalLayer(IPCB_Board board, bool top)
+        {
+            object layerStack = GetLayerStack(board);
+            IV7_Layer layer = top
+                ? TryInvokeResult(layerStack, "Internal_GetState_TopSignalLayer") as IV7_Layer
+                : TryInvokeResult(layerStack, "Internal_GetState_BottomSignalLayer") as IV7_Layer;
+
+            return SwitchToSignalLayer(board, layer);
+        }
+
+        private static List<IV7_Layer> GetDisplayedSignalLayers(IPCB_Board board)
+        {
+            var layers = new List<IV7_Layer>();
+            if (board == null)
+                return layers;
+
+            object iterator = TryInvokeResult(board, "Internal_SignalLayerIterator");
+            if (iterator == null)
+                return layers;
+
+            TryInvoke(iterator, "SetBeforeFirst");
+            if (!TryConvertToBool(TryInvokeResult(iterator, "First"), out bool hasLayer) || !hasLayer)
+                return layers;
+
+            do
+            {
+                IV7_Layer layer = TryInvokeResult(iterator, "Internal_Layer") as IV7_Layer;
+                if (layer != null && IsLayerDisplayed(board, layer))
+                    layers.Add(layer);
+            }
+            while (TryConvertToBool(TryInvokeResult(iterator, "Next"), out hasLayer) && hasLayer);
+
+            return layers;
+        }
+
+        private static bool IsLayerDisplayed(IPCB_Board board, IV7_Layer layer)
+        {
+            if (board == null || layer == null)
+                return false;
+
+            return TryConvertToBool(TryInvokeResult(board, "GetState_LayerIsDisplayed", layer), out bool displayed)
+                && displayed;
+        }
+
+        private static int IndexOfLayer(List<IV7_Layer> layers, IV7_Layer target)
+        {
+            int targetNumber = LayerNumber(target);
+            if (targetNumber < 0)
+                return -1;
+
+            for (int i = 0; i < layers.Count; i++)
+            {
+                if (LayerNumber(layers[i]) == targetNumber)
+                    return i;
+            }
+
+            return -1;
+        }
+
+        private static int LayerNumber(IV7_Layer layer)
+        {
+            if (layer == null)
+                return -1;
+
+            try
+            {
+                return new V7_Layer(layer).Number();
+            }
+            catch
+            {
+                return -1;
+            }
+        }
+
+        private static bool SwitchToSignalLayer(IPCB_Board board, IV7_Layer layer)
+        {
+            if (board == null || layer == null)
+                return false;
+
+            TryInvoke(board, "SetState_CurrentLayerV7", layer);
+            TryInvoke(board, "SetState_RouteToolPathLayer", layer);
+            TryInvoke(board, "ViewManager_UpdateLayerTabs");
+            LaunchPcbCommand("PCB:Zoom", "Action=Redraw");
+            return true;
+        }
+
         private static void AddDistinctBoard(List<IPCB_Board> boards, IPCB_Board board)
         {
             if (boards == null || board == null)
@@ -1793,6 +1963,23 @@ namespace EasyEDA_Loader
             }
         }
 
+        private static bool TryConvertToBool(object raw, out bool value)
+        {
+            value = false;
+            if (raw == null)
+                return false;
+
+            try
+            {
+                value = Convert.ToBoolean(raw, CultureInfo.InvariantCulture);
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
         private static void TrySetLayer(object target, TLayerConstant layer)
         {
             TryInvoke(target, "SetState_V7Layer", new V7_Layer(layer));
@@ -1832,6 +2019,14 @@ namespace EasyEDA_Loader
                 return directResult;
 
             directResult = TryInvokePcbLayerSetUtils(target, methodName, args);
+            if (directResult != Missing.Value)
+                return directResult;
+
+            directResult = TryInvokePcbLayerStack(target, methodName, args);
+            if (directResult != Missing.Value)
+                return directResult;
+
+            directResult = TryInvokePcbLayerIterator(target, methodName, args);
             if (directResult != Missing.Value)
                 return directResult;
 
@@ -1897,6 +2092,8 @@ namespace EasyEDA_Loader
             {
                 switch (methodName)
                 {
+                    case "Internal_GetCurrentPCBBoard" when args.Length == 0:
+                        return pcbServer.Internal_GetCurrentPCBBoard();
                     case "LayerSet" when args.Length == 0:
                         return pcbServer.LayerSet();
                     case "Internal_LayerSet" when args.Length == 0:
@@ -1924,6 +2121,57 @@ namespace EasyEDA_Loader
                         return layerSetUtils.Factory(layer);
                     case "Internal_Factory" when args.Length == 1 && args[0] is IV7_Layer internalLayer:
                         return layerSetUtils.Internal_Factory(internalLayer);
+                    default:
+                        return Missing.Value;
+                }
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private static object TryInvokePcbLayerStack(object target, string methodName, object[] args)
+        {
+            if (!(target is IPCB_LayerStack layerStack))
+                return Missing.Value;
+
+            try
+            {
+                switch (methodName)
+                {
+                    case "Internal_GetState_TopSignalLayer" when args.Length == 0:
+                        return layerStack.Internal_GetState_TopSignalLayer();
+                    case "Internal_GetState_BottomSignalLayer" when args.Length == 0:
+                        return layerStack.Internal_GetState_BottomSignalLayer();
+                    default:
+                        return Missing.Value;
+                }
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private static object TryInvokePcbLayerIterator(object target, string methodName, object[] args)
+        {
+            if (!(target is IPCB_LayerIterator layerIterator))
+                return Missing.Value;
+
+            try
+            {
+                switch (methodName)
+                {
+                    case "SetBeforeFirst" when args.Length == 0:
+                        layerIterator.SetBeforeFirst();
+                        return null;
+                    case "First" when args.Length == 0:
+                        return layerIterator.First();
+                    case "Next" when args.Length == 0:
+                        return layerIterator.Next();
+                    case "Internal_Layer" when args.Length == 0:
+                        return layerIterator.Internal_Layer();
                     default:
                         return Missing.Value;
                 }
@@ -2006,11 +2254,27 @@ namespace EasyEDA_Loader
                         return board.SelectedObjectsCount();
                     case "GetState_SelectecObjectCount" when args.Length == 0:
                         return board.GetState_SelectecObjectCount();
+                    case "Internal_GetState_CurrentLayerV7" when args.Length == 0:
+                        return board.Internal_GetState_CurrentLayerV7();
+                    case "Internal_GetState_LayerStack" when args.Length == 0:
+                        return board.Internal_GetState_LayerStack();
+                    case "Internal_GetState_LayerStack_V7" when args.Length == 0:
+                        return board.Internal_GetState_LayerStack_V7();
+                    case "Internal_SignalLayerIterator" when args.Length == 0:
+                        return board.Internal_SignalLayerIterator();
+                    case "GetState_LayerIsDisplayed" when args.Length == 1 && args[0] is IV7_Layer displayLayer:
+                        return board.GetState_LayerIsDisplayed(displayLayer);
                     case "SetState_CurrentLayerV7" when args.Length == 1 && args[0] is IV7_Layer currentLayer:
                         board.SetState_CurrentLayerV7(currentLayer);
                         return null;
+                    case "SetState_RouteToolPathLayer" when args.Length == 1 && args[0] is IV7_Layer routeLayer:
+                        board.SetState_RouteToolPathLayer(routeLayer);
+                        return null;
                     case "ViewManager_FullUpdate" when args.Length == 0:
                         board.ViewManager_FullUpdate();
+                        return null;
+                    case "ViewManager_UpdateLayerTabs" when args.Length == 0:
+                        board.ViewManager_UpdateLayerTabs();
                         return null;
                     case "GraphicalView_ZoomRedraw" when args.Length == 0:
                         board.GraphicalView_ZoomRedraw();

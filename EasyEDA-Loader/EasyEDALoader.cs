@@ -36,6 +36,14 @@ namespace EasyEDA_Loader
             RegisterCommand("EasyEDA-Loader:EasyEDAReproject3D", new CommandProc(ReprojectActiveFootprint3D));
             RegisterCommand("EasyEDAAlign3DModel", new CommandProc(AlignActiveFootprint3DModel));
             RegisterCommand("EasyEDA-Loader:EasyEDAAlign3DModel", new CommandProc(AlignActiveFootprint3DModel));
+            RegisterCommand("EasyEDASwitchTopSignalLayer", new CommandProc(SwitchTopSignalLayer));
+            RegisterCommand("EasyEDA-Loader:EasyEDASwitchTopSignalLayer", new CommandProc(SwitchTopSignalLayer));
+            RegisterCommand("EasyEDASwitchBottomSignalLayer", new CommandProc(SwitchBottomSignalLayer));
+            RegisterCommand("EasyEDA-Loader:EasyEDASwitchBottomSignalLayer", new CommandProc(SwitchBottomSignalLayer));
+            RegisterCommand("EasyEDASwitchNextSignalLayer", new CommandProc(SwitchNextSignalLayer));
+            RegisterCommand("EasyEDA-Loader:EasyEDASwitchNextSignalLayer", new CommandProc(SwitchNextSignalLayer));
+            RegisterCommand("EasyEDASwitchPreviousSignalLayer", new CommandProc(SwitchPreviousSignalLayer));
+            RegisterCommand("EasyEDA-Loader:EasyEDASwitchPreviousSignalLayer", new CommandProc(SwitchPreviousSignalLayer));
         }
 
         private void RegisterCommand(string argCommandId, CommandProc commandProc)
@@ -359,6 +367,42 @@ namespace EasyEDA_Loader
             EEPCB.GetPcbGroupBoard(component)?.ViewManager_FullUpdate();
             Trace($"AlignActiveFootprint3DModel completed. Aligned={alignedCount}");
             ShowInfo($"Aligned {alignedCount} 3D model body/bodies to pad bounds.");
+        }
+
+        private void SwitchTopSignalLayer(
+          IServerDocumentView argContext,
+          ref string argParameters)
+        {
+            Trace("SwitchTopSignalLayer entered.");
+            if (!EEPCB.SwitchToTopSignalLayer())
+                throw new InvalidOperationException("Could not switch to the top signal layer. Open a PCB document and try again.");
+        }
+
+        private void SwitchBottomSignalLayer(
+          IServerDocumentView argContext,
+          ref string argParameters)
+        {
+            Trace("SwitchBottomSignalLayer entered.");
+            if (!EEPCB.SwitchToBottomSignalLayer())
+                throw new InvalidOperationException("Could not switch to the bottom signal layer. Open a PCB document and try again.");
+        }
+
+        private void SwitchNextSignalLayer(
+          IServerDocumentView argContext,
+          ref string argParameters)
+        {
+            Trace("SwitchNextSignalLayer entered.");
+            if (!EEPCB.SwitchToNextSignalLayer())
+                throw new InvalidOperationException("Could not switch to the next displayed signal layer. Open a PCB document with displayed signal layers and try again.");
+        }
+
+        private void SwitchPreviousSignalLayer(
+          IServerDocumentView argContext,
+          ref string argParameters)
+        {
+            Trace("SwitchPreviousSignalLayer entered.");
+            if (!EEPCB.SwitchToPreviousSignalLayer())
+                throw new InvalidOperationException("Could not switch to the previous displayed signal layer. Open a PCB document with displayed signal layers and try again.");
         }
 
         private static IPCB_Group GetActivePcbLibComponentOrThrow()

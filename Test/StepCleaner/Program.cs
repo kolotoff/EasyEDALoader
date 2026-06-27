@@ -10233,17 +10233,54 @@ namespace StepCleaner.Tests
 
             AssertContains(ins, "Command  Name = 'EasyEDAReproject3D'", "PcbLib action command must be declared in the INS file", failures);
             AssertContains(ins, "Command  Name = 'EasyEDAAlign3DModel'", "PcbLib alignment command must be declared in the INS file", failures);
+            AssertContains(ins, "Command  Name = 'EasyEDASwitchTopSignalLayer'", "PCB layer switch top command must be declared in the INS file", failures);
+            AssertContains(ins, "Command  Name = 'EasyEDASwitchBottomSignalLayer'", "PCB layer switch bottom command must be declared in the INS file", failures);
+            AssertContains(ins, "Command  Name = 'EasyEDASwitchNextSignalLayer'", "PCB layer switch next command must be declared in the INS file", failures);
+            AssertContains(ins, "Command  Name = 'EasyEDASwitchPreviousSignalLayer'", "PCB layer switch previous command must be declared in the INS file", failures);
 
             AssertContains(rcs, "Caption='&EasyEDA'", "PcbLib menu should expose an EasyEDA submenu", failures);
             AssertContains(rcs, "Caption='&Loader...'", "Loader command should move under the EasyEDA submenu", failures);
             AssertContains(rcs, "Caption='&Reproject 3D'", "Reproject 3D command should be available in the PcbLib EasyEDA submenu", failures);
             AssertContains(rcs, "Caption='&Align 3D model'", "Align 3D model command should be available in the PcbLib EasyEDA submenu", failures);
+            AssertContains(rcs, "Tree MNPCB_EasyEDALoaderTree Caption='&EasyEDA'", "PCB editor menu should place EasyEDA commands under Tools > EasyEDA", failures);
+            AssertContains(rcs, "Tree MNPCB_EasyEDALayerSwitchTree Caption='&Layer Switch'", "PCB editor menu should expose Tools > EasyEDA > Layer Switch", failures);
+            AssertContains(rcs, "PLID='PLEasyEDALoader:EasyEDASwitchTopSignalLayer'", "Layer Switch menu should include switch-to-top command", failures);
+            AssertContains(rcs, "PLID='PLEasyEDALoader:EasyEDASwitchBottomSignalLayer'", "Layer Switch menu should include switch-to-bottom command", failures);
+            AssertContains(rcs, "PLID='PLEasyEDALoader:EasyEDASwitchNextSignalLayer'", "Layer Switch menu should include next signal command", failures);
+            AssertContains(rcs, "PLID='PLEasyEDALoader:EasyEDASwitchPreviousSignalLayer'", "Layer Switch menu should include previous signal command", failures);
+            AssertContains(rcs, "PLEasyEDALoader:EasyEDASwitchTopSignalLayer Command='EasyEDA-Loader:EasyEDASwitchTopSignalLayer' Caption='&Top' Shortcut1='Ctrl+Plus'", "Top layer command should default to Ctrl+Plus", failures);
+            AssertContains(rcs, "PLEasyEDALoader:EasyEDASwitchBottomSignalLayer Command='EasyEDA-Loader:EasyEDASwitchBottomSignalLayer' Caption='&Bottom' Shortcut1='Ctrl+Minus'", "Bottom layer command should default to Ctrl+Minus", failures);
+            AssertContains(rcs, "PLEasyEDALoader:EasyEDASwitchNextSignalLayer Command='EasyEDA-Loader:EasyEDASwitchNextSignalLayer' Caption='&Next Signal' Shortcut1='Ctrl+Shift+Plus'", "Next signal command should default to Ctrl+Shift+Plus", failures);
+            AssertContains(rcs, "PLEasyEDALoader:EasyEDASwitchPreviousSignalLayer Command='EasyEDA-Loader:EasyEDASwitchPreviousSignalLayer' Caption='&Previous Signal' Shortcut1='Ctrl+Shift+Minus'", "Previous signal command should default to Ctrl+Shift+Minus", failures);
+            AssertDoesNotContain(rcs, "Link MNPCB_EasyEDALoader10 PLID='PLEasyEDALoader:EasyEDARun' End", "PCB editor Loader command must not be inserted directly under Tools", failures);
 
             AssertContains(module, "RegisterCommand(\"EasyEDAReproject3D\"", "module must register the Reproject 3D command", failures);
             AssertContains(module, "RegisterCommand(\"EasyEDAAlign3DModel\"", "module must register the Align 3D model command", failures);
+            AssertContains(module, "RegisterCommand(\"EasyEDASwitchTopSignalLayer\"", "module must register the top layer switch command", failures);
+            AssertContains(module, "RegisterCommand(\"EasyEDASwitchBottomSignalLayer\"", "module must register the bottom layer switch command", failures);
+            AssertContains(module, "RegisterCommand(\"EasyEDASwitchNextSignalLayer\"", "module must register the next layer switch command", failures);
+            AssertContains(module, "RegisterCommand(\"EasyEDASwitchPreviousSignalLayer\"", "module must register the previous layer switch command", failures);
+            AssertContains(module, "SwitchTopSignalLayer", "top command should dispatch to a PCB layer switch handler", failures);
+            AssertContains(module, "SwitchBottomSignalLayer", "bottom command should dispatch to a PCB layer switch handler", failures);
+            AssertContains(module, "SwitchNextSignalLayer", "next command should dispatch to a PCB layer switch handler", failures);
+            AssertContains(module, "SwitchPreviousSignalLayer", "previous command should dispatch to a PCB layer switch handler", failures);
             AssertContains(module, "ReprojectActiveFootprint3D", "Reproject command should dispatch to an active-footprint handler", failures);
             AssertContains(module, "AlignActiveFootprint3DModel", "Align command should dispatch to an active-footprint handler", failures);
 
+            AssertContains(eePcb, "SwitchToTopSignalLayer", "PCB helper must switch directly to the active board's top signal layer", failures);
+            AssertContains(eePcb, "SwitchToBottomSignalLayer", "PCB helper must switch directly to the active board's bottom signal layer", failures);
+            AssertContains(eePcb, "SwitchToNextSignalLayer", "PCB helper must cycle to the next displayed signal layer", failures);
+            AssertContains(eePcb, "SwitchToPreviousSignalLayer", "PCB helper must cycle to the previous displayed signal layer", failures);
+            AssertContains(eePcb, "SwitchToFirstDisplayedSignalLayer", "Top layer command must use the displayed signal-layer iterator fallback that works in PCB editor commands", failures);
+            AssertContains(eePcb, "SwitchToLastDisplayedSignalLayer", "Bottom layer command must use the displayed signal-layer iterator fallback that works in PCB editor commands", failures);
+            AssertContains(eePcb, "Internal_SignalLayerIterator", "Signal layer cycling must use Altium's signal-layer iterator", failures);
+            AssertContains(eePcb, "GetState_LayerIsDisplayed", "Signal layer cycling must skip hidden/non-opened layers", failures);
+            AssertContains(eePcb, "Internal_GetState_TopSignalLayer", "Top layer command must use the layer stack top signal layer", failures);
+            AssertContains(eePcb, "Internal_GetState_BottomSignalLayer", "Bottom layer command must use the layer stack bottom signal layer", failures);
+            AssertContains(eePcb, "SetState_CurrentLayerV7", "Layer switching must set the board current V7 layer", failures);
+            AssertContains(eePcb, "SetState_RouteToolPathLayer", "Layer switching should update the route tool path layer with the current layer", failures);
+            AssertContains(eePcb, "ViewManager_UpdateLayerTabs", "Layer switching should refresh PCB layer tabs", failures);
+            AssertContains(eePcb, "LaunchPcbCommand(\"PCB:Zoom\", \"Action=Redraw\")", "Layer switching should redraw the PCB editor after changing layer", failures);
             AssertContains(eePcb, "ClearMechanical2Projection", "Reproject 3D must clear Mechanical Layer 2 before regenerating projection", failures);
             AssertContains(eePcb, "SyncPcbLibComponentFromBoard(component)", "Reproject 3D cleanup must sync the active PcbLib footprint from its board view before enumerating old primitives", failures);
             AssertContains(eePcb, "TransferAllPrimitivesBackFromBoard", "Reproject 3D cleanup must call the PcbLib transfer-back API so visible board-view primitives are enumerable", failures);
