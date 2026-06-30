@@ -138,6 +138,27 @@
       }
     },
     {
+      "Name": "Switch to Selected Primitive Layer",
+      "Icon": "assets/icons/plugin.svg",
+      "state": 0,
+      "States": [
+        {
+          "Name": "Default",
+          "Image": "assets/icons/plugin.svg"
+        }
+      ],
+      "Tooltip": "Switch active Altium PCB editor to the selected primitive's layer.",
+      "UUID": "com.ulanzi.ulanzideck.easyedaloader.layerselectedprimitive",
+      "SupportedInMultiActions": false,
+      "Controllers": [
+        "Keypad",
+        "Encoder"
+      ],
+      "Encoder": {
+        "layout": "$UA1"
+      }
+    },
+    {
       "Name": "Reproject 3D",
       "Icon": "assets/icons/plugin.svg",
       "state": 0,

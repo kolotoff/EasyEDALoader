@@ -7,6 +7,7 @@ export const CommandLayerTop = 'layer-top';
 export const CommandLayerBottom = 'layer-bottom';
 export const CommandLayerNext = 'layer-next';
 export const CommandLayerPrevious = 'layer-previous';
+export const CommandLayerSelectedPrimitive = 'layer-selected-primitive';
 
 const pipePath = '\\\\.\\pipe\\EasyEDA-Loader.CommandBridge';
 const retryablePipeErrorCodes = new Set(['ENOENT', 'EBUSY', 'ECONNREFUSED']);

@@ -241,6 +241,16 @@ namespace EasyEDA_Loader
             return SwitchToAdjacentSignalLayer(false);
         }
 
+        public static bool SwitchToSelectedPrimitiveLayer()
+        {
+            IPCB_Board board = GetCurrentPcbBoard();
+            if (board == null)
+                return false;
+
+            return FindSelectedPrimitiveLayer(board, out IV7_Layer layer)
+                && SwitchToSignalLayer(board, layer);
+        }
+
         private static IPCB_Board GetCurrentPcbBoard()
         {
             return TryInvokeResult(AltiumApi.GlobalVars.PCBServer, "GetCurrentPCBBoard") as IPCB_Board
@@ -347,6 +357,53 @@ namespace EasyEDA_Loader
 
             return TryConvertToBool(TryInvokeResult(board, "GetState_LayerIsDisplayed", layer), out bool displayed)
                 && displayed;
+        }
+
+        private static bool FindSelectedPrimitiveLayer(IPCB_Board board, out IV7_Layer layer)
+        {
+            layer = null;
+            foreach (object primitive in GetSelectedPrimitiveObjects(board))
+            {
+                if (TryGetPrimitiveLayer(primitive, out layer, out int layerNumber) && layer != null)
+                    return true;
+            }
+
+            return false;
+        }
+
+        private static List<object> GetSelectedPrimitiveObjects(IPCB_Board board)
+        {
+            var result = new List<object>();
+            var seen = new HashSet<object>();
+            if (board == null)
+                return result;
+
+            int selectedCount = GetSelectedObjectCount(board);
+            for (int index = 0; index < selectedCount; index++)
+                AddSelectedPrimitiveObject(result, seen, TryInvokeResult(board, "Internal_GetState_SelectecObject", index));
+
+            for (int index = 1; index <= selectedCount; index++)
+                AddSelectedPrimitiveObject(result, seen, TryInvokeResult(board, "Internal_GetState_SelectecObject", index));
+
+            if (result.Count > 0)
+                return result;
+
+            foreach (object primitive in EnumerateBoardPrimitives(board))
+            {
+                if (TryConvertToBool(TryInvokeResult(primitive, "GetState_Selected"), out bool selected) && selected)
+                    AddSelectedPrimitiveObject(result, seen, primitive);
+            }
+
+            return result;
+        }
+
+        private static void AddSelectedPrimitiveObject(List<object> result, HashSet<object> seen, object primitive)
+        {
+            if (!(primitive is IPCB_Primitive))
+                return;
+
+            if (seen.Add(primitive))
+                result.Add(primitive);
         }
 
         private static int IndexOfLayer(List<IV7_Layer> layers, IV7_Layer target)

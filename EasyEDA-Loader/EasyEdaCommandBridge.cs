@@ -19,6 +19,7 @@ namespace EasyEDA_Loader
         public const string CommandLayerBottom = "layer-bottom";
         public const string CommandLayerNext = "layer-next";
         public const string CommandLayerPrevious = "layer-previous";
+        public const string CommandLayerSelectedPrimitive = "layer-selected-primitive";
 
         private readonly CancellationTokenSource cancellation = new CancellationTokenSource();
         private Task listenTask;
@@ -138,6 +139,12 @@ namespace EasyEDA_Loader
                 case "prev":
                 case "layer-previous":
                     return CommandLayerPrevious;
+                case "selected":
+                case "selected-layer":
+                case "selected-primitive":
+                case "selected-primitive-layer":
+                case "layer-selected-primitive":
+                    return CommandLayerSelectedPrimitive;
                 default:
                     return string.Empty;
             }

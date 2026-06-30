@@ -10241,6 +10241,7 @@ namespace StepCleaner.Tests
             AssertContains(ins, "Command  Name = 'EasyEDASwitchBottomSignalLayer'", "PCB layer switch bottom command must be declared in the INS file", failures);
             AssertContains(ins, "Command  Name = 'EasyEDASwitchNextSignalLayer'", "PCB layer switch next command must be declared in the INS file", failures);
             AssertContains(ins, "Command  Name = 'EasyEDASwitchPreviousSignalLayer'", "PCB layer switch previous command must be declared in the INS file", failures);
+            AssertContains(ins, "Command  Name = 'EasyEDASwitchToSelectedPrimitiveLayer'", "PCB selected-primitive layer switch command must be declared in the INS file", failures);
             AssertContains(ins, "Command  Name = 'EasyEDACreateCustomPadFromSelected'", "PcbLib custom-pad command must be declared in the INS file", failures);
 
             AssertContains(rcs, "Caption='&EasyEDA'", "PcbLib menu should expose an EasyEDA submenu", failures);
@@ -10254,6 +10255,7 @@ namespace StepCleaner.Tests
             AssertContains(rcs, "PLID='PLEasyEDALoader:EasyEDASwitchBottomSignalLayer'", "Layer Switch menu should include switch-to-bottom command", failures);
             AssertContains(rcs, "PLID='PLEasyEDALoader:EasyEDASwitchNextSignalLayer'", "Layer Switch menu should include next signal command", failures);
             AssertContains(rcs, "PLID='PLEasyEDALoader:EasyEDASwitchPreviousSignalLayer'", "Layer Switch menu should include previous signal command", failures);
+            AssertContains(rcs, "PLID='PLEasyEDALoader:EasyEDASwitchToSelectedPrimitiveLayer'", "Layer Switch menu should include selected-primitive layer command", failures);
             AssertContains(rcs, "PLEasyEDALoader:EasyEDASwitchTopSignalLayer Command='EasyEDA-Loader:EasyEDASwitchTopSignalLayer' Caption='&Top' Shortcut1='Ctrl+Plus'", "Top layer command should default to Ctrl+Plus", failures);
             AssertContains(rcs, "PLEasyEDALoader:EasyEDASwitchBottomSignalLayer Command='EasyEDA-Loader:EasyEDASwitchBottomSignalLayer' Caption='&Bottom' Shortcut1='Ctrl+Minus'", "Bottom layer command should default to Ctrl+Minus", failures);
             AssertContains(rcs, "PLEasyEDALoader:EasyEDASwitchNextSignalLayer Command='EasyEDA-Loader:EasyEDASwitchNextSignalLayer' Caption='&Next Signal' Shortcut1='Ctrl+Shift+Plus'", "Next signal command should default to Ctrl+Shift+Plus", failures);
@@ -10266,11 +10268,13 @@ namespace StepCleaner.Tests
             AssertContains(module, "RegisterCommand(\"EasyEDASwitchBottomSignalLayer\"", "module must register the bottom layer switch command", failures);
             AssertContains(module, "RegisterCommand(\"EasyEDASwitchNextSignalLayer\"", "module must register the next layer switch command", failures);
             AssertContains(module, "RegisterCommand(\"EasyEDASwitchPreviousSignalLayer\"", "module must register the previous layer switch command", failures);
+            AssertContains(module, "RegisterCommand(\"EasyEDASwitchToSelectedPrimitiveLayer\"", "module must register the selected-primitive layer switch command", failures);
             AssertContains(module, "RegisterCommand(\"EasyEDACreateCustomPadFromSelected\"", "module must register the Create Custom Pad from Selected command", failures);
             AssertContains(module, "SwitchTopSignalLayer", "top command should dispatch to a PCB layer switch handler", failures);
             AssertContains(module, "SwitchBottomSignalLayer", "bottom command should dispatch to a PCB layer switch handler", failures);
             AssertContains(module, "SwitchNextSignalLayer", "next command should dispatch to a PCB layer switch handler", failures);
             AssertContains(module, "SwitchPreviousSignalLayer", "previous command should dispatch to a PCB layer switch handler", failures);
+            AssertContains(module, "SwitchToSelectedPrimitiveLayer", "selected primitive command should dispatch to a PCB layer switch handler", failures);
             AssertContains(module, "ReprojectActiveFootprint3D", "Reproject command should dispatch to an active-footprint handler", failures);
             AssertContains(module, "AlignActiveFootprint3DModel", "Align command should dispatch to an active-footprint handler", failures);
             AssertContains(module, "CreateCustomPadFromSelected", "custom-pad command should dispatch to an active-footprint handler", failures);
@@ -10305,6 +10309,10 @@ namespace StepCleaner.Tests
             AssertContains(eePcb, "SwitchToBottomSignalLayer", "PCB helper must switch directly to the active board's bottom signal layer", failures);
             AssertContains(eePcb, "SwitchToNextSignalLayer", "PCB helper must cycle to the next displayed signal layer", failures);
             AssertContains(eePcb, "SwitchToPreviousSignalLayer", "PCB helper must cycle to the previous displayed signal layer", failures);
+            AssertContains(eePcb, "SwitchToSelectedPrimitiveLayer", "PCB helper must switch to the active board selected primitive layer", failures);
+            AssertContains(eePcb, "FindSelectedPrimitiveLayer", "selected-primitive layer switching must read the selected object layer before changing board current layer", failures);
+            AssertContains(eePcb, "Internal_GetState_SelectecObject", "selected-primitive layer switching must use Altium's selected-object list", failures);
+            AssertContains(eePcb, "TryGetPrimitiveLayer", "selected-primitive layer switching must accept selected primitives with V7 layer metadata", failures);
             AssertContains(eePcb, "SwitchToFirstDisplayedSignalLayer", "Top layer command must use the displayed signal-layer iterator fallback that works in PCB editor commands", failures);
             AssertContains(eePcb, "SwitchToLastDisplayedSignalLayer", "Bottom layer command must use the displayed signal-layer iterator fallback that works in PCB editor commands", failures);
             AssertContains(eePcb, "Internal_SignalLayerIterator", "Signal layer cycling must use Altium's signal-layer iterator", failures);
@@ -10453,6 +10461,7 @@ namespace StepCleaner.Tests
             AssertContains(module, "case EasyEdaCommandBridge.CommandLayerBottom", "Bridge must expose Bottom layer", failures);
             AssertContains(module, "case EasyEdaCommandBridge.CommandLayerNext", "Bridge must expose Next signal layer", failures);
             AssertContains(module, "case EasyEdaCommandBridge.CommandLayerPrevious", "Bridge must expose Previous signal layer", failures);
+            AssertContains(module, "case EasyEdaCommandBridge.CommandLayerSelectedPrimitive", "Bridge must expose selected-primitive layer", failures);
             AssertContains(project, "EasyEdaCommandBridge.cs", "EasyEDA project must explicitly compile the command bridge", failures);
             AssertContains(ins, "SystemExtension   = True", "Altium must load EasyEDALoader as a system extension so the bridge starts without opening the EasyEDALoader dialog", failures);
 
@@ -10472,6 +10481,7 @@ namespace StepCleaner.Tests
                         AssertJsonActionExists(actions, "Previous Signal Layer", "com.ulanzi.ulanzideck.easyedaloader.layerprevious", failures);
                         AssertJsonActionExists(actions, "Top Signal Layer", "com.ulanzi.ulanzideck.easyedaloader.layertop", failures);
                         AssertJsonActionExists(actions, "Bottom Signal Layer", "com.ulanzi.ulanzideck.easyedaloader.layerbottom", failures);
+                        AssertJsonActionExists(actions, "Switch to Selected Primitive Layer", "com.ulanzi.ulanzideck.easyedaloader.layerselectedprimitive", failures);
                         AssertJsonActionExists(actions, "Reproject 3D", "com.ulanzi.ulanzideck.easyedaloader.reproject3d", failures);
                         AssertJsonActionExists(actions, "Align 3D Model", "com.ulanzi.ulanzideck.easyedaloader.align3dmodel", failures);
                         foreach (JsonElement action in actions.EnumerateArray())
@@ -10505,11 +10515,13 @@ namespace StepCleaner.Tests
             AssertContains(app, "com.ulanzi.ulanzideck.easyedaloader.layerprevious", "Plugin must handle the separate Previous Signal Layer action", failures);
             AssertContains(app, "com.ulanzi.ulanzideck.easyedaloader.layertop", "Plugin must handle the separate Top Signal Layer action", failures);
             AssertContains(app, "com.ulanzi.ulanzideck.easyedaloader.layerbottom", "Plugin must handle the separate Bottom Signal Layer action", failures);
+            AssertContains(app, "com.ulanzi.ulanzideck.easyedaloader.layerselectedprimitive", "Plugin must handle the separate selected-primitive layer action", failures);
             AssertContains(app, "CommandLayerPrevious", "Left rotation must call previous signal layer", failures);
             AssertContains(app, "CommandLayerNext", "Right rotation must call next signal layer", failures);
             AssertContains(app, "CommandOpenLoader", "Plugin must expose Open Loader as a keypad/run action", failures);
             AssertContains(app, "CommandLayerTop", "Plugin must expose Top layer command", failures);
             AssertContains(app, "CommandLayerBottom", "Plugin must expose Bottom layer command", failures);
+            AssertContains(app, "CommandLayerSelectedPrimitive", "Plugin must expose selected-primitive layer command", failures);
             AssertDoesNotContain(app, "onDialDown", "Plugin must not bind a dial press command", failures);
             AssertDoesNotContain(app, "onDialUp", "Plugin must not bind a dial release command", failures);
             AssertContains(pipeClient, "\\\\\\\\.\\\\pipe\\\\EasyEDA-Loader.CommandBridge", "Plugin pipe client must connect to the EasyEDALoader pipe", failures);
@@ -10545,6 +10557,7 @@ namespace StepCleaner.Tests
             AssertContains(readme, "Altium window must be active", "README must document the active-Altium-window guard", failures);
             AssertContains(readme, "Dial clockwise", "README must document clockwise dial behavior", failures);
             AssertContains(readme, "Dial counter-clockwise", "README must document counter-clockwise dial behavior", failures);
+            AssertContains(readme, "Switch to Selected Primitive Layer", "README must document the selected-primitive layer Ulanzi action", failures);
 
             if (failures.Count > 0)
             {

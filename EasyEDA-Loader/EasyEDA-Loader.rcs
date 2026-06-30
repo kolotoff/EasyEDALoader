@@ -8,6 +8,7 @@ PL PLEasyEDALoader:EasyEDASwitchTopSignalLayer Command='EasyEDA-Loader:EasyEDASw
 PL PLEasyEDALoader:EasyEDASwitchBottomSignalLayer Command='EasyEDA-Loader:EasyEDASwitchBottomSignalLayer' Caption='&Bottom' Shortcut1='Ctrl+Minus' Description='Switch to the bottom signal layer' End
 PL PLEasyEDALoader:EasyEDASwitchNextSignalLayer Command='EasyEDA-Loader:EasyEDASwitchNextSignalLayer' Caption='&Next Signal' Shortcut1='Ctrl+Shift+Plus' Description='Switch to the next displayed signal layer' End
 PL PLEasyEDALoader:EasyEDASwitchPreviousSignalLayer Command='EasyEDA-Loader:EasyEDASwitchPreviousSignalLayer' Caption='&Previous Signal' Shortcut1='Ctrl+Shift+Minus' Description='Switch to the previous displayed signal layer' End
+PL PLEasyEDALoader:EasyEDASwitchToSelectedPrimitiveLayer Command='EasyEDA-Loader:EasyEDASwitchToSelectedPrimitiveLayer' Caption='Switch to Selected &Primitive Layer' Description='Switch to the selected PCB primitive layer' End
 
 Insertion MNSchematic_EasyEDALoader TargetID='MNSchematic_Tools10' InsertType='After' RefID0='MNSchematic_Tools30'
     Link MNSchematic_EasyEDALoader10 PLID='PLEasyEDALoader:EasyEDARun' End
@@ -22,6 +23,8 @@ Insertion MNPCB_EasyEDALoader TargetID='MNPCB_Tools10' InsertType='Before' RefID
             Link MNPCB_EasyEDALayerSwitch20 PLID='PLEasyEDALoader:EasyEDASwitchBottomSignalLayer' End
             Link MNPCB_EasyEDALayerSwitch30 PLID='PLEasyEDALoader:EasyEDASwitchNextSignalLayer' End
             Link MNPCB_EasyEDALayerSwitch40 PLID='PLEasyEDALoader:EasyEDASwitchPreviousSignalLayer' End
+            Separator MNPCB_EasyEDALayerSwitch50 End
+            Link MNPCB_EasyEDALayerSwitch60 PLID='PLEasyEDALoader:EasyEDASwitchToSelectedPrimitiveLayer' End
         End
     End
 End

@@ -94,7 +94,7 @@ If needed, pass the plugin folder explicitly:
 
 After installation, assign either the combined `EasyEDA Loader Dial` action or
 one of the separate actions, such as `Next Signal Layer`, `Top Signal Layer`,
-or `Reproject 3D`. The separate actions are intended to behave like
+`Switch to Selected Primitive Layer`, or `Reproject 3D`. The separate actions are intended to behave like
 `System > Hotkey`: each action entry maps to one EasyEDALoader command and can
 be assigned independently. The manifest intentionally does not filter by device
 model, because some Ulanzi Studio builds hide filtered plugins when a different
@@ -107,6 +107,7 @@ Command mapping:
 - Hold and rotate clockwise: switch to the bottom signal layer.
 - Hold and rotate counter-clockwise: switch to the top signal layer.
 - Keypad/run action: open the EasyEDA Loader dialog.
+- `Switch to Selected Primitive Layer`: switch to the currently selected PCB primitive's layer.
 
 Altium window must be active before the bridge executes a command. If another
 application is focused, the bridge rejects the request with `altium-not-active`

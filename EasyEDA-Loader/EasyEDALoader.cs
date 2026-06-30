@@ -53,6 +53,8 @@ namespace EasyEDA_Loader
             RegisterCommand("EasyEDA-Loader:EasyEDASwitchNextSignalLayer", new CommandProc(SwitchNextSignalLayer));
             RegisterCommand("EasyEDASwitchPreviousSignalLayer", new CommandProc(SwitchPreviousSignalLayer));
             RegisterCommand("EasyEDA-Loader:EasyEDASwitchPreviousSignalLayer", new CommandProc(SwitchPreviousSignalLayer));
+            RegisterCommand("EasyEDASwitchToSelectedPrimitiveLayer", new CommandProc(SwitchToSelectedPrimitiveLayer));
+            RegisterCommand("EasyEDA-Loader:EasyEDASwitchToSelectedPrimitiveLayer", new CommandProc(SwitchToSelectedPrimitiveLayer));
         }
 
         private void RegisterCommand(string argCommandId, CommandProc commandProc)
@@ -451,6 +453,15 @@ namespace EasyEDA_Loader
                 throw new InvalidOperationException("Could not switch to the previous displayed signal layer. Open a PCB document with displayed signal layers and try again.");
         }
 
+        private void SwitchToSelectedPrimitiveLayer(
+          IServerDocumentView argContext,
+          ref string argParameters)
+        {
+            Trace("SwitchToSelectedPrimitiveLayer entered.");
+            if (!EEPCB.SwitchToSelectedPrimitiveLayer())
+                throw new InvalidOperationException("Could not switch to the selected primitive layer. Open a PCB document, select a PCB primitive with a layer, and try again.");
+        }
+
         private EasyEdaCommandBridge.CommandResponse HandleBridgeCommand(string command)
         {
             if (IsLoaderDialogOpen())
@@ -536,6 +547,9 @@ namespace EasyEDA_Loader
                     break;
                 case EasyEdaCommandBridge.CommandLayerPrevious:
                     SwitchPreviousSignalLayer(context, ref parameters);
+                    break;
+                case EasyEdaCommandBridge.CommandLayerSelectedPrimitive:
+                    SwitchToSelectedPrimitiveLayer(context, ref parameters);
                     break;
                 default:
                     return EasyEdaCommandBridge.CommandResponse.Error(

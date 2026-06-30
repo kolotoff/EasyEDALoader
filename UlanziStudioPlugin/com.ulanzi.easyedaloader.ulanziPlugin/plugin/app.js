@@ -7,6 +7,7 @@ import {
   CommandLayerBottom,
   CommandLayerNext,
   CommandLayerPrevious,
+  CommandLayerSelectedPrimitive,
   sendEasyEdaCommand
 } from './easyedaBridgeClient.js';
 
@@ -18,6 +19,7 @@ const actionIds = {
   LayerPrevious: 'com.ulanzi.ulanzideck.easyedaloader.layerprevious',
   LayerTop: 'com.ulanzi.ulanzideck.easyedaloader.layertop',
   LayerBottom: 'com.ulanzi.ulanzideck.easyedaloader.layerbottom',
+  LayerSelectedPrimitive: 'com.ulanzi.ulanzideck.easyedaloader.layerselectedprimitive',
   Reproject3D: 'com.ulanzi.ulanzideck.easyedaloader.reproject3d',
   Align3DModel: 'com.ulanzi.ulanzideck.easyedaloader.align3dmodel'
 };
@@ -27,6 +29,7 @@ const commandByActionId = new Map([
   [actionIds.LayerPrevious, CommandLayerPrevious],
   [actionIds.LayerTop, CommandLayerTop],
   [actionIds.LayerBottom, CommandLayerBottom],
+  [actionIds.LayerSelectedPrimitive, CommandLayerSelectedPrimitive],
   [actionIds.Reproject3D, CommandReproject3D],
   [actionIds.Align3DModel, CommandAlign3DModel]
 ]);
@@ -166,5 +169,6 @@ export {
   CommandLayerTop,
   CommandLayerBottom,
   CommandLayerNext,
-  CommandLayerPrevious
+  CommandLayerPrevious,
+  CommandLayerSelectedPrimitive
 };
