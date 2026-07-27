@@ -10234,6 +10234,10 @@ namespace StepCleaner.Tests
             string eePcb = File.ReadAllText(Path.Combine(repoRoot, "EasyEDA-Loader", "EEPCB.cs"));
             string footprintData = File.ReadAllText(Path.Combine(repoRoot, "EasyEDA-Loader", "FootprintData.cs"));
             string footprint3dModel = File.ReadAllText(Path.Combine(repoRoot, "EasyEDA-Loader", "FootprintShapes", "EeFootprint3dModel.cs"));
+            string shapeExporter = File.ReadAllText(Path.Combine(repoRoot, "EasyEDA-Loader", "PcbShapeSvgExporter.cs"));
+            string shapeExportSettings = File.ReadAllText(Path.Combine(repoRoot, "EasyEDA-Loader", "ShapeExportSettings.cs"));
+            string shapeExportProgress = File.ReadAllText(Path.Combine(repoRoot, "EasyEDA-Loader", "ShapeExportProgressForm.cs"));
+            string shapeExportErrors = File.ReadAllText(Path.Combine(repoRoot, "EasyEDA-Loader", "ShapeExportErrorForm.cs"));
             string layoutModelsPath = Path.Combine(repoRoot, "EasyEDA-Loader", "LayoutDuplicationModels.cs");
             string layoutCapturePath = Path.Combine(repoRoot, "EasyEDA-Loader", "LayoutDuplicationCapture.cs");
             string layoutMapperPath = Path.Combine(repoRoot, "EasyEDA-Loader", "LayoutDuplicationMapper.cs");
@@ -10262,6 +10266,7 @@ namespace StepCleaner.Tests
             AssertContains(ins, "Command  Name = 'EasyEDASwitchToSelectedPrimitiveLayer'", "PCB selected-primitive layer switch command must be declared in the INS file", failures);
             AssertContains(ins, "Command  Name = 'EasyEDACreateCustomPadFromSelected'", "PcbLib custom-pad command must be declared in the INS file", failures);
             AssertContains(ins, "Command  Name = 'EasyEDADuplicateLayout'", "PCB layout duplicator command must be declared in the INS file", failures);
+            AssertContains(ins, "Command  Name = 'EasyEDAExportShapeSelectedLibraries'", "selected-library shape export command must be declared in the INS file", failures);
 
             AssertContains(rcs, "Caption='&EasyEDA'", "PcbLib menu should expose an EasyEDA submenu", failures);
             AssertContains(rcs, "Caption='&Loader...'", "Loader command should move under the EasyEDA submenu", failures);
@@ -10277,6 +10282,9 @@ namespace StepCleaner.Tests
             AssertContains(rcs, "PLID='PLEasyEDALoader:EasyEDASwitchToSelectedPrimitiveLayer'", "Layer Switch menu should include selected-primitive layer command", failures);
             AssertContains(rcs, "PL PLEasyEDALoader:EasyEDADuplicateLayout Command='EasyEDA-Loader:EasyEDADuplicateLayout' Caption='Duplicate layout'", "Duplicate layout command should have a PCB menu resource entry", failures);
             AssertDoesNotContain(rcs, "PLID='PLEasyEDALoader:EasyEDADuplicateLayout'", "Duplicate layout must remain hidden from Tools > EasyEDA while the experimental workflow is disabled", failures);
+            AssertContains(rcs, "Caption='All from selected &libraries'", "Export shape menu should expose selected-library export", failures);
+            AssertContains(rcs, "Link MNPCB_EasyEDAExportShape30 PLID='PLEasyEDALoader:EasyEDAExportShapeSelectedLibraries'", "PCB editor Export shape menu should include selected-library export", failures);
+            AssertContains(rcs, "Link MNPCBLib_EasyEDAExportShape30 PLID='PLEasyEDALoader:EasyEDAExportShapeSelectedLibraries'", "PcbLib editor Export shape menu should include selected-library export", failures);
             AssertContains(rcs, "PLEasyEDALoader:EasyEDASwitchTopSignalLayer Command='EasyEDA-Loader:EasyEDASwitchTopSignalLayer' Caption='&Top' Shortcut1='Ctrl+Plus'", "Top layer command should default to Ctrl+Plus", failures);
             AssertContains(rcs, "PLEasyEDALoader:EasyEDASwitchBottomSignalLayer Command='EasyEDA-Loader:EasyEDASwitchBottomSignalLayer' Caption='&Bottom' Shortcut1='Ctrl+Minus'", "Bottom layer command should default to Ctrl+Minus", failures);
             AssertContains(rcs, "PLEasyEDALoader:EasyEDASwitchNextSignalLayer Command='EasyEDA-Loader:EasyEDASwitchNextSignalLayer' Caption='&Next Signal' Shortcut1='Ctrl+Shift+Plus'", "Next signal command should default to Ctrl+Shift+Plus", failures);
@@ -10293,6 +10301,47 @@ namespace StepCleaner.Tests
             AssertContains(module, "RegisterCommand(\"EasyEDACreateCustomPadFromSelected\"", "module must register the Create Custom Pad from Selected command", failures);
             AssertContains(module, "RegisterCommand(\"EasyEDADuplicateLayout\"", "module must register the Duplicate layout command", failures);
             AssertContains(module, "RegisterCommand(\"EasyEDA-Loader:EasyEDADuplicateLayout\"", "module must register the namespaced Duplicate layout command", failures);
+            AssertContains(module, "RegisterCommand(\"EasyEDAExportShapeSelectedLibraries\"", "module must register selected-library shape export", failures);
+            AssertContains(module, "RegisterCommand(\"EasyEDA-Loader:EasyEDAExportShapeSelectedLibraries\"", "module must register namespaced selected-library shape export", failures);
+            AssertContains(module, "dialog.Filter = \"Altium PCB libraries (*.PcbLib)|*.PcbLib", "selected-library export must filter for PcbLib files", failures);
+            AssertContains(module, "dialog.Multiselect = true;", "selected-library export must allow multiple PcbLib files", failures);
+            AssertContains(module, "ShapeExportSettings.LoadLastLibraryFolder()", "selected-library export must restore its source folder", failures);
+            AssertContains(module, "ShapeExportSettings.SaveLastLibraryFolder(", "selected-library export must persist its source folder", failures);
+            AssertContains(module, "ShapeExportSettings.SaveLastFolder(dialog.SelectedPath);", "all shape export commands must persist the shared target folder", failures);
+            AssertContains(module, "Internal_GetDocumentByPath(libraryPath)", "selected-library export must reuse already-open library documents", failures);
+            AssertContains(module, "OpenDocument(\"PcbLib\", libraryPath)", "selected-library export must open each PcbLib through Altium", failures);
+            AssertContains(module, "PcbShapeSvgExporter.ExportLibrary(", "selected-library export must export every footprint from each opened library", failures);
+            AssertContains(module, "CloseDocument(libraryDocument)", "selected-library export must close library documents it opened", failures);
+            AssertContains(module, "if (openedByExport && libraryDocument != null)", "selected-library export must leave documents that were already open untouched", failures);
+            AssertContains(module, "() => progressForm.IsCancellationRequested", "selected-library export must pass progress-dialog cancellation into the exporter", failures);
+            AssertContains(module, "if (errors.Count > 0)", "selected-library export must show its final dialog only when errors occurred", failures);
+            AssertDoesNotContain(
+                module.Substring(
+                    module.IndexOf("private void ExportSelectedShapeLibraries", StringComparison.Ordinal),
+                    module.IndexOf("private string[] SelectShapeExportLibraries", StringComparison.Ordinal)
+                        - module.IndexOf("private void ExportSelectedShapeLibraries", StringComparison.Ordinal)),
+                "ShowInfo(",
+                "selected-library shape export must not show a success dialog",
+                failures);
+            AssertContains(shapeExporter, "public static ShapeExportResult ExportLibrary(", "shape exporter must expose a whole-library entry point", failures);
+            AssertContains(shapeExporter, "HashSet<string> usedNames = null", "multi-library shape export must share output filenames across libraries", failures);
+            AssertContains(shapeExporter, "result.Errors.Add(componentName + \": \" + ex.Message);", "shape exporter must collect individual footprint failures", failures);
+            AssertContains(shapeExporter, "catch (OperationCanceledException)", "shape exporter must preserve cancellation while isolating footprint errors", failures);
+            AssertContains(module, "foreach (string error in result.Errors)", "selected-library export must collect footprint errors and continue with later libraries", failures);
+            AssertContains(shapeExportSettings, "shape-export-library-folder.txt", "selected-library source folder must persist across Altium restarts", failures);
+            AssertContains(shapeExportSettings, "shape-export-folder.txt", "shape export target folder must persist across Altium restarts", failures);
+            AssertContains(shapeExportProgress, "Text = \"Cancel\"", "shape export progress dialog must have a Cancel button", failures);
+            AssertContains(shapeExportProgress, "IsCancellationRequested = true;", "shape export Cancel button must request cancellation", failures);
+            AssertContains(shapeExportProgress, "TopMost = true;", "shape export progress dialog must remain visible above Altium", failures);
+            AssertContains(shapeExportProgress, "BringToFront();", "shape export progress must return to the foreground after Altium activates a library", failures);
+            AssertContains(module, "new ShapeExportErrorForm(message)", "shape export errors must use the selectable error dialog", failures);
+            AssertContains(shapeExportErrors, "ReadOnly = true", "shape export error list must be read-only", failures);
+            AssertContains(shapeExportErrors, "Multiline = true", "shape export error list must display all library and footprint errors", failures);
+            AssertContains(shapeExportErrors, "Clipboard.SetText(errorTextBox.Text)", "shape export error dialog must copy the complete list to the clipboard", failures);
+            AssertContains(shapeExportErrors, "Text = \"Copy to clipboard\"", "shape export error dialog must expose a clipboard button", failures);
+            AssertContains(shapeExportErrors, "Size = new Size(200, 34)", "shape export clipboard button must fit its label and use the enlarged export-dialog button height", failures);
+            AssertContains(shapeExportErrors, "Size = new Size(104, 34)", "shape export Close button must use the enlarged export-dialog button height", failures);
+            AssertContains(shapeExportProgress, "Size = new Size(92, 32)", "shape export Cancel button must use the enlarged export-dialog button height", failures);
             AssertContains(module, "SwitchTopSignalLayer", "top command should dispatch to a PCB layer switch handler", failures);
             AssertContains(module, "SwitchBottomSignalLayer", "bottom command should dispatch to a PCB layer switch handler", failures);
             AssertContains(module, "SwitchNextSignalLayer", "next command should dispatch to a PCB layer switch handler", failures);

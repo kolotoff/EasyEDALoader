@@ -4,6 +4,17 @@ The PCB and PCB footprint library menus include `EasyEDA -> Export shape` with:
 
 - `All components`
 - `Selected component`
+- `All from selected libraries`
+
+`All from selected libraries` first selects one or more `.PcbLib` files, then
+selects the shared SVG target folder. Libraries opened by the command are
+processed and closed one at a time. A library that was already open in Altium
+is reused and left open. The source-library folder and SVG target folder are
+remembered across Altium restarts; all shape-export commands share the same
+target-folder setting. A failure in one footprint or library is collected while
+the remaining footprints and libraries continue. Collected errors are shown
+once after processing finishes in a selectable, read-only error list with a
+`Copy to clipboard` button.
 
 The exporter writes SVG files from Mechanical 2 shape primitives. Coordinates are relative to the footprint or component origin.
 

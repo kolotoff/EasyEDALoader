@@ -12,6 +12,7 @@ PL PLEasyEDALoader:EasyEDASwitchToSelectedPrimitiveLayer Command='EasyEDA-Loader
 PL PLEasyEDALoader:EasyEDADuplicateLayout Command='EasyEDA-Loader:EasyEDADuplicateLayout' Caption='Duplicate layout' Description='Duplicate selected PCB placement and routing using local AI mapping' End
 PL PLEasyEDALoader:EasyEDAExportShapeAll Command='EasyEDA-Loader:EasyEDAExportShapeAll' Caption='&All components' Description='Export Mechanical 2 component shape SVG files for all PCB components or footprints' End
 PL PLEasyEDALoader:EasyEDAExportShapeSelected Command='EasyEDA-Loader:EasyEDAExportShapeSelected' Caption='&Selected component' Description='Export a Mechanical 2 component shape SVG file for the selected PCB component or active footprint' End
+PL PLEasyEDALoader:EasyEDAExportShapeSelectedLibraries Command='EasyEDA-Loader:EasyEDAExportShapeSelectedLibraries' Caption='All from selected &libraries' Description='Export all Mechanical 2 footprint shapes from selected PCB library files' End
 
 Insertion MNSchematic_EasyEDALoader TargetID='MNSchematic_Tools10' InsertType='After' RefID0='MNSchematic_Tools30'
     Link MNSchematic_EasyEDALoader10 PLID='PLEasyEDALoader:EasyEDARun' End
@@ -24,6 +25,7 @@ Insertion MNPCB_EasyEDALoader TargetID='MNPCB_Tools10' InsertType='Before' RefID
         Tree MNPCB_EasyEDAExportShapeTree Caption='Export &shape' Popup='1'
             Link MNPCB_EasyEDAExportShape10 PLID='PLEasyEDALoader:EasyEDAExportShapeAll' End
             Link MNPCB_EasyEDAExportShape20 PLID='PLEasyEDALoader:EasyEDAExportShapeSelected' End
+            Link MNPCB_EasyEDAExportShape30 PLID='PLEasyEDALoader:EasyEDAExportShapeSelectedLibraries' End
         End
         Separator MNPCB_EasyEDALoader50 End
         Tree MNPCB_EasyEDALayerSwitchTree Caption='&Layer Switch' Popup='1'
@@ -48,6 +50,7 @@ Insertion MNPCBLib_EasyEDALoader TargetID='MNPCBLib_Tools10' InsertType='After' 
         Tree MNPCBLib_EasyEDAExportShapeTree Caption='Export &shape' Popup='1'
             Link MNPCBLib_EasyEDAExportShape10 PLID='PLEasyEDALoader:EasyEDAExportShapeAll' End
             Link MNPCBLib_EasyEDAExportShape20 PLID='PLEasyEDALoader:EasyEDAExportShapeSelected' End
+            Link MNPCBLib_EasyEDAExportShape30 PLID='PLEasyEDALoader:EasyEDAExportShapeSelectedLibraries' End
         End
     End
 End

@@ -16,11 +16,12 @@ namespace EasyEDA_Loader
             Text = "Export shape";
             StartPosition = FormStartPosition.CenterScreen;
             ShowInTaskbar = false;
+            TopMost = true;
             FormBorderStyle = FormBorderStyle.FixedDialog;
             MaximizeBox = false;
             MinimizeBox = false;
             ControlBox = false;
-            ClientSize = new Size(420, 136);
+            ClientSize = new Size(420, 142);
 
             statusLabel = new Label
             {
@@ -51,7 +52,7 @@ namespace EasyEDA_Loader
             cancelButton = new Button
             {
                 Location = new Point(316, 98),
-                Size = new Size(92, 26),
+                Size = new Size(92, 32),
                 Text = "Cancel"
             };
             cancelButton.Click += (_, _) =>
@@ -91,6 +92,10 @@ namespace EasyEDA_Loader
                 progressBar.Style = ProgressBarStyle.Marquee;
             }
 
+            if (!Visible)
+                Show();
+            BringToFront();
+            Activate();
             Refresh();
             Application.DoEvents();
         }

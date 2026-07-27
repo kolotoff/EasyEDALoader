@@ -62,6 +62,8 @@ namespace EasyEDA_Loader
             RegisterCommand("EasyEDA-Loader:EasyEDAExportShapeAll", new CommandProc(ExportShapeAll));
             RegisterCommand("EasyEDAExportShapeSelected", new CommandProc(ExportShapeSelected));
             RegisterCommand("EasyEDA-Loader:EasyEDAExportShapeSelected", new CommandProc(ExportShapeSelected));
+            RegisterCommand("EasyEDAExportShapeSelectedLibraries", new CommandProc(ExportShapeSelectedLibraries));
+            RegisterCommand("EasyEDA-Loader:EasyEDAExportShapeSelectedLibraries", new CommandProc(ExportShapeSelectedLibraries));
         }
 
         private void RegisterCommand(string argCommandId, CommandProc commandProc)
@@ -476,6 +478,21 @@ namespace EasyEDA_Loader
             ExportShape(argContext, ShapeExportScope.SelectedComponent);
         }
 
+        private void ExportShapeSelectedLibraries(
+          IServerDocumentView argContext,
+          ref string argParameters)
+        {
+            string[] libraryFiles = SelectShapeExportLibraries();
+            if (libraryFiles.Length == 0)
+                return;
+
+            string targetFolder = SelectShapeExportFolder();
+            if (string.IsNullOrWhiteSpace(targetFolder))
+                return;
+
+            ExportSelectedShapeLibraries(libraryFiles, targetFolder);
+        }
+
         private void ExportShape(IServerDocumentView argContext, ShapeExportScope scope)
         {
             bool diagnosticsEnabled = ShapeExportSettings.LoadDiagnosticsEnabled();
@@ -489,7 +506,6 @@ namespace EasyEDA_Loader
                 return;
             }
 
-            ShapeExportSettings.SaveLastFolder(folder);
             if (diagnosticsEnabled)
                 Trace("ExportShape diagnostics enabled.");
             ShapeExportResult result;
@@ -524,8 +540,198 @@ namespace EasyEDA_Loader
             string message = $"Exported {result.FileCount} SVG file(s) from {result.ComponentCount} component(s), {result.PrimitiveCount} primitive(s).";
             if (diagnosticsEnabled && result.Warnings.Count > 0)
                 Trace("ExportShape warnings: " + string.Join(" | ", result.Warnings));
+            if (result.Errors.Count > 0)
+                ShowShapeExportErrors(result.Errors);
             if (diagnosticsEnabled)
                 Trace("ExportShape completed. " + message.Replace(Environment.NewLine, " | "));
+        }
+
+        private void ExportSelectedShapeLibraries(IReadOnlyList<string> libraryFiles, string targetFolder)
+        {
+            bool diagnosticsEnabled = ShapeExportSettings.LoadDiagnosticsEnabled();
+            var errors = new List<string>();
+            var usedNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            IServerDocument originalDocument = GetCurrentDocument();
+            bool cancelled = false;
+
+            using (var progressForm = new ShapeExportProgressForm())
+            {
+                progressForm.Show();
+                try
+                {
+                    for (int libraryIndex = 0; libraryIndex < libraryFiles.Count; libraryIndex++)
+                    {
+                        if (progressForm.IsCancellationRequested)
+                        {
+                            cancelled = true;
+                            break;
+                        }
+
+                        string libraryPath = libraryFiles[libraryIndex];
+                        string libraryName = Path.GetFileName(libraryPath);
+                        IServerDocument libraryDocument = null;
+                        bool openedByExport = false;
+                        try
+                        {
+                            progressForm.Report(new ShapeExportProgress
+                            {
+                                Message = "Opening " + libraryName,
+                                Detail = (libraryIndex + 1) + " of " + libraryFiles.Count,
+                                Percent = libraryIndex * 100.0 / libraryFiles.Count
+                            });
+
+                            libraryDocument = AltiumApi.GlobalVars.Client.Internal_GetDocumentByPath(libraryPath) as IServerDocument;
+                            if (libraryDocument == null)
+                            {
+                                libraryDocument = AltiumApi.GlobalVars.Client.OpenDocument("PcbLib", libraryPath);
+                                openedByExport = libraryDocument != null;
+                            }
+
+                            if (libraryDocument == null)
+                                throw new InvalidOperationException("Altium could not open the PCB library.");
+
+                            AltiumApi.GlobalVars.Client.ShowDocument(libraryDocument);
+                            Application.DoEvents();
+
+                            IServerDocument activeDocument = GetCurrentDocument();
+                            if (activeDocument == null || !SameFilePath(activeDocument.GetFileName(), libraryPath))
+                                throw new InvalidOperationException("Altium did not activate the requested PCB library.");
+
+                            IPCB_Library pcbLibrary = AltiumApi.GlobalVars.PCBServer.GetCurrentPCBLibrary();
+                            if (pcbLibrary == null)
+                                throw new InvalidOperationException("Altium did not return the opened PCB library.");
+
+                            int currentLibraryIndex = libraryIndex;
+                            Action<ShapeExportProgress> reportLibraryProgress = progress =>
+                            {
+                                double localPercent = progress?.Percent ?? 0.0;
+                                progressForm.Report(new ShapeExportProgress
+                                {
+                                    Message = progress?.Message ?? ("Exporting " + libraryName),
+                                    Detail = libraryName + " | " + (progress?.Detail ?? ""),
+                                    Percent = (currentLibraryIndex + (localPercent / 100.0)) * 100.0 / libraryFiles.Count
+                                });
+                            };
+
+                            ShapeExportResult result = PcbShapeSvgExporter.ExportLibrary(
+                                pcbLibrary,
+                                targetFolder,
+                                reportLibraryProgress,
+                                diagnosticsEnabled,
+                                () => progressForm.IsCancellationRequested,
+                                usedNames);
+
+                            if (diagnosticsEnabled && result.Warnings.Count > 0)
+                                Trace(libraryName + " shape export warnings: " + string.Join(" | ", result.Warnings));
+                            foreach (string error in result.Errors)
+                                errors.Add(libraryName + " / " + error);
+                        }
+                        catch (OperationCanceledException)
+                        {
+                            cancelled = true;
+                        }
+                        catch (Exception ex)
+                        {
+                            errors.Add(libraryName + ": " + ex.Message);
+                            Trace("Shape library export failed for " + libraryPath + ": " + ex);
+                            progressForm.Report(new ShapeExportProgress
+                            {
+                                Message = "Failed " + libraryName,
+                                Detail = ex.Message,
+                                Percent = (libraryIndex + 1) * 100.0 / libraryFiles.Count
+                            });
+                        }
+                        finally
+                        {
+                            if (openedByExport && libraryDocument != null)
+                            {
+                                try
+                                {
+                                    AltiumApi.GlobalVars.Client.CloseDocument(libraryDocument);
+                                    Application.DoEvents();
+                                }
+                                catch (Exception ex)
+                                {
+                                    errors.Add(libraryName + ": could not close library: " + ex.Message);
+                                    Trace("Shape library close failed for " + libraryPath + ": " + ex);
+                                }
+                            }
+                        }
+
+                        if (cancelled)
+                            break;
+                    }
+                }
+                finally
+                {
+                    if (originalDocument != null)
+                    {
+                        try
+                        {
+                            AltiumApi.GlobalVars.Client.ShowDocument(originalDocument);
+                            Application.DoEvents();
+                        }
+                        catch (Exception ex)
+                        {
+                            errors.Add("Could not restore the original Altium document: " + ex.Message);
+                            Trace("Shape library export document restore failed: " + ex);
+                        }
+                    }
+                }
+
+                if (!cancelled)
+                {
+                    progressForm.Report(new ShapeExportProgress
+                    {
+                        Message = errors.Count == 0 ? "Export complete" : "Export completed with errors",
+                        Detail = targetFolder,
+                        Percent = 100
+                    });
+                }
+            }
+
+            if (errors.Count > 0)
+                ShowShapeExportErrors(errors);
+        }
+
+        private static void ShowShapeExportErrors(IReadOnlyList<string> errors)
+        {
+            string message = "Shape export failed for " + errors.Count + " operation(s):"
+                + Environment.NewLine
+                + Environment.NewLine
+                + string.Join(Environment.NewLine + Environment.NewLine, errors);
+
+            using (var dialog = new ShapeExportErrorForm(message))
+                dialog.ShowDialog();
+        }
+
+        private string[] SelectShapeExportLibraries()
+        {
+            using (var dialog = new OpenFileDialog())
+            {
+                dialog.Title = "Select PCB libraries";
+                dialog.Filter = "Altium PCB libraries (*.PcbLib)|*.PcbLib|All files (*.*)|*.*";
+                dialog.DefaultExt = "PcbLib";
+                dialog.Multiselect = true;
+                dialog.CheckFileExists = true;
+                dialog.RestoreDirectory = true;
+
+                string lastFolder = ShapeExportSettings.LoadLastLibraryFolder();
+                if (!string.IsNullOrWhiteSpace(lastFolder))
+                    dialog.InitialDirectory = lastFolder;
+
+                if (dialog.ShowDialog() != DialogResult.OK)
+                    return Array.Empty<string>();
+
+                string[] files = dialog.FileNames
+                    .Where(File.Exists)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToArray();
+                if (files.Length > 0)
+                    ShapeExportSettings.SaveLastLibraryFolder(Path.GetDirectoryName(files[0]));
+
+                return files;
+            }
         }
 
         private string SelectShapeExportFolder()
@@ -538,7 +744,29 @@ namespace EasyEDA_Loader
                 if (!string.IsNullOrWhiteSpace(lastFolder))
                     dialog.SelectedPath = lastFolder;
 
-                return dialog.ShowDialog() == DialogResult.OK ? dialog.SelectedPath : "";
+                if (dialog.ShowDialog() != DialogResult.OK)
+                    return "";
+
+                ShapeExportSettings.SaveLastFolder(dialog.SelectedPath);
+                return dialog.SelectedPath;
+            }
+        }
+
+        private static bool SameFilePath(string left, string right)
+        {
+            if (string.IsNullOrWhiteSpace(left) || string.IsNullOrWhiteSpace(right))
+                return false;
+
+            try
+            {
+                return string.Equals(
+                    Path.GetFullPath(left).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
+                    Path.GetFullPath(right).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
+                    StringComparison.OrdinalIgnoreCase);
+            }
+            catch
+            {
+                return string.Equals(left.Trim(), right.Trim(), StringComparison.OrdinalIgnoreCase);
             }
         }
 

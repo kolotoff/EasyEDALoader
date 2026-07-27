@@ -25,6 +25,7 @@ namespace EasyEDA_Loader
         public int PrimitiveCount { get; set; }
         public string DiagnosticsPath { get; set; }
         public List<string> Warnings { get; } = new List<string>();
+        public List<string> Errors { get; } = new List<string>();
         public List<string> MissingMechanical2Footprints { get; } = new List<string>();
         public List<string> MissingFootprintNames { get; } = new List<string>();
         public ShapeCaptureStats CaptureStats { get; } = new ShapeCaptureStats();
@@ -126,7 +127,7 @@ namespace EasyEDA_Loader
 
             IPCB_Library pcbLib = AltiumApi.GlobalVars.PCBServer.GetCurrentPCBLibrary();
             if (pcbLib != null)
-                return ExportPcbLibrary(pcbLib, scope, folder, progress, diagnosticsEnabled, isCancellationRequested);
+                return ExportPcbLibrary(pcbLib, scope, folder, progress, diagnosticsEnabled, isCancellationRequested, null);
 
             IPCB_Board board = EEPCB.GetCurrentPcbBoard(commandView);
             if (board != null)
@@ -135,13 +136,45 @@ namespace EasyEDA_Loader
             throw new InvalidOperationException("Open a PCB document or PCB footprint library before exporting shapes.");
         }
 
-        private static ShapeExportResult ExportPcbLibrary(IPCB_Library pcbLib, ShapeExportScope scope, string folder, Action<ShapeExportProgress> progress, bool diagnosticsEnabled, Func<bool> isCancellationRequested)
+        public static ShapeExportResult ExportLibrary(
+            IPCB_Library pcbLib,
+            string folder,
+            Action<ShapeExportProgress> progress = null,
+            bool diagnosticsEnabled = false,
+            Func<bool> isCancellationRequested = null,
+            HashSet<string> usedNames = null)
+        {
+            if (pcbLib == null)
+                throw new ArgumentNullException(nameof(pcbLib));
+            if (string.IsNullOrWhiteSpace(folder))
+                throw new ArgumentException("Export folder is required.", nameof(folder));
+
+            Directory.CreateDirectory(folder);
+            ThrowIfCancellationRequested(isCancellationRequested);
+            return ExportPcbLibrary(
+                pcbLib,
+                ShapeExportScope.AllComponents,
+                folder,
+                progress,
+                diagnosticsEnabled,
+                isCancellationRequested,
+                usedNames);
+        }
+
+        private static ShapeExportResult ExportPcbLibrary(
+            IPCB_Library pcbLib,
+            ShapeExportScope scope,
+            string folder,
+            Action<ShapeExportProgress> progress,
+            bool diagnosticsEnabled,
+            Func<bool> isCancellationRequested,
+            HashSet<string> usedNames)
         {
             IEnumerable<object> components = scope == ShapeExportScope.SelectedComponent
                 ? new[] { GetCurrentPcbLibExportComponent(pcbLib) }.Where(component => component != null)
                 : EnumeratePcbLibExportComponents(pcbLib);
 
-            return ExportComponents(components, folder, "Footprint", preferFootprintName: true, progress, diagnosticsEnabled, isCancellationRequested);
+            return ExportComponents(components, folder, "Footprint", preferFootprintName: true, progress, diagnosticsEnabled, isCancellationRequested, usedNames);
         }
 
         private static ShapeExportResult ExportPcbBoard(IPCB_Board board, ShapeExportScope scope, string folder, Action<ShapeExportProgress> progress, bool diagnosticsEnabled, Func<bool> isCancellationRequested)
@@ -170,10 +203,11 @@ namespace EasyEDA_Loader
             bool preferFootprintName,
             Action<ShapeExportProgress> progress,
             bool diagnosticsEnabled,
-            Func<bool> isCancellationRequested)
+            Func<bool> isCancellationRequested,
+            HashSet<string> usedNames = null)
         {
             var result = new ShapeExportResult();
-            var usedNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            HashSet<string> outputNames = usedNames ?? new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             var diagnostics = diagnosticsEnabled ? ShapeExportDiagnostics.Create(folder, fallbackPrefix, preferFootprintName) : null;
             result.DiagnosticsPath = diagnostics?.FilePath;
             progress?.Invoke(new ShapeExportProgress
@@ -204,48 +238,66 @@ namespace EasyEDA_Loader
                     object component = UnwrapExportComponent(exportComponent);
                     result.ComponentCount++;
                     string componentName = ReadComponentExportName(exportComponent, preferFootprintName, fallbackPrefix + result.ComponentCount.ToString(CultureInfo.InvariantCulture));
-                    if (preferFootprintName && string.Equals(fallbackPrefix, "Footprint", StringComparison.OrdinalIgnoreCase) && string.IsNullOrWhiteSpace(ReadFootprintName(exportComponent)))
+                    try
                     {
-                        string identity = ComponentDebugIdentity(exportComponent);
-                        result.MissingFootprintNames.Add(identity);
-                        result.Warnings.Add(identity + ": no readable PCB library footprint name found.");
-                        continue;
-                    }
+                        if (preferFootprintName && string.Equals(fallbackPrefix, "Footprint", StringComparison.OrdinalIgnoreCase) && string.IsNullOrWhiteSpace(ReadFootprintName(exportComponent)))
+                        {
+                            string identity = ComponentDebugIdentity(exportComponent);
+                            result.MissingFootprintNames.Add(identity);
+                            result.Warnings.Add(identity + ": no readable PCB library footprint name found.");
+                            continue;
+                        }
 
-                    progress?.Invoke(new ShapeExportProgress
-                    {
-                        Message = "Exporting " + componentName,
-                        Detail = (index + 1).ToString(CultureInfo.InvariantCulture) + " of " + exportComponents.Count.ToString(CultureInfo.InvariantCulture),
-                        Percent = exportComponents.Count == 0 ? 100.0 : index * 100.0 / exportComponents.Count
-                    });
-
-                    List<SvgPrimitive> primitives = CaptureMechanicalShapePrimitives(component, diagnostics, componentName, out ShapeCaptureStats captureStats, isCancellationRequested);
-                    result.CaptureStats.Add(captureStats);
-                    if (primitives.Count == 0)
-                    {
-                        string footprintName = FirstNonEmpty(ReadFootprintName(exportComponent), componentName);
-                        result.MissingMechanical2Footprints.Add(footprintName);
-                        result.Warnings.Add(componentName + ": no Mechanical 2 shape primitives found.");
                         progress?.Invoke(new ShapeExportProgress
                         {
-                            Message = "Skipped " + componentName,
-                            Detail = "No Mechanical 2 shape primitives found",
+                            Message = "Exporting " + componentName,
+                            Detail = (index + 1).ToString(CultureInfo.InvariantCulture) + " of " + exportComponents.Count.ToString(CultureInfo.InvariantCulture),
+                            Percent = exportComponents.Count == 0 ? 100.0 : index * 100.0 / exportComponents.Count
+                        });
+
+                        List<SvgPrimitive> primitives = CaptureMechanicalShapePrimitives(component, diagnostics, componentName, out ShapeCaptureStats captureStats, isCancellationRequested);
+                        result.CaptureStats.Add(captureStats);
+                        if (primitives.Count == 0)
+                        {
+                            string footprintName = FirstNonEmpty(ReadFootprintName(exportComponent), componentName);
+                            result.MissingMechanical2Footprints.Add(footprintName);
+                            result.Warnings.Add(componentName + ": no Mechanical 2 shape primitives found.");
+                            progress?.Invoke(new ShapeExportProgress
+                            {
+                                Message = "Skipped " + componentName,
+                                Detail = "No Mechanical 2 shape primitives found",
+                                Percent = (index + 1) * 100.0 / exportComponents.Count
+                            });
+                            continue;
+                        }
+
+                        string fileName = UniqueFileName(SanitizeFileName(componentName), outputNames) + ".svg";
+                        string filePath = Path.Combine(folder, fileName);
+                        File.WriteAllText(filePath, BuildSvg(primitives), Utf8NoBom);
+                        result.FileCount++;
+                        result.PrimitiveCount += primitives.Count;
+                        progress?.Invoke(new ShapeExportProgress
+                        {
+                            Message = "Exported " + componentName,
+                            Detail = (index + 1).ToString(CultureInfo.InvariantCulture) + " of " + exportComponents.Count.ToString(CultureInfo.InvariantCulture),
                             Percent = (index + 1) * 100.0 / exportComponents.Count
                         });
-                        continue;
                     }
-
-                    string fileName = UniqueFileName(SanitizeFileName(componentName), usedNames) + ".svg";
-                    string filePath = Path.Combine(folder, fileName);
-                    File.WriteAllText(filePath, BuildSvg(primitives), Utf8NoBom);
-                    result.FileCount++;
-                    result.PrimitiveCount += primitives.Count;
-                    progress?.Invoke(new ShapeExportProgress
+                    catch (OperationCanceledException)
                     {
-                        Message = "Exported " + componentName,
-                        Detail = (index + 1).ToString(CultureInfo.InvariantCulture) + " of " + exportComponents.Count.ToString(CultureInfo.InvariantCulture),
-                        Percent = (index + 1) * 100.0 / exportComponents.Count
-                    });
+                        throw;
+                    }
+                    catch (Exception ex)
+                    {
+                        result.Errors.Add(componentName + ": " + ex.Message);
+                        EasyEDALoaderModule.Trace("Shape export failed for footprint " + componentName + ": " + ex);
+                        progress?.Invoke(new ShapeExportProgress
+                        {
+                            Message = "Failed " + componentName,
+                            Detail = ex.Message,
+                            Percent = (index + 1) * 100.0 / exportComponents.Count
+                        });
+                    }
                 }
             }
             finally
@@ -257,10 +309,26 @@ namespace EasyEDA_Loader
                 throw new InvalidOperationException("No components with a readable footprint pattern were found to export.");
             if (result.FileCount == 0 && result.MissingFootprintNames.Count > 0)
                 throw new InvalidOperationException(BuildNoFootprintNamesMessage(result));
+            if (result.FileCount == 0 && result.Errors.Count > 0)
+                throw new InvalidOperationException(BuildExportErrorsMessage(result.Errors));
             if (result.FileCount == 0)
                 throw new InvalidOperationException(BuildNoMechanical2Message(result));
 
             return result;
+        }
+
+        private static string BuildExportErrorsMessage(IEnumerable<string> errors)
+        {
+            List<string> messages = errors
+                .Where(error => !string.IsNullOrWhiteSpace(error))
+                .Take(20)
+                .ToList();
+            var builder = new StringBuilder();
+            builder.AppendLine("No SVG files were created because footprint export errors occurred.");
+            builder.AppendLine();
+            foreach (string message in messages)
+                builder.AppendLine(message);
+            return builder.ToString().TrimEnd();
         }
 
         private static string BuildNoMechanical2Message(ShapeExportResult result)
@@ -1934,6 +2002,8 @@ namespace EasyEDA_Loader
                     + ", primitives=" + result.PrimitiveCount.ToString(CultureInfo.InvariantCulture));
                 if (result.Warnings.Count > 0)
                     _text.AppendLine("Warnings: " + string.Join(" | ", result.Warnings));
+                if (result.Errors.Count > 0)
+                    _text.AppendLine("Errors: " + string.Join(" | ", result.Errors));
                 try
                 {
                     File.WriteAllText(FilePath, _text.ToString(), Utf8NoBom);
