@@ -251,10 +251,33 @@ namespace EasyEDA_Loader
                 && SwitchToSignalLayer(board, layer);
         }
 
-        private static IPCB_Board GetCurrentPcbBoard()
+        public static IPCB_Board GetCurrentPcbBoard(DXP.IServerDocumentView commandView = null)
         {
-            return TryInvokeResult(AltiumApi.GlobalVars.PCBServer, "GetCurrentPCBBoard") as IPCB_Board
-                ?? TryInvokeResult(AltiumApi.GlobalVars.PCBServer, "Internal_GetCurrentPCBBoard") as IPCB_Board;
+            return GetPcbBoardFromView(commandView)
+                ?? TryInvokeResult(AltiumApi.GlobalVars.PCBServer, "GetCurrentPCBBoard") as IPCB_Board
+                ?? TryInvokeResult(AltiumApi.GlobalVars.PCBServer, "Internal_GetCurrentPCBBoard") as IPCB_Board
+                ?? GetPcbBoardFromCurrentView();
+        }
+
+        private static IPCB_Board GetPcbBoardFromCurrentView()
+        {
+            object viewObject = TryInvokeResult(AltiumApi.GlobalVars.Client, "GetCurrentView")
+                ?? TryInvokeResult(AltiumApi.GlobalVars.Client, "Internal_GetCurrentView");
+            return GetPcbBoardFromView(viewObject as DXP.IServerDocumentView);
+        }
+
+        private static IPCB_Board GetPcbBoardFromView(DXP.IServerDocumentView commandView)
+        {
+            if (commandView == null)
+                return null;
+
+            object document = TryInvokeResult(commandView, "Internal_GetOwnerDocument");
+            string path = Convert.ToString(TryInvokeResult(document, "GetFileName"));
+            if (string.IsNullOrWhiteSpace(path))
+                return null;
+
+            return TryInvokeResult(AltiumApi.GlobalVars.PCBServer, "Internal_GetPCBBoardByPath", path) as IPCB_Board
+                ?? TryInvokeResult(AltiumApi.GlobalVars.PCBServer, "Internal_LoadPCBBoardByPath", path) as IPCB_Board;
         }
 
         private static bool SwitchToFirstDisplayedSignalLayer()
@@ -3098,6 +3121,10 @@ namespace EasyEDA_Loader
                 {
                     case "Internal_GetCurrentPCBBoard" when args.Length == 0:
                         return pcbServer.Internal_GetCurrentPCBBoard();
+                    case "Internal_GetPCBBoardByPath" when args.Length == 1 && args[0] is string boardPath:
+                        return pcbServer.Internal_GetPCBBoardByPath(boardPath);
+                    case "Internal_LoadPCBBoardByPath" when args.Length == 1 && args[0] is string loadBoardPath:
+                        return pcbServer.Internal_LoadPCBBoardByPath(loadBoardPath);
                     case "LayerSet" when args.Length == 0:
                         return pcbServer.LayerSet();
                     case "Internal_LayerSet" when args.Length == 0:

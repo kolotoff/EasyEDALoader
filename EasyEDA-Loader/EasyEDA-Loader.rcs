@@ -9,6 +9,8 @@ PL PLEasyEDALoader:EasyEDASwitchBottomSignalLayer Command='EasyEDA-Loader:EasyED
 PL PLEasyEDALoader:EasyEDASwitchNextSignalLayer Command='EasyEDA-Loader:EasyEDASwitchNextSignalLayer' Caption='&Next Signal' Shortcut1='Ctrl+Shift+Plus' Description='Switch to the next displayed signal layer' End
 PL PLEasyEDALoader:EasyEDASwitchPreviousSignalLayer Command='EasyEDA-Loader:EasyEDASwitchPreviousSignalLayer' Caption='&Previous Signal' Shortcut1='Ctrl+Shift+Minus' Description='Switch to the previous displayed signal layer' End
 PL PLEasyEDALoader:EasyEDASwitchToSelectedPrimitiveLayer Command='EasyEDA-Loader:EasyEDASwitchToSelectedPrimitiveLayer' Caption='Switch to Selected &Primitive Layer' Description='Switch to the selected PCB primitive layer' End
+PL PLEasyEDALoader:EasyEDAExportShapeAll Command='EasyEDA-Loader:EasyEDAExportShapeAll' Caption='&All components' Description='Export Mechanical 2 component shape SVG files for all PCB components or footprints' End
+PL PLEasyEDALoader:EasyEDAExportShapeSelected Command='EasyEDA-Loader:EasyEDAExportShapeSelected' Caption='&Selected component' Description='Export a Mechanical 2 component shape SVG file for the selected PCB component or active footprint' End
 
 Insertion MNSchematic_EasyEDALoader TargetID='MNSchematic_Tools10' InsertType='After' RefID0='MNSchematic_Tools30'
     Link MNSchematic_EasyEDALoader10 PLID='PLEasyEDALoader:EasyEDARun' End
@@ -18,6 +20,11 @@ Insertion MNPCB_EasyEDALoader TargetID='MNPCB_Tools10' InsertType='Before' RefID
     Tree MNPCB_EasyEDALoaderTree Caption='&EasyEDA' Popup='1'
         Link MNPCB_EasyEDALoader10 PLID='PLEasyEDALoader:EasyEDARunPcb' End
         Separator MNPCB_EasyEDALoader20 End
+        Tree MNPCB_EasyEDAExportShapeTree Caption='Export &shape' Popup='1'
+            Link MNPCB_EasyEDAExportShape10 PLID='PLEasyEDALoader:EasyEDAExportShapeAll' End
+            Link MNPCB_EasyEDAExportShape20 PLID='PLEasyEDALoader:EasyEDAExportShapeSelected' End
+        End
+        Separator MNPCB_EasyEDALoader50 End
         Tree MNPCB_EasyEDALayerSwitchTree Caption='&Layer Switch' Popup='1'
             Link MNPCB_EasyEDALayerSwitch10 PLID='PLEasyEDALoader:EasyEDASwitchTopSignalLayer' End
             Link MNPCB_EasyEDALayerSwitch20 PLID='PLEasyEDALoader:EasyEDASwitchBottomSignalLayer' End
@@ -36,6 +43,11 @@ Insertion MNPCBLib_EasyEDALoader TargetID='MNPCBLib_Tools10' InsertType='After' 
         Link MNPCBLib_EasyEDALoader30 PLID='PLEasyEDALoader:EasyEDAReproject3D' End
         Link MNPCBLib_EasyEDALoader40 PLID='PLEasyEDALoader:EasyEDAAlign3DModel' End
         Link MNPCBLib_EasyEDALoader50 PLID='PLEasyEDALoader:EasyEDACreateCustomPadFromSelected' End
+        Separator MNPCBLib_EasyEDALoader60 End
+        Tree MNPCBLib_EasyEDAExportShapeTree Caption='Export &shape' Popup='1'
+            Link MNPCBLib_EasyEDAExportShape10 PLID='PLEasyEDALoader:EasyEDAExportShapeAll' End
+            Link MNPCBLib_EasyEDAExportShape20 PLID='PLEasyEDALoader:EasyEDAExportShapeSelected' End
+        End
     End
 End
 

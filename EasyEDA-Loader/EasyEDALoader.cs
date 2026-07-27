@@ -55,6 +55,10 @@ namespace EasyEDA_Loader
             RegisterCommand("EasyEDA-Loader:EasyEDASwitchPreviousSignalLayer", new CommandProc(SwitchPreviousSignalLayer));
             RegisterCommand("EasyEDASwitchToSelectedPrimitiveLayer", new CommandProc(SwitchToSelectedPrimitiveLayer));
             RegisterCommand("EasyEDA-Loader:EasyEDASwitchToSelectedPrimitiveLayer", new CommandProc(SwitchToSelectedPrimitiveLayer));
+            RegisterCommand("EasyEDAExportShapeAll", new CommandProc(ExportShapeAll));
+            RegisterCommand("EasyEDA-Loader:EasyEDAExportShapeAll", new CommandProc(ExportShapeAll));
+            RegisterCommand("EasyEDAExportShapeSelected", new CommandProc(ExportShapeSelected));
+            RegisterCommand("EasyEDA-Loader:EasyEDAExportShapeSelected", new CommandProc(ExportShapeSelected));
         }
 
         private void RegisterCommand(string argCommandId, CommandProc commandProc)
@@ -415,6 +419,86 @@ namespace EasyEDA_Loader
             MarkCurrentDocumentModified();
             EEPCB.GetPcbGroupBoard(component)?.ViewManager_FullUpdate();
             Trace($"CreateCustomPadFromSelected completed. Replaced={replacedCount}");
+        }
+
+        private void ExportShapeAll(
+          IServerDocumentView argContext,
+          ref string argParameters)
+        {
+            ExportShape(argContext, ShapeExportScope.AllComponents);
+        }
+
+        private void ExportShapeSelected(
+          IServerDocumentView argContext,
+          ref string argParameters)
+        {
+            ExportShape(argContext, ShapeExportScope.SelectedComponent);
+        }
+
+        private void ExportShape(IServerDocumentView argContext, ShapeExportScope scope)
+        {
+            bool diagnosticsEnabled = ShapeExportSettings.LoadDiagnosticsEnabled();
+            if (diagnosticsEnabled)
+                Trace("ExportShape entered. Scope=" + scope);
+            string folder = SelectShapeExportFolder();
+            if (string.IsNullOrWhiteSpace(folder))
+            {
+                if (diagnosticsEnabled)
+                    Trace("ExportShape cancelled by user.");
+                return;
+            }
+
+            ShapeExportSettings.SaveLastFolder(folder);
+            if (diagnosticsEnabled)
+                Trace("ExportShape diagnostics enabled.");
+            ShapeExportResult result;
+            using (var progressForm = new ShapeExportProgressForm())
+            {
+                progressForm.Show();
+                progressForm.Report(new ShapeExportProgress
+                {
+                    Message = "Preparing export...",
+                    Detail = folder
+                });
+
+                try
+                {
+                    result = PcbShapeSvgExporter.Export(scope, folder, argContext, progressForm.Report, diagnosticsEnabled, () => progressForm.IsCancellationRequested);
+                }
+                catch (OperationCanceledException)
+                {
+                    if (diagnosticsEnabled)
+                        Trace("ExportShape cancelled during export.");
+                    return;
+                }
+
+                progressForm.Report(new ShapeExportProgress
+                {
+                    Message = "Export complete",
+                    Detail = $"{result.FileCount} SVG file(s), {result.PrimitiveCount} primitive(s)",
+                    Percent = 100
+                });
+            }
+
+            string message = $"Exported {result.FileCount} SVG file(s) from {result.ComponentCount} component(s), {result.PrimitiveCount} primitive(s).";
+            if (diagnosticsEnabled && result.Warnings.Count > 0)
+                Trace("ExportShape warnings: " + string.Join(" | ", result.Warnings));
+            if (diagnosticsEnabled)
+                Trace("ExportShape completed. " + message.Replace(Environment.NewLine, " | "));
+        }
+
+        private string SelectShapeExportFolder()
+        {
+            using (var dialog = new FolderBrowserDialog())
+            {
+                dialog.Description = "Select SVG export folder";
+                dialog.ShowNewFolderButton = true;
+                string lastFolder = ShapeExportSettings.LoadLastFolder();
+                if (!string.IsNullOrWhiteSpace(lastFolder))
+                    dialog.SelectedPath = lastFolder;
+
+                return dialog.ShowDialog() == DialogResult.OK ? dialog.SelectedPath : "";
+            }
         }
 
         private void SwitchTopSignalLayer(
