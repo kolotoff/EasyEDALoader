@@ -3,6 +3,7 @@ using PCB;
 using SCH;
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
@@ -55,6 +56,8 @@ namespace EasyEDA_Loader
             RegisterCommand("EasyEDA-Loader:EasyEDASwitchPreviousSignalLayer", new CommandProc(SwitchPreviousSignalLayer));
             RegisterCommand("EasyEDASwitchToSelectedPrimitiveLayer", new CommandProc(SwitchToSelectedPrimitiveLayer));
             RegisterCommand("EasyEDA-Loader:EasyEDASwitchToSelectedPrimitiveLayer", new CommandProc(SwitchToSelectedPrimitiveLayer));
+            RegisterCommand("EasyEDADuplicateLayout", new CommandProc(DuplicateLayout));
+            RegisterCommand("EasyEDA-Loader:EasyEDADuplicateLayout", new CommandProc(DuplicateLayout));
             RegisterCommand("EasyEDAExportShapeAll", new CommandProc(ExportShapeAll));
             RegisterCommand("EasyEDA-Loader:EasyEDAExportShapeAll", new CommandProc(ExportShapeAll));
             RegisterCommand("EasyEDAExportShapeSelected", new CommandProc(ExportShapeSelected));
@@ -419,6 +422,44 @@ namespace EasyEDA_Loader
             MarkCurrentDocumentModified();
             EEPCB.GetPcbGroupBoard(component)?.ViewManager_FullUpdate();
             Trace($"CreateCustomPadFromSelected completed. Replaced={replacedCount}");
+        }
+
+        private void DuplicateLayout(
+          IServerDocumentView argContext,
+          ref string argParameters)
+        {
+            Trace("DuplicateLayout entered.");
+            if (IsLoaderDialogOpen())
+            {
+                Trace("DuplicateLayout ignored because dialog is already open.");
+                return;
+            }
+
+            if (!LayoutDuplicationCapture.TryCaptureLayoutDuplicationSession(argContext, out LayoutDuplicationSession session, out string error))
+                throw new InvalidOperationException(error);
+
+            Interlocked.Exchange(ref loaderDialogOpen, 1);
+            try
+            {
+                var dialog = new LayoutDuplicatorDialog(session)
+                {
+                    ShowActivated = true,
+                    WindowStartupLocation = System.Windows.WindowStartupLocation.CenterOwner
+                };
+
+                IntPtr ownerHandle = Process.GetCurrentProcess().MainWindowHandle;
+                if (ownerHandle != IntPtr.Zero)
+                    new System.Windows.Interop.WindowInteropHelper(dialog).Owner = ownerHandle;
+
+                bool? result = dialog.ShowDialog();
+                Trace("DuplicateLayout dialog closed with result: " + result);
+                if (result == true)
+                    MarkCurrentDocumentModified();
+            }
+            finally
+            {
+                Interlocked.Exchange(ref loaderDialogOpen, 0);
+            }
         }
 
         private void ExportShapeAll(

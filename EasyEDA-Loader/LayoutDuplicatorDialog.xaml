@@ -1,0 +1,161 @@
+<Window x:Class="EasyEDA_Loader.LayoutDuplicatorDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Duplicate layout"
+        Height="680"
+        Width="1180"
+        MinHeight="560"
+        MinWidth="980"
+        WindowStartupLocation="CenterOwner"
+        ShowInTaskbar="False"
+        Loaded="Window_Loaded">
+    <Grid Margin="12">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <Grid Grid.Row="0" Margin="0,0,0,10">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="320"/>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+            <TextBlock Grid.Column="0"
+                       Text="Model"
+                       VerticalAlignment="Center"
+                       Margin="0,0,8,0"/>
+            <ComboBox x:Name="modelComboBox"
+                      Grid.Column="1"
+                      DisplayMemberPath="Name"
+                      MinHeight="24"
+                      SelectionChanged="ModelComboBox_SelectionChanged"/>
+            <Button Grid.Column="2"
+                    Content="Refresh"
+                    MinWidth="72"
+                    Margin="8,0,12,0"
+                    Click="RefreshModelsButton_Click"/>
+            <CheckBox x:Name="useSchematicMatchingCheckBox"
+                      Grid.Column="3"
+                      Foreground="Black"
+                      IsChecked="True"
+                      VerticalAlignment="Center"
+                      Margin="0,0,12,0"
+                      Checked="UseSchematicMatchingCheckBox_Changed"
+                      Unchecked="UseSchematicMatchingCheckBox_Changed">
+                <TextBlock Text="Use schematic matching" Foreground="Black"/>
+            </CheckBox>
+            <TextBlock x:Name="modelStatusText"
+                       Grid.Column="4"
+                       VerticalAlignment="Center"
+                       Text="Checking Ollama..."/>
+        </Grid>
+
+        <Grid Grid.Row="1">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="12"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="*"/>
+            </Grid.RowDefinitions>
+
+            <TextBlock Grid.Row="0"
+                       Grid.Column="0"
+                       Text="Source components"
+                       FontWeight="SemiBold"
+                       Margin="0,0,0,6"/>
+            <DataGrid x:Name="sourceComponentsGrid"
+                      Grid.Row="1"
+                      Grid.Column="0"
+                      AutoGenerateColumns="False"
+                      CanUserAddRows="False"
+                      CanUserDeleteRows="False"
+                      SelectionMode="Single"
+                      SelectionUnit="FullRow"
+                      IsReadOnly="True"
+                      SelectionChanged="SourceComponentsGrid_SelectionChanged">
+                <DataGrid.Columns>
+                    <DataGridTextColumn Header="Designator" Binding="{Binding Designator}" Width="90"/>
+                    <DataGridTextColumn Header="Comment" Binding="{Binding Comment}" Width="150"/>
+                    <DataGridTextColumn Header="Description" Binding="{Binding Description}" Width="*"/>
+                    <DataGridTextColumn Header="Footprint" Binding="{Binding Footprint}" Width="140"/>
+                    <DataGridTextColumn Header="Layer" Binding="{Binding Layer}" Width="80"/>
+                    <DataGridTextColumn Header="X" Binding="{Binding XMm, StringFormat=0.###}" Width="70"/>
+                    <DataGridTextColumn Header="Y" Binding="{Binding YMm, StringFormat=0.###}" Width="70"/>
+                    <DataGridTextColumn Header="Rot" Binding="{Binding Rotation, StringFormat=0.#}" Width="60"/>
+                </DataGrid.Columns>
+            </DataGrid>
+
+            <TextBlock Grid.Row="0"
+                       Grid.Column="2"
+                       Text="Target anchors"
+                       FontWeight="SemiBold"
+                       Margin="0,0,0,6"/>
+            <DataGrid x:Name="targetAnchorsGrid"
+                      Grid.Row="1"
+                      Grid.Column="2"
+                      AutoGenerateColumns="False"
+                      CanUserAddRows="False"
+                      CanUserDeleteRows="False"
+                      SelectionMode="Extended"
+                      SelectionUnit="FullRow"
+                      IsReadOnly="False">
+                <DataGrid.Columns>
+                    <DataGridCheckBoxColumn Header="" Binding="{Binding IsChecked, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Width="38"/>
+                    <DataGridTextColumn Header="Designator" Binding="{Binding Designator}" Width="90" IsReadOnly="True"/>
+                    <DataGridTextColumn Header="Comment" Binding="{Binding Comment}" Width="150" IsReadOnly="True"/>
+                    <DataGridTextColumn Header="Description" Binding="{Binding Description}" Width="*" IsReadOnly="True"/>
+                    <DataGridTextColumn Header="Footprint" Binding="{Binding Footprint}" Width="140" IsReadOnly="True"/>
+                    <DataGridTextColumn Header="Layer" Binding="{Binding Layer}" Width="80" IsReadOnly="True"/>
+                    <DataGridTextColumn Header="X" Binding="{Binding XMm, StringFormat=0.###}" Width="70" IsReadOnly="True"/>
+                    <DataGridTextColumn Header="Y" Binding="{Binding YMm, StringFormat=0.###}" Width="70" IsReadOnly="True"/>
+                </DataGrid.Columns>
+            </DataGrid>
+        </Grid>
+
+        <Grid Grid.Row="2" Margin="0,12,0,0">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+            </Grid.RowDefinitions>
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+
+            <TextBlock x:Name="operationProgressText"
+                       Grid.Row="0"
+                       Grid.Column="0"
+                       Grid.ColumnSpan="3"
+                       Text=""
+                       Margin="0,0,0,5"/>
+            <ProgressBar x:Name="operationProgressBar"
+                         Grid.Row="1"
+                         Grid.Column="0"
+                         Height="8"
+                         Minimum="0"
+                         Maximum="100"
+                         IsIndeterminate="False"
+                         Margin="0,0,12,0"/>
+            <Button x:Name="duplicateButton"
+                    Grid.Row="1"
+                    Grid.Column="1"
+                    Content="Duplicate"
+                    MinWidth="90"
+                    Margin="0,0,8,0"
+                    Click="DuplicateButton_Click"/>
+            <Button Grid.Row="1"
+                    Grid.Column="2"
+                    Content="Cancel"
+                    MinWidth="80"
+                    Click="CancelButton_Click"/>
+        </Grid>
+    </Grid>
+</Window>

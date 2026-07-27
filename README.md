@@ -18,6 +18,13 @@ Using the extension is pretty straight forward once it is installed, there will 
 
 # Runtime Dependencies
 
+## Experimental local AI layout duplication
+
+The local AI PCB layout duplicator implementation is included in the source,
+but its `Tools -> EasyEDA -> Duplicate layout` menu entry is temporarily
+disabled. The command is not currently exposed as a normal user-facing feature
+while its capture, mapping, and apply workflow is being validated.
+
 ## F3D for STEP preview
 
 The interactive 3D preview in the loader dialog uses [F3D](https://f3d.app/) to
