@@ -551,132 +551,99 @@ namespace EasyEDA_Loader
             bool diagnosticsEnabled = ShapeExportSettings.LoadDiagnosticsEnabled();
             var errors = new List<string>();
             var usedNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            IServerDocument originalDocument = GetCurrentDocument();
             bool cancelled = false;
 
             using (var progressForm = new ShapeExportProgressForm())
             {
                 progressForm.Show();
-                try
+                for (int libraryIndex = 0; libraryIndex < libraryFiles.Count; libraryIndex++)
                 {
-                    for (int libraryIndex = 0; libraryIndex < libraryFiles.Count; libraryIndex++)
+                    if (progressForm.IsCancellationRequested)
                     {
-                        if (progressForm.IsCancellationRequested)
-                        {
-                            cancelled = true;
-                            break;
-                        }
-
-                        string libraryPath = libraryFiles[libraryIndex];
-                        string libraryName = Path.GetFileName(libraryPath);
-                        IServerDocument libraryDocument = null;
-                        bool openedByExport = false;
-                        try
-                        {
-                            progressForm.Report(new ShapeExportProgress
-                            {
-                                Message = "Opening " + libraryName,
-                                Detail = (libraryIndex + 1) + " of " + libraryFiles.Count,
-                                Percent = libraryIndex * 100.0 / libraryFiles.Count
-                            });
-
-                            libraryDocument = AltiumApi.GlobalVars.Client.Internal_GetDocumentByPath(libraryPath) as IServerDocument;
-                            if (libraryDocument == null)
-                            {
-                                libraryDocument = AltiumApi.GlobalVars.Client.OpenDocument("PcbLib", libraryPath);
-                                openedByExport = libraryDocument != null;
-                            }
-
-                            if (libraryDocument == null)
-                                throw new InvalidOperationException("Altium could not open the PCB library.");
-
-                            AltiumApi.GlobalVars.Client.ShowDocument(libraryDocument);
-                            Application.DoEvents();
-
-                            IServerDocument activeDocument = GetCurrentDocument();
-                            if (activeDocument == null || !SameFilePath(activeDocument.GetFileName(), libraryPath))
-                                throw new InvalidOperationException("Altium did not activate the requested PCB library.");
-
-                            IPCB_Library pcbLibrary = AltiumApi.GlobalVars.PCBServer.GetCurrentPCBLibrary();
-                            if (pcbLibrary == null)
-                                throw new InvalidOperationException("Altium did not return the opened PCB library.");
-
-                            int currentLibraryIndex = libraryIndex;
-                            Action<ShapeExportProgress> reportLibraryProgress = progress =>
-                            {
-                                double localPercent = progress?.Percent ?? 0.0;
-                                progressForm.Report(new ShapeExportProgress
-                                {
-                                    Message = progress?.Message ?? ("Exporting " + libraryName),
-                                    Detail = libraryName + " | " + (progress?.Detail ?? ""),
-                                    Percent = (currentLibraryIndex + (localPercent / 100.0)) * 100.0 / libraryFiles.Count
-                                });
-                            };
-
-                            ShapeExportResult result = PcbShapeSvgExporter.ExportLibrary(
-                                pcbLibrary,
-                                targetFolder,
-                                reportLibraryProgress,
-                                diagnosticsEnabled,
-                                () => progressForm.IsCancellationRequested,
-                                usedNames);
-
-                            if (diagnosticsEnabled && result.Warnings.Count > 0)
-                                Trace(libraryName + " shape export warnings: " + string.Join(" | ", result.Warnings));
-                            foreach (string error in result.Errors)
-                                errors.Add(libraryName + " / " + error);
-                        }
-                        catch (OperationCanceledException)
-                        {
-                            cancelled = true;
-                        }
-                        catch (Exception ex)
-                        {
-                            errors.Add(libraryName + ": " + ex.Message);
-                            Trace("Shape library export failed for " + libraryPath + ": " + ex);
-                            progressForm.Report(new ShapeExportProgress
-                            {
-                                Message = "Failed " + libraryName,
-                                Detail = ex.Message,
-                                Percent = (libraryIndex + 1) * 100.0 / libraryFiles.Count
-                            });
-                        }
-                        finally
-                        {
-                            if (openedByExport && libraryDocument != null)
-                            {
-                                try
-                                {
-                                    AltiumApi.GlobalVars.Client.CloseDocument(libraryDocument);
-                                    Application.DoEvents();
-                                }
-                                catch (Exception ex)
-                                {
-                                    errors.Add(libraryName + ": could not close library: " + ex.Message);
-                                    Trace("Shape library close failed for " + libraryPath + ": " + ex);
-                                }
-                            }
-                        }
-
-                        if (cancelled)
-                            break;
+                        cancelled = true;
+                        break;
                     }
-                }
-                finally
-                {
-                    if (originalDocument != null)
+
+                    string libraryPath = libraryFiles[libraryIndex];
+                    string libraryName = Path.GetFileName(libraryPath);
+                    IPCB_Library pcbLibrary = null;
+                    bool loadedByExport = false;
+                    try
                     {
+                        progressForm.Report(new ShapeExportProgress
+                        {
+                            Message = "Loading " + libraryName,
+                            Detail = (libraryIndex + 1) + " of " + libraryFiles.Count,
+                            Percent = libraryIndex * 100.0 / libraryFiles.Count
+                        });
+
+                        pcbLibrary = AltiumApi.GlobalVars.PCBServer.GetPCBLibraryByPath(libraryPath);
+                        if (pcbLibrary == null)
+                        {
+                            pcbLibrary = AltiumApi.GlobalVars.PCBServer.LoadPCBLibraryFromFile(libraryPath);
+                            loadedByExport = pcbLibrary != null;
+                        }
+
+                        if (pcbLibrary == null)
+                            throw new InvalidOperationException("Altium could not load the PCB library.");
+
+                        int currentLibraryIndex = libraryIndex;
+                        Action<ShapeExportProgress> reportLibraryProgress = progress =>
+                        {
+                            double localPercent = progress?.Percent ?? 0.0;
+                            progressForm.Report(new ShapeExportProgress
+                            {
+                                Message = progress?.Message ?? ("Exporting " + libraryName),
+                                Detail = libraryName + " | " + (progress?.Detail ?? ""),
+                                Percent = (currentLibraryIndex + (localPercent / 100.0)) * 100.0 / libraryFiles.Count
+                            });
+                        };
+
+                        ShapeExportResult result = PcbShapeSvgExporter.ExportLibrary(
+                            pcbLibrary,
+                            targetFolder,
+                            reportLibraryProgress,
+                            diagnosticsEnabled,
+                            () => progressForm.IsCancellationRequested,
+                            usedNames);
+
+                        if (diagnosticsEnabled && result.Warnings.Count > 0)
+                            Trace(libraryName + " shape export warnings: " + string.Join(" | ", result.Warnings));
+                        foreach (string error in result.Errors)
+                            errors.Add(libraryName + " / " + error);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        cancelled = true;
+                    }
+                    catch (Exception ex)
+                    {
+                        errors.Add(libraryName + ": " + ex.Message);
+                        Trace("Shape library export failed for " + libraryPath + ": " + ex);
+                        progressForm.Report(new ShapeExportProgress
+                        {
+                            Message = "Failed " + libraryName,
+                            Detail = ex.Message,
+                            Percent = (libraryIndex + 1) * 100.0 / libraryFiles.Count
+                        });
+                    }
+                    finally
+                    {
+                        if (loadedByExport && pcbLibrary != null)
                         try
                         {
-                            AltiumApi.GlobalVars.Client.ShowDocument(originalDocument);
+                            AltiumApi.GlobalVars.PCBServer.DestroyPCBLibrary(ref pcbLibrary);
                             Application.DoEvents();
                         }
                         catch (Exception ex)
                         {
-                            errors.Add("Could not restore the original Altium document: " + ex.Message);
-                            Trace("Shape library export document restore failed: " + ex);
+                            errors.Add(libraryName + ": could not unload library: " + ex.Message);
+                            Trace("Shape library unload failed for " + libraryPath + ": " + ex);
                         }
                     }
+
+                    if (cancelled)
+                        break;
                 }
 
                 if (!cancelled)

@@ -14,7 +14,9 @@ remembered across Altium restarts; all shape-export commands share the same
 target-folder setting. A failure in one footprint or library is collected while
 the remaining footprints and libraries continue. Collected errors are shown
 once after processing finishes in a selectable, read-only error list with a
-`Copy to clipboard` button.
+`Copy to clipboard` button. Selected libraries are loaded directly into the PCB
+server and unloaded after export without opening Altium documents, so they are
+not added to `File > Recent Documents`.
 
 The exporter writes SVG files from Mechanical 2 shape primitives. Coordinates are relative to the footprint or component origin.
 

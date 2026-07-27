@@ -10308,11 +10308,11 @@ namespace StepCleaner.Tests
             AssertContains(module, "ShapeExportSettings.LoadLastLibraryFolder()", "selected-library export must restore its source folder", failures);
             AssertContains(module, "ShapeExportSettings.SaveLastLibraryFolder(", "selected-library export must persist its source folder", failures);
             AssertContains(module, "ShapeExportSettings.SaveLastFolder(dialog.SelectedPath);", "all shape export commands must persist the shared target folder", failures);
-            AssertContains(module, "Internal_GetDocumentByPath(libraryPath)", "selected-library export must reuse already-open library documents", failures);
-            AssertContains(module, "OpenDocument(\"PcbLib\", libraryPath)", "selected-library export must open each PcbLib through Altium", failures);
-            AssertContains(module, "PcbShapeSvgExporter.ExportLibrary(", "selected-library export must export every footprint from each opened library", failures);
-            AssertContains(module, "CloseDocument(libraryDocument)", "selected-library export must close library documents it opened", failures);
-            AssertContains(module, "if (openedByExport && libraryDocument != null)", "selected-library export must leave documents that were already open untouched", failures);
+            AssertContains(module, "GetPCBLibraryByPath(libraryPath)", "selected-library export must reuse a PCB-server library that is already loaded", failures);
+            AssertContains(module, "LoadPCBLibraryFromFile(libraryPath)", "selected-library export must load PcbLib files directly through the PCB server", failures);
+            AssertContains(module, "PcbShapeSvgExporter.ExportLibrary(", "selected-library export must export every footprint from each loaded library", failures);
+            AssertContains(module, "DestroyPCBLibrary(ref pcbLibrary)", "selected-library export must unload PCB-server libraries it loaded", failures);
+            AssertContains(module, "if (loadedByExport && pcbLibrary != null)", "selected-library export must leave libraries that were already loaded untouched", failures);
             AssertContains(module, "() => progressForm.IsCancellationRequested", "selected-library export must pass progress-dialog cancellation into the exporter", failures);
             AssertContains(module, "if (errors.Count > 0)", "selected-library export must show its final dialog only when errors occurred", failures);
             AssertDoesNotContain(
@@ -10328,6 +10328,13 @@ namespace StepCleaner.Tests
             AssertContains(shapeExporter, "result.Errors.Add(componentName + \": \" + ex.Message);", "shape exporter must collect individual footprint failures", failures);
             AssertContains(shapeExporter, "catch (OperationCanceledException)", "shape exporter must preserve cancellation while isolating footprint errors", failures);
             AssertContains(module, "foreach (string error in result.Errors)", "selected-library export must collect footprint errors and continue with later libraries", failures);
+            int selectedLibrariesHandlerStart = module.IndexOf("private void ExportSelectedShapeLibraries", StringComparison.Ordinal);
+            int selectedLibrariesHandlerEnd = module.IndexOf("private static void ShowShapeExportErrors", selectedLibrariesHandlerStart, StringComparison.Ordinal);
+            string selectedLibrariesHandler = selectedLibrariesHandlerStart >= 0 && selectedLibrariesHandlerEnd > selectedLibrariesHandlerStart
+                ? module.Substring(selectedLibrariesHandlerStart, selectedLibrariesHandlerEnd - selectedLibrariesHandlerStart)
+                : string.Empty;
+            AssertDoesNotContain(selectedLibrariesHandler, "OpenDocument(", "selected-library export must not create Altium documents or recent-document entries", failures);
+            AssertDoesNotContain(selectedLibrariesHandler, "CloseDocument(", "selected-library export must not use Workspace Manager's recent-document-producing close path", failures);
             AssertContains(shapeExportSettings, "shape-export-library-folder.txt", "selected-library source folder must persist across Altium restarts", failures);
             AssertContains(shapeExportSettings, "shape-export-folder.txt", "shape export target folder must persist across Altium restarts", failures);
             AssertContains(shapeExportProgress, "Text = \"Cancel\"", "shape export progress dialog must have a Cancel button", failures);
