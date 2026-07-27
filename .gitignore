@@ -27,6 +27,13 @@ bld/
 packages/
 Assemblies/
 
+# Codex workspace temporary files
+/.codex-temp/
+/.codex-tmp/
+
+# Ulanzi device SDK runtime logs
+/KWDMLog/
+
 # .NET Core
 project.lock.json
 project.fragment.lock.json
