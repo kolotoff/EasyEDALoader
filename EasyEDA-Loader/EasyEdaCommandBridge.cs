@@ -56,11 +56,23 @@ namespace EasyEDA_Loader
                 {
                     return;
                 }
+                catch (IOException ex) when (IsPipeInstanceBusy(ex))
+                {
+                    EasyEDALoaderModule.Trace("EasyEdaCommandBridge disabled in this Altium process because another EasyEDALoader bridge is already listening.");
+                    return;
+                }
                 catch (Exception ex)
                 {
                     EasyEDALoaderModule.Trace("EasyEdaCommandBridge listen failed: " + ex);
+                    await Task.Delay(TimeSpan.FromSeconds(1), cancellationToken).ConfigureAwait(false);
                 }
             }
+        }
+
+        private static bool IsPipeInstanceBusy(IOException exception)
+        {
+            return exception != null
+                && exception.Message.IndexOf("All pipe instances are busy", StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
         private async Task HandleClientAsync(Stream stream, CancellationToken cancellationToken)

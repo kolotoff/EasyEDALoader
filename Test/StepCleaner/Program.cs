@@ -10234,6 +10234,24 @@ namespace StepCleaner.Tests
             string eePcb = File.ReadAllText(Path.Combine(repoRoot, "EasyEDA-Loader", "EEPCB.cs"));
             string footprintData = File.ReadAllText(Path.Combine(repoRoot, "EasyEDA-Loader", "FootprintData.cs"));
             string footprint3dModel = File.ReadAllText(Path.Combine(repoRoot, "EasyEDA-Loader", "FootprintShapes", "EeFootprint3dModel.cs"));
+            string layoutModelsPath = Path.Combine(repoRoot, "EasyEDA-Loader", "LayoutDuplicationModels.cs");
+            string layoutCapturePath = Path.Combine(repoRoot, "EasyEDA-Loader", "LayoutDuplicationCapture.cs");
+            string layoutMapperPath = Path.Combine(repoRoot, "EasyEDA-Loader", "LayoutDuplicationMapper.cs");
+            string layoutApplyPath = Path.Combine(repoRoot, "EasyEDA-Loader", "LayoutDuplicationApply.cs");
+            string layoutSchematicMatcherPath = Path.Combine(repoRoot, "EasyEDA-Loader", "LayoutDuplicationSchematicMatcher.cs");
+            string layoutDialogXamlPath = Path.Combine(repoRoot, "EasyEDA-Loader", "LayoutDuplicatorDialog.xaml");
+            string layoutDialogCodePath = Path.Combine(repoRoot, "EasyEDA-Loader", "LayoutDuplicatorDialog.xaml.cs");
+            string layoutViewModelsPath = Path.Combine(repoRoot, "EasyEDA-Loader", "LayoutDuplicatorViewModels.cs");
+            string ollamaClientPath = Path.Combine(repoRoot, "EasyEDA-Loader", "OllamaLayoutMappingClient.cs");
+            string layoutModels = ReadFileIfExists(layoutModelsPath);
+            string layoutCapture = ReadFileIfExists(layoutCapturePath);
+            string layoutMapper = ReadFileIfExists(layoutMapperPath);
+            string layoutApply = ReadFileIfExists(layoutApplyPath);
+            string layoutSchematicMatcher = ReadFileIfExists(layoutSchematicMatcherPath);
+            string layoutDialogXaml = ReadFileIfExists(layoutDialogXamlPath);
+            string layoutDialogCode = ReadFileIfExists(layoutDialogCodePath);
+            string layoutViewModels = ReadFileIfExists(layoutViewModelsPath);
+            string ollamaClient = ReadFileIfExists(ollamaClientPath);
 
             AssertContains(ins, "Command  Name = 'EasyEDAReproject3D'", "PcbLib action command must be declared in the INS file", failures);
             AssertContains(ins, "Command  Name = 'EasyEDAAlign3DModel'", "PcbLib alignment command must be declared in the INS file", failures);
@@ -10243,6 +10261,7 @@ namespace StepCleaner.Tests
             AssertContains(ins, "Command  Name = 'EasyEDASwitchPreviousSignalLayer'", "PCB layer switch previous command must be declared in the INS file", failures);
             AssertContains(ins, "Command  Name = 'EasyEDASwitchToSelectedPrimitiveLayer'", "PCB selected-primitive layer switch command must be declared in the INS file", failures);
             AssertContains(ins, "Command  Name = 'EasyEDACreateCustomPadFromSelected'", "PcbLib custom-pad command must be declared in the INS file", failures);
+            AssertContains(ins, "Command  Name = 'EasyEDADuplicateLayout'", "PCB layout duplicator command must be declared in the INS file", failures);
 
             AssertContains(rcs, "Caption='&EasyEDA'", "PcbLib menu should expose an EasyEDA submenu", failures);
             AssertContains(rcs, "Caption='&Loader...'", "Loader command should move under the EasyEDA submenu", failures);
@@ -10256,6 +10275,8 @@ namespace StepCleaner.Tests
             AssertContains(rcs, "PLID='PLEasyEDALoader:EasyEDASwitchNextSignalLayer'", "Layer Switch menu should include next signal command", failures);
             AssertContains(rcs, "PLID='PLEasyEDALoader:EasyEDASwitchPreviousSignalLayer'", "Layer Switch menu should include previous signal command", failures);
             AssertContains(rcs, "PLID='PLEasyEDALoader:EasyEDASwitchToSelectedPrimitiveLayer'", "Layer Switch menu should include selected-primitive layer command", failures);
+            AssertContains(rcs, "PL PLEasyEDALoader:EasyEDADuplicateLayout Command='EasyEDA-Loader:EasyEDADuplicateLayout' Caption='Duplicate layout'", "Duplicate layout command should have a PCB menu resource entry", failures);
+            AssertDoesNotContain(rcs, "PLID='PLEasyEDALoader:EasyEDADuplicateLayout'", "Duplicate layout must remain hidden from Tools > EasyEDA while the experimental workflow is disabled", failures);
             AssertContains(rcs, "PLEasyEDALoader:EasyEDASwitchTopSignalLayer Command='EasyEDA-Loader:EasyEDASwitchTopSignalLayer' Caption='&Top' Shortcut1='Ctrl+Plus'", "Top layer command should default to Ctrl+Plus", failures);
             AssertContains(rcs, "PLEasyEDALoader:EasyEDASwitchBottomSignalLayer Command='EasyEDA-Loader:EasyEDASwitchBottomSignalLayer' Caption='&Bottom' Shortcut1='Ctrl+Minus'", "Bottom layer command should default to Ctrl+Minus", failures);
             AssertContains(rcs, "PLEasyEDALoader:EasyEDASwitchNextSignalLayer Command='EasyEDA-Loader:EasyEDASwitchNextSignalLayer' Caption='&Next Signal' Shortcut1='Ctrl+Shift+Plus'", "Next signal command should default to Ctrl+Shift+Plus", failures);
@@ -10270,6 +10291,8 @@ namespace StepCleaner.Tests
             AssertContains(module, "RegisterCommand(\"EasyEDASwitchPreviousSignalLayer\"", "module must register the previous layer switch command", failures);
             AssertContains(module, "RegisterCommand(\"EasyEDASwitchToSelectedPrimitiveLayer\"", "module must register the selected-primitive layer switch command", failures);
             AssertContains(module, "RegisterCommand(\"EasyEDACreateCustomPadFromSelected\"", "module must register the Create Custom Pad from Selected command", failures);
+            AssertContains(module, "RegisterCommand(\"EasyEDADuplicateLayout\"", "module must register the Duplicate layout command", failures);
+            AssertContains(module, "RegisterCommand(\"EasyEDA-Loader:EasyEDADuplicateLayout\"", "module must register the namespaced Duplicate layout command", failures);
             AssertContains(module, "SwitchTopSignalLayer", "top command should dispatch to a PCB layer switch handler", failures);
             AssertContains(module, "SwitchBottomSignalLayer", "bottom command should dispatch to a PCB layer switch handler", failures);
             AssertContains(module, "SwitchNextSignalLayer", "next command should dispatch to a PCB layer switch handler", failures);
@@ -10278,6 +10301,9 @@ namespace StepCleaner.Tests
             AssertContains(module, "ReprojectActiveFootprint3D", "Reproject command should dispatch to an active-footprint handler", failures);
             AssertContains(module, "AlignActiveFootprint3DModel", "Align command should dispatch to an active-footprint handler", failures);
             AssertContains(module, "CreateCustomPadFromSelected", "custom-pad command should dispatch to an active-footprint handler", failures);
+            AssertContains(module, "DuplicateLayout", "Duplicate layout command should dispatch to a PCB dialog handler", failures);
+            AssertContains(module, "TryCaptureLayoutDuplicationSession(argContext", "Duplicate layout handler must pass the PCB editor command view into capture", failures);
+            AssertContains(module, "LayoutDuplicatorDialog", "Duplicate layout handler must open the layout duplicator dialog", failures);
             int reprojectHandlerStart = module.IndexOf("private void ReprojectActiveFootprint3D", StringComparison.Ordinal);
             int reprojectHandlerEnd = reprojectHandlerStart >= 0
                 ? module.IndexOf("private void AlignActiveFootprint3DModel", reprojectHandlerStart, StringComparison.Ordinal)
@@ -10310,6 +10336,11 @@ namespace StepCleaner.Tests
             AssertContains(eePcb, "SwitchToNextSignalLayer", "PCB helper must cycle to the next displayed signal layer", failures);
             AssertContains(eePcb, "SwitchToPreviousSignalLayer", "PCB helper must cycle to the previous displayed signal layer", failures);
             AssertContains(eePcb, "SwitchToSelectedPrimitiveLayer", "PCB helper must switch to the active board selected primitive layer", failures);
+            AssertContains(eePcb, "public static IPCB_Board GetCurrentPcbBoard", "PCB helper must expose the same active-board lookup used by PCB editor commands", failures);
+            AssertContains(eePcb, "DXP.IServerDocumentView", "PCB helper active-board lookup must accept a command view fallback", failures);
+            AssertContains(eePcb, "Internal_GetOwnerDocument", "PCB helper active-board lookup must inspect the command view owner document", failures);
+            AssertContains(eePcb, "Internal_GetPCBBoardByPath", "PCB helper active-board lookup must resolve PCB boards by document path", failures);
+            AssertContains(eePcb, "Internal_LoadPCBBoardByPath", "PCB helper active-board lookup must load PCB boards by document path if needed", failures);
             AssertContains(eePcb, "FindSelectedPrimitiveLayer", "selected-primitive layer switching must read the selected object layer before changing board current layer", failures);
             AssertContains(eePcb, "Internal_GetState_SelectecObject", "selected-primitive layer switching must use Altium's selected-object list", failures);
             AssertContains(eePcb, "TryGetPrimitiveLayer", "selected-primitive layer switching must accept selected primitives with V7 layer metadata", failures);
@@ -10390,6 +10421,152 @@ namespace StepCleaner.Tests
             AssertDoesNotContain(eePcb, "body.MoveByXY", "Align 3D model must never move an already-owned component body with primitive MoveByXY in PcbLib", failures);
             AssertContains(eePcb, "FindCurrentPcbLibComponentFallback", "PcbLib commands must find the active footprint even when CurrentComponent is not populated", failures);
 
+            AssertFileExists(layoutModelsPath, "Layout duplication models file must exist", failures);
+            AssertFileExists(layoutCapturePath, "Layout duplication capture file must exist", failures);
+            AssertFileExists(layoutMapperPath, "Layout duplication mapper file must exist", failures);
+            AssertFileExists(layoutApplyPath, "Layout duplication apply file must exist", failures);
+            AssertFileExists(layoutSchematicMatcherPath, "Layout duplication schematic matcher file must exist", failures);
+            AssertFileExists(layoutDialogXamlPath, "Layout duplicator dialog XAML must exist", failures);
+            AssertFileExists(layoutDialogCodePath, "Layout duplicator dialog code-behind must exist", failures);
+            AssertFileExists(layoutViewModelsPath, "Layout duplicator view models must exist", failures);
+            AssertFileExists(ollamaClientPath, "Ollama layout mapping client must exist", failures);
+
+            AssertContains(layoutModels, "LayoutDuplicationSession", "layout models must represent the captured session", failures);
+            AssertContains(layoutModels, "LayoutComponentSnapshot", "layout models must represent component snapshots", failures);
+            AssertContains(layoutModels, "LayoutMappingValidationResult", "layout models must represent validation results", failures);
+            AssertContains(layoutModels, "DefaultModelName = \"qwen3.5:9b\"", "Ollama defaults must use qwen3.5:9b", failures);
+            AssertContains(layoutModels, "FallbackModelName = \"qwen2.5-coder:7b-instruct\"", "Ollama defaults must include qwen2.5 coder fallback", failures);
+            AssertContains(layoutModels, "UseSchematicMatching", "layout mapping requests must carry the schematic matching option", failures);
+            AssertContains(layoutModels, "SchematicHints", "layout mapping requests must carry schematic match hints", failures);
+            AssertContains(layoutModels, "LayoutSchematicComponentHint", "layout models must represent schematic component hints", failures);
+            AssertContains(layoutModels, "Description", "layout models must carry separate description metadata", failures);
+            AssertContains(layoutModels, "IPCB_Board Board", "layout duplication sessions must retain the PCB board captured from command context", failures);
+
+            AssertContains(layoutCapture, "TryCaptureLayoutDuplicationSession", "capture layer must expose selected-component validation", failures);
+            AssertContains(layoutCapture, "DXP.IServerDocumentView", "capture layer must accept the PCB editor command view", failures);
+            AssertContains(layoutCapture, "GetCurrentBoard(commandView)", "capture layer must resolve the board using the command view", failures);
+            AssertContains(layoutCapture, "CaptureSelectedSourceComponents", "capture layer must capture selected PCB components", failures);
+            AssertContains(layoutCapture, "GetSelectedObjects(board)", "capture layer must use Altium's selected-object list for selected components", failures);
+            AssertContains(layoutCapture, "Internal_GetState_Component", "capture layer must map selected child primitives back to their parent component", failures);
+            AssertContains(layoutCapture, "IPCB_Primitive selectedPrimitive", "capture layer must use typed PCB primitive parent-component access", failures);
+            AssertContains(layoutCapture, "IsTextObject(selectedObject)", "capture layer must match selected designator/comment text back to components", failures);
+            AssertContains(layoutCapture, "AddComponentSnapshotIfValid(selectedComponents, board, selectedObject)", "capture layer must snapshot selected components directly before any board scan", failures);
+            AssertContains(layoutCapture, "EnumerateBoardObjects(board, (int)TObjectId.eComponentObject)", "capture layer must use a component-filtered iterator for target-table capture", failures);
+            int sessionCaptureStart = layoutCapture.IndexOf("public static bool TryCaptureLayoutDuplicationSession(", StringComparison.Ordinal);
+            int sessionCaptureEnd = sessionCaptureStart >= 0
+                ? layoutCapture.IndexOf("public static List<LayoutComponentSnapshot> CaptureSelectedSourceComponents", sessionCaptureStart, StringComparison.Ordinal)
+                : -1;
+            string sessionCaptureMethod = sessionCaptureStart >= 0 && sessionCaptureEnd > sessionCaptureStart
+                ? layoutCapture.Substring(sessionCaptureStart, sessionCaptureEnd - sessionCaptureStart)
+                : string.Empty;
+            AssertDoesNotContain(sessionCaptureMethod, "CaptureBoardComponents", "menu invocation must not scan every PCB component before opening the dialog", failures);
+            AssertContains(layoutCapture, "EnsureEquivalentTargetComponentsFromSchematic", "target discovery must use schematic candidates before direct PCB component lookup", failures);
+            AssertContains(layoutCapture, "EnsureDirectRefDesFamilyTargets", "target discovery must have a direct refdes fallback when schematic hints are unavailable", failures);
+            AssertContains(layoutCapture, "Duplicate layout schematic target discovery", "target discovery must trace schematic candidate counts for live Altium diagnostics", failures);
+            AssertContains(layoutCapture, "Duplicate layout direct refdes target discovery", "direct refdes target discovery must trace candidate counts for live Altium diagnostics", failures);
+            AssertContains(layoutCapture, "LooseSame", "schematic target matching must tolerate schematic/PCB footprint and comment formatting differences", failures);
+            AssertContains(layoutCapture, "SameDesignatorFamily", "schematic target matching must have a same-prefix fallback for equivalent repeated components", failures);
+            AssertContains(layoutApply, "Internal_GetPcbComponentByRefDes", "layout duplication PCB access must resolve target candidates by refdes without full board scanning", failures);
+            AssertContains(layoutCapture, "CaptureComponentSnapshot(board, primitive, includePads: false)", "initial target-table capture must not enumerate component pads while opening the dialog", failures);
+            AssertContains(layoutCapture, "EnsurePadsCaptured", "pad/net metadata must be captured lazily only when routing copy needs it", failures);
+            AssertContains(layoutCapture, "Internal_GetPrimitiveAt", "pad capture must use direct pad primitive lookup instead of a component group iterator", failures);
+            int snapshotStart = layoutCapture.IndexOf("private static LayoutComponentSnapshot CaptureComponentSnapshot", StringComparison.Ordinal);
+            int snapshotEnd = snapshotStart >= 0
+                ? layoutCapture.IndexOf("public static void EnsurePadsCaptured", snapshotStart, StringComparison.Ordinal)
+                : -1;
+            string snapshotMethod = snapshotStart >= 0 && snapshotEnd > snapshotStart
+                ? layoutCapture.Substring(snapshotStart, snapshotEnd - snapshotStart)
+                : string.Empty;
+            AssertDoesNotContain(snapshotMethod, "ReadLayerName", "initial component snapshot must not read component V7 layer while opening the dialog", failures);
+            AssertContains(layoutCapture, "ComponentHasSelectedChild", "capture layer must accept component selections exposed through selected child primitives", failures);
+            AssertContains(layoutCapture, "TraceSelectedComponentCapture", "capture layer must log selected-object diagnostics when no source component is detected", failures);
+            AssertContains(layoutCapture, "CaptureSelectedRoutingPrimitives", "capture layer must capture selected routing primitives", failures);
+            AssertContains(layoutCapture, "ReadDescription", "capture layer must separate source description from component comment", failures);
+            AssertContains(layoutCapture, "ReadComponentLayerName", "capture layer must populate component layer cells without reading V7 layer metadata", failures);
+            AssertContains(layoutCapture, "GetState_FlippedOnLayer", "capture layer must infer Top/Bottom layer from component flipped state", failures);
+            AssertContains(layoutCapture, "exclude all selected source components", "capture layer must document excluding all selected source components from targets", failures);
+            AssertContains(layoutCapture, "LayoutSchematicMatchContext", "capture layer must accept schematic matching context for destination ordering", failures);
+            AssertContains(layoutCapture, "ScoreCandidate", "capture layer must use schematic scores to rank destination candidates when enabled", failures);
+            AssertContains(layoutApply, "session.Board", "layout duplication apply must reuse the board captured before opening the dialog", failures);
+            AssertContains(layoutApply, "return EEPCB.GetCurrentPcbBoard(commandView);", "layout duplication must reuse the working PCB editor active-board lookup", failures);
+            AssertContains(layoutApply, "IPCB_Board typedBoard", "layout duplication PCB access must use typed board selected-object APIs", failures);
+            AssertContains(layoutApply, "GetObjectIdentity", "layout duplication PCB access must compare selected child primitives by stable object identity", failures);
+            AssertContains(layoutApply, "EnumerateBoardObjects(IPCB_Board board, params int[] objectIds)", "layout duplication PCB access must support filtered board iteration", failures);
+            AssertContains(layoutApply, "AddFilter_ObjectSet", "layout duplication PCB access must filter board iterators by object type when possible", failures);
+            AssertContains(layoutApply, "EnsureRoutingPadData", "layout duplication apply must capture pad/net data only when selected routing is being copied", failures);
+            AssertContains(layoutApply, "ReadPadName", "layout duplication PCB access must read pad names through the typed pad API", failures);
+            int selectedObjectsStart = layoutApply.IndexOf("public static List<object> GetSelectedObjects", StringComparison.Ordinal);
+            int selectedObjectsEnd = selectedObjectsStart >= 0
+                ? layoutApply.IndexOf("public static bool IsSelected", selectedObjectsStart, StringComparison.Ordinal)
+                : -1;
+            string selectedObjectsHelper = selectedObjectsStart >= 0 && selectedObjectsEnd > selectedObjectsStart
+                ? layoutApply.Substring(selectedObjectsStart, selectedObjectsEnd - selectedObjectsStart)
+                : string.Empty;
+            AssertDoesNotContain(selectedObjectsHelper, "EnumerateBoardObjects(board)", "selected-object lookup must not fall back to full-board enumeration on PCB editor menu invocation", failures);
+
+            AssertContains(layoutMapper, "BuildMappingPrompt", "mapper must build a constrained AI prompt", failures);
+            AssertContains(layoutMapper, "ValidateMappingResponse", "mapper must validate AI mapping before edits", failures);
+            AssertContains(layoutMapper, "ambiguous", "mapper must reject ambiguous AI mappings", failures);
+            AssertContains(layoutMapper, "Do not return coordinates or edit commands", "mapper prompt must forbid AI-generated edit commands", failures);
+            AssertContains(layoutMapper, "Schematic matching hints", "mapper prompt must include schematic hints when requested", failures);
+            AssertContains(layoutMapper, "Prefer candidates on matching schematic", "mapper prompt must direct AI to prefer schematic matches", failures);
+            AssertContains(layoutMapper, "description=", "mapper prompt must include component description", failures);
+            AssertDoesNotContain(layoutMapper, " | part=", "mapper prompt must not include removed part-number metadata", failures);
+
+            AssertContains(layoutSchematicMatcher, "TryBuildSchematicMatchContext", "schematic matcher must expose best-effort context capture", failures);
+            AssertContains(layoutSchematicMatcher, "TraceContext", "schematic matcher must log hint counts for live target-discovery diagnostics", failures);
+            AssertContains(layoutSchematicMatcher, "ScoreCandidate", "schematic matcher must rank PCB candidates by schematic context", failures);
+            AssertContains(layoutSchematicMatcher, "SCHServer", "schematic matcher must use native C# SCH server access", failures);
+            AssertDoesNotContain(layoutSchematicMatcher, "RunProcess", "schematic matcher must not invoke script commands", failures);
+            AssertDoesNotContain(layoutSchematicMatcher, "AltiumScript", "schematic matcher must not invoke AltiumScript", failures);
+            AssertDoesNotContain(layoutSchematicMatcher, "DelphiScript", "schematic matcher must not invoke DelphiScript", failures);
+            AssertDoesNotContain(layoutSchematicMatcher, "layout_duplicator", "schematic matcher must not call MCP layout duplicator", failures);
+
+            AssertContains(layoutApply, "ApplyLayoutDuplication", "apply layer must expose deterministic layout duplication", failures);
+            AssertContains(layoutApply, "PCBServer.PreProcess()", "apply layer must wrap edits in an Altium undo transaction", failures);
+            AssertContains(layoutApply, "PCBServer.PostProcess()", "apply layer must close the Altium undo transaction", failures);
+            AssertContains(layoutApply, "ApplyPlacement", "apply layer must copy component placement/orientation/layer", failures);
+            AssertContains(layoutApply, "ReplicateRoutingPrimitive", "apply layer must copy selected routing primitives in C#", failures);
+            AssertContains(layoutApply, "eTrackObject", "routing copy must support tracks", failures);
+            AssertContains(layoutApply, "eArcObject", "routing copy must support arcs", failures);
+            AssertContains(layoutApply, "eViaObject", "routing copy must support vias", failures);
+            AssertContains(layoutApply, "ePolyObject", "routing copy must support polygons", failures);
+            AssertContains(layoutApply, "eRegionObject", "routing copy must support regions", failures);
+            AssertContains(layoutApply, "eFillObject", "routing copy must support fills", failures);
+            AssertDoesNotContain(layoutApply, "RunProcess", "layout duplication must not invoke script commands", failures);
+            AssertDoesNotContain(layoutApply, "AltiumScript", "layout duplication must not invoke AltiumScript", failures);
+            AssertDoesNotContain(layoutApply, "DelphiScript", "layout duplication must not invoke DelphiScript", failures);
+            AssertDoesNotContain(layoutApply, "layout_duplicator_apply", "layout duplication must not call MCP layout duplicator", failures);
+            AssertDoesNotContain(layoutApply, "InvokeMember", "layout duplication must not use generic COM late binding on Altium's UI thread", failures);
+            AssertDoesNotContain(layoutApply, "SaveDocument", "layout duplication must not save the PCB", failures);
+
+            AssertContains(ollamaClient, "GetInstalledModelsAsync", "Ollama client must list installed models", failures);
+            AssertContains(ollamaClient, "GetLoadedModelsAsync", "Ollama client must list loaded models", failures);
+            AssertContains(ollamaClient, "SelectInitialModel", "Ollama client must select loaded/last-used/default model in order", failures);
+            AssertContains(ollamaClient, "PullModelAsync", "Ollama client must support model pull only after confirmation", failures);
+            AssertContains(ollamaClient, "\"think\"", "Ollama requests must set think=false", failures);
+            AssertContains(ollamaClient, "\"keep_alive\"", "Ollama requests must keep the selected model warm", failures);
+            AssertContains(ollamaClient, "\"temperature\"", "Ollama requests must use deterministic temperature", failures);
+
+            AssertContains(layoutDialogXaml, "sourceComponentsGrid", "layout dialog must show selected source components", failures);
+            AssertContains(layoutDialogXaml, "targetAnchorsGrid", "layout dialog must show checked target anchors", failures);
+            AssertContains(layoutDialogXaml, "modelComboBox", "layout dialog must expose model selection", failures);
+            AssertContains(layoutDialogXaml, "useSchematicMatchingCheckBox", "layout dialog must expose optional schematic matching", failures);
+            AssertContains(layoutDialogXaml, "Use schematic matching", "layout dialog must label optional schematic matching", failures);
+            AssertContains(layoutDialogXaml, "Foreground=\"Black\"", "schematic matching checkbox text must stay black under Altium themes", failures);
+            AssertContains(layoutDialogXaml, "IsChecked=\"True\"", "layout dialog must enable schematic matching by default", failures);
+            AssertContains(layoutDialogXaml, "operationProgressBar", "layout dialog must show operation progress", failures);
+            AssertContains(layoutDialogXaml, "Duplicate", "layout dialog must expose Duplicate command", failures);
+            AssertContains(layoutDialogXaml, "Header=\"Comment\"", "layout dialog must show component comment", failures);
+            AssertContains(layoutDialogXaml, "Header=\"Description\"", "layout dialog must show component description", failures);
+            AssertDoesNotContain(layoutDialogXaml, "Part number", "layout dialog must remove the part-number column", failures);
+            AssertContains(layoutDialogCode, "MessageBoxResult.Yes", "layout dialog must ask before pulling a missing model", failures);
+            AssertContains(layoutDialogCode, "PullModelAsync", "layout dialog must pull a model only after user confirmation", failures);
+            AssertContains(layoutDialogCode, "WarmModelAsync", "layout dialog should warm installed models", failures);
+            AssertContains(layoutDialogCode, "useSchematicMatchingCheckBox.IsChecked == true", "layout dialog must read the optional schematic matching checkbox", failures);
+            AssertContains(layoutDialogCode, "TryBuildSchematicMatchContext", "layout dialog must build schematic matching context only when requested", failures);
+            AssertContains(layoutViewModels, "IsChecked", "target rows must have default-selected checkboxes", failures);
+
             if (failures.Count > 0)
             {
                 Console.Error.WriteLine("PcbLib action regression test failed.");
@@ -10442,6 +10619,9 @@ namespace StepCleaner.Tests
 
             AssertContains(bridge, "NamedPipeServerStream", "Bridge must listen through a Windows named pipe", failures);
             AssertContains(bridge, "EasyEDA-Loader.CommandBridge", "Bridge must expose a stable pipe name for the Ulanzi plugin", failures);
+            AssertContains(bridge, "IsPipeInstanceBusy", "Bridge must detect an already-owned named pipe when multiple Altium processes load the extension", failures);
+            AssertContains(bridge, "disabled in this Altium process", "Bridge must disable itself instead of spinning when another process already owns the pipe", failures);
+            AssertContains(bridge, "Task.Delay(TimeSpan.FromSeconds(1)", "Bridge must back off after listener failures instead of flooding the UI process", failures);
             AssertContains(bridge, "GetForegroundWindow", "Bridge must check the active foreground window before dispatch", failures);
             AssertContains(bridge, "GetWindowThreadProcessId", "Bridge must compare the foreground window owner process with Altium", failures);
             AssertContains(bridge, "Process.GetCurrentProcess().Id", "Bridge active-window check must require the Altium process to own the foreground window", failures);
