@@ -1038,14 +1038,47 @@ namespace EasyEDA_Loader
 
         private static void AddTransformedBounds(SvgPrimitive primitive, int left, int bottom, int right, int top, int originX, int originY, double rotation, bool mirrored)
         {
+            GetTransformedBounds(
+                left,
+                bottom,
+                right,
+                top,
+                originX,
+                originY,
+                rotation,
+                mirrored,
+                out double transformedLeft,
+                out double transformedBottom,
+                out double transformedRight,
+                out double transformedTop);
+            primitive.Left = transformedLeft;
+            primitive.Bottom = transformedBottom;
+            primitive.Right = transformedRight;
+            primitive.Top = transformedTop;
+        }
+
+        private static void GetTransformedBounds(
+            int left,
+            int bottom,
+            int right,
+            int top,
+            int originX,
+            int originY,
+            double rotation,
+            bool mirrored,
+            out double transformedLeft,
+            out double transformedBottom,
+            out double transformedRight,
+            out double transformedTop)
+        {
             TransformPoint(left, bottom, originX, originY, rotation, mirrored, out double x1, out double y1);
             TransformPoint(right, bottom, originX, originY, rotation, mirrored, out double x2, out double y2);
             TransformPoint(right, top, originX, originY, rotation, mirrored, out double x3, out double y3);
             TransformPoint(left, top, originX, originY, rotation, mirrored, out double x4, out double y4);
-            primitive.Left = Math.Min(Math.Min(x1, x2), Math.Min(x3, x4));
-            primitive.Right = Math.Max(Math.Max(x1, x2), Math.Max(x3, x4));
-            primitive.Bottom = Math.Min(Math.Min(y1, y2), Math.Min(y3, y4));
-            primitive.Top = Math.Max(Math.Max(y1, y2), Math.Max(y3, y4));
+            transformedLeft = Math.Min(Math.Min(x1, x2), Math.Min(x3, x4));
+            transformedRight = Math.Max(Math.Max(x1, x2), Math.Max(x3, x4));
+            transformedBottom = Math.Min(Math.Min(y1, y2), Math.Min(y3, y4));
+            transformedTop = Math.Max(Math.Max(y1, y2), Math.Max(y3, y4));
         }
 
         private static SvgPrimitive TryCreateTextPrimitive(object primitive, string text, int originX, int originY, double rotation, bool mirrored)
@@ -1085,8 +1118,41 @@ namespace EasyEDA_Loader
 
             double width = Math.Max(fontSize, text.Trim().Length * fontSize * 0.65);
             double height = fontSize;
+            double boundsLeft = x;
+            double boundsBottom = y - height * 0.25;
+            double boundsRight = x + width;
+            double boundsTop = y + height;
+            if (hasBounds)
+            {
+                GetTransformedBounds(
+                    left,
+                    bottom,
+                    right,
+                    top,
+                    originX,
+                    originY,
+                    rotation,
+                    mirrored,
+                    out boundsLeft,
+                    out boundsBottom,
+                    out boundsRight,
+                    out boundsTop);
+            }
+
             bool centerTextInBounds;
-            double textRotation = ResolveTextRotation(rawTextRotation, hasBounds, left, bottom, right, top, out centerTextInBounds);
+            double textRotation = ResolveTextRotation(
+                rawTextRotation,
+                hasBounds,
+                boundsLeft,
+                boundsBottom,
+                boundsRight,
+                boundsTop,
+                y,
+                width,
+                height,
+                text.Trim().Length,
+                GetBool(primitive, "GetState_Multiline"),
+                out centerTextInBounds);
 
             var textPrimitive = new SvgTextPrimitive
             {
@@ -1101,7 +1167,10 @@ namespace EasyEDA_Loader
 
             if (hasBounds)
             {
-                AddTransformedBounds(textPrimitive, left, bottom, right, top, originX, originY, rotation, mirrored);
+                textPrimitive.Left = boundsLeft;
+                textPrimitive.Bottom = boundsBottom;
+                textPrimitive.Right = boundsRight;
+                textPrimitive.Top = boundsTop;
                 if (centerTextInBounds)
                 {
                     textPrimitive.X = (textPrimitive.Left + textPrimitive.Right) / 2.0;
@@ -2043,6 +2112,22 @@ namespace EasyEDA_Loader
                     "GetState_OriginalString",
                     "GetState_String"
                 });
+                if (HasTextPrimitiveFields(primitive))
+                {
+                    AppendMethodValues(primitive, "textGeometry", new[]
+                    {
+                        "GetState_XLocation",
+                        "GetState_YLocation",
+                        "GetState_Rotation",
+                        "GetState_Size",
+                        "GetState_Width",
+                        "GetState_Mirror",
+                        "GetState_Multiline",
+                        "GetState_UseTTFonts",
+                        "GetState_TTFTextHeight",
+                        "GetState_TTFTextWidth"
+                    });
+                }
             }
 
             private void AppendTrack(object primitive, int originX, int originY, double rotation, bool mirrored)
@@ -2651,6 +2736,19 @@ namespace EasyEDA_Loader
                     }
                 }
 
+                if (target is IPCB_RectangularPrimitive rectangularPrimitive)
+                {
+                    switch (methodName)
+                    {
+                        case "GetState_XLocation" when args.Length == 0:
+                            return rectangularPrimitive.GetState_XLocation();
+                        case "GetState_YLocation" when args.Length == 0:
+                            return rectangularPrimitive.GetState_YLocation();
+                        case "GetState_Rotation" when args.Length == 0:
+                            return rectangularPrimitive.GetState_Rotation();
+                    }
+                }
+
                 if (target is IPCB_Primitive primitive)
                 {
                     switch (methodName)
@@ -2804,6 +2902,20 @@ namespace EasyEDA_Loader
                 {
                     switch (methodName)
                     {
+                        case "GetState_Size" when args.Length == 0:
+                            return text.GetState_Size();
+                        case "GetState_Width" when args.Length == 0:
+                            return text.GetState_Width();
+                        case "GetState_Mirror" when args.Length == 0:
+                            return text.GetState_Mirror();
+                        case "GetState_Multiline" when args.Length == 0:
+                            return text.GetState_Multiline();
+                        case "GetState_UseTTFonts" when args.Length == 0:
+                            return text.GetState_UseTTFonts();
+                        case "GetState_TTFTextHeight" when args.Length == 0:
+                            return text.GetState_TTFTextHeight();
+                        case "GetState_TTFTextWidth" when args.Length == 0:
+                            return text.GetState_TTFTextWidth();
                         case "GetState_Text" when args.Length == 0:
                             return text.GetState_Text();
                         case "GetState_UnderlyingString" when args.Length == 0:
@@ -3093,22 +3205,41 @@ namespace EasyEDA_Loader
             return sweep;
         }
 
-        private static double ResolveTextRotation(double angle, bool hasBounds, int left, int bottom, int right, int top, out bool centerTextInBounds)
+        private static double ResolveTextRotation(
+            double angle,
+            bool hasBounds,
+            double left,
+            double bottom,
+            double right,
+            double top,
+            double anchorY,
+            double estimatedWidth,
+            double estimatedHeight,
+            int characterCount,
+            bool multiline,
+            out bool centerTextInBounds)
         {
             centerTextInBounds = false;
             double normalized = NormalizeSignedAngle(angle);
-            if (hasBounds && IsHalfTurnTextRotation(normalized))
-            {
-                double boundsWidth = AltiumApi.CoordToMm(Math.Abs(right - left));
-                double boundsHeight = AltiumApi.CoordToMm(Math.Abs(top - bottom));
-                if (boundsHeight > boundsWidth * 1.15)
-                {
-                    centerTextInBounds = true;
-                    return -90.0;
-                }
-            }
+            if (!hasBounds || multiline || characterCount < 2)
+                return normalized;
 
-            return normalized;
+            double boundsWidth = Math.Abs(right - left);
+            double boundsHeight = Math.Abs(top - bottom);
+            bool textExpectedHorizontal = estimatedWidth > estimatedHeight * 1.05;
+            bool boundsAreVertical = boundsHeight > boundsWidth * 1.15;
+            bool reportedRotationIsVertical = Math.Abs(Math.Abs(normalized) - 90.0) < 1.0;
+            if (!textExpectedHorizontal || !boundsAreVertical || reportedRotationIsVertical)
+                return normalized;
+
+            centerTextInBounds = true;
+            double distanceToTop = Math.Abs(anchorY - top);
+            double distanceToBottom = Math.Abs(anchorY - bottom);
+            double ambiguousThreshold = Math.Max(0.01, estimatedHeight * 0.2);
+            if (Math.Abs(distanceToTop - distanceToBottom) <= ambiguousThreshold)
+                return -90.0;
+
+            return distanceToTop < distanceToBottom ? 90.0 : -90.0;
         }
 
         private static double NormalizeSignedAngle(double angle)
@@ -3119,14 +3250,6 @@ namespace EasyEDA_Loader
             if (angle <= -180.0)
                 angle += 360.0;
             return angle;
-        }
-
-        private static bool IsHalfTurnTextRotation(double angle)
-        {
-            angle %= 360.0;
-            if (angle < 0)
-                angle += 360.0;
-            return Math.Abs(angle - 180.0) < 0.001;
         }
 
         private static double Distance(double x1, double y1, double x2, double y2)

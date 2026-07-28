@@ -10352,6 +10352,15 @@ namespace StepCleaner.Tests
             AssertContains(shapeExporter, "HashSet<string> usedNames = null", "multi-library shape export must share output filenames across libraries", failures);
             AssertContains(shapeExporter, "result.Errors.Add(componentName + \": \" + ex.Message);", "shape exporter must collect individual footprint failures", failures);
             AssertContains(shapeExporter, "catch (OperationCanceledException)", "shape exporter must preserve cancellation while isolating footprint errors", failures);
+            AssertContains(shapeExporter, "target is IPCB_RectangularPrimitive rectangularPrimitive", "shape exporter must use typed access for inherited text geometry in server-loaded libraries", failures);
+            AssertContains(shapeExporter, "return rectangularPrimitive.GetState_Rotation();", "shape exporter must preserve text rotation from server-loaded libraries", failures);
+            AssertContains(shapeExporter, "return rectangularPrimitive.GetState_XLocation();", "shape exporter must preserve text X location from server-loaded libraries", failures);
+            AssertContains(shapeExporter, "return rectangularPrimitive.GetState_YLocation();", "shape exporter must preserve text Y location from server-loaded libraries", failures);
+            AssertContains(shapeExporter, "return text.GetState_Size();", "shape exporter must preserve text size from server-loaded libraries", failures);
+            AssertContains(shapeExporter, "bool boundsAreVertical = boundsHeight > boundsWidth * 1.15;", "shape exporter must recover missing text rotation from component-local text bounds", failures);
+            AssertContains(shapeExporter, "return distanceToTop < distanceToBottom ? 90.0 : -90.0;", "shape exporter must account for Altium's end-anchored stroke-text bounds when recovering vertical direction", failures);
+            AssertContains(shapeExporter, "characterCount < 2", "shape exporter must not infer rotation from single-character text bounds", failures);
+            AssertContains(shapeExporter, "GetBool(primitive, \"GetState_Multiline\")", "shape exporter must not apply single-line rotation inference to multiline text", failures);
             AssertContains(module, "foreach (string error in result.Errors)", "selected-library export must collect footprint errors and continue with later libraries", failures);
             int selectedLibrariesHandlerStart = module.IndexOf("private void ExportSelectedShapeLibraries", StringComparison.Ordinal);
             int selectedLibrariesHandlerEnd = module.IndexOf("private static void ShowShapeExportErrors", selectedLibrariesHandlerStart, StringComparison.Ordinal);
