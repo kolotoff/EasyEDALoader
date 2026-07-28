@@ -64,6 +64,10 @@ namespace EasyEDA_Loader
             RegisterCommand("EasyEDA-Loader:EasyEDAExportShapeSelected", new CommandProc(ExportShapeSelected));
             RegisterCommand("EasyEDAExportShapeSelectedLibraries", new CommandProc(ExportShapeSelectedLibraries));
             RegisterCommand("EasyEDA-Loader:EasyEDAExportShapeSelectedLibraries", new CommandProc(ExportShapeSelectedLibraries));
+            RegisterCommand("EasyEDAOpenSymbolLibrary", new CommandProc(OpenSymbolLibrary));
+            RegisterCommand("EasyEDA-Loader:EasyEDAOpenSymbolLibrary", new CommandProc(OpenSymbolLibrary));
+            RegisterCommand("EasyEDAOpenFootprintLibrary", new CommandProc(OpenFootprintLibrary));
+            RegisterCommand("EasyEDA-Loader:EasyEDAOpenFootprintLibrary", new CommandProc(OpenFootprintLibrary));
         }
 
         private void RegisterCommand(string argCommandId, CommandProc commandProc)
@@ -476,6 +480,22 @@ namespace EasyEDA_Loader
           ref string argParameters)
         {
             ExportShape(argContext, ShapeExportScope.SelectedComponent);
+        }
+
+        private void OpenSymbolLibrary(
+          IServerDocumentView argContext,
+          ref string argParameters)
+        {
+            Trace("OpenSymbolLibrary entered.");
+            LibraryNavigation.OpenSelectedSchematicComponentLibrary(argContext);
+        }
+
+        private void OpenFootprintLibrary(
+          IServerDocumentView argContext,
+          ref string argParameters)
+        {
+            Trace("OpenFootprintLibrary entered.");
+            LibraryNavigation.OpenSelectedPcbComponentLibrary(argContext);
         }
 
         private void ExportShapeSelectedLibraries(

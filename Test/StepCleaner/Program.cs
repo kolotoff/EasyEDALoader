@@ -10231,6 +10231,7 @@ namespace StepCleaner.Tests
             string ins = File.ReadAllText(Path.Combine(repoRoot, "EasyEDA-Loader", "EasyEDA-Loader.ins"));
             string rcs = File.ReadAllText(Path.Combine(repoRoot, "EasyEDA-Loader", "EasyEDA-Loader.rcs"));
             string module = File.ReadAllText(Path.Combine(repoRoot, "EasyEDA-Loader", "EasyEDALoader.cs"));
+            string libraryNavigation = File.ReadAllText(Path.Combine(repoRoot, "EasyEDA-Loader", "LibraryNavigation.cs"));
             string eePcb = File.ReadAllText(Path.Combine(repoRoot, "EasyEDA-Loader", "EEPCB.cs"));
             string footprintData = File.ReadAllText(Path.Combine(repoRoot, "EasyEDA-Loader", "FootprintData.cs"));
             string footprint3dModel = File.ReadAllText(Path.Combine(repoRoot, "EasyEDA-Loader", "FootprintShapes", "EeFootprint3dModel.cs"));
@@ -10268,6 +10269,8 @@ namespace StepCleaner.Tests
             AssertContains(ins, "Command  Name = 'EasyEDACreateCustomPadFromSelected'", "PcbLib custom-pad command must be declared in the INS file", failures);
             AssertContains(ins, "Command  Name = 'EasyEDADuplicateLayout'", "PCB layout duplicator command must be declared in the INS file", failures);
             AssertContains(ins, "Command  Name = 'EasyEDAExportShapeSelectedLibraries'", "selected-library shape export command must be declared in the INS file", failures);
+            AssertContains(ins, "Command  Name = 'EasyEDAOpenSymbolLibrary'", "schematic symbol-library navigation command must be declared in the INS file", failures);
+            AssertContains(ins, "Command  Name = 'EasyEDAOpenFootprintLibrary'", "PCB footprint-library navigation command must be declared in the INS file", failures);
 
             AssertContains(rcs, "Caption='&EasyEDA'", "PcbLib menu should expose an EasyEDA submenu", failures);
             AssertContains(rcs, "Caption='&Loader...'", "Loader command should move under the EasyEDA submenu", failures);
@@ -10286,6 +10289,8 @@ namespace StepCleaner.Tests
             AssertContains(rcs, "Caption='All from selected &libraries'", "Export shape menu should expose selected-library export", failures);
             AssertContains(rcs, "Link MNPCB_EasyEDAExportShape30 PLID='PLEasyEDALoader:EasyEDAExportShapeSelectedLibraries'", "PCB editor Export shape menu should include selected-library export", failures);
             AssertContains(rcs, "Link MNPCBLib_EasyEDAExportShape30 PLID='PLEasyEDALoader:EasyEDAExportShapeSelectedLibraries'", "PcbLib editor Export shape menu should include selected-library export", failures);
+            AssertContains(rcs, "PLID='PLEasyEDALoader:EasyEDAOpenSymbolLibrary'", "schematic editor menu should expose Open symbol library", failures);
+            AssertContains(rcs, "PLID='PLEasyEDALoader:EasyEDAOpenFootprintLibrary'", "PCB editor menu should expose Open footprint library", failures);
             AssertContains(rcs, "PLEasyEDALoader:EasyEDASwitchTopSignalLayer Command='EasyEDA-Loader:EasyEDASwitchTopSignalLayer' Caption='&Top' Shortcut1='Ctrl+Plus'", "Top layer command should default to Ctrl+Plus", failures);
             AssertContains(rcs, "PLEasyEDALoader:EasyEDASwitchBottomSignalLayer Command='EasyEDA-Loader:EasyEDASwitchBottomSignalLayer' Caption='&Bottom' Shortcut1='Ctrl+Minus'", "Bottom layer command should default to Ctrl+Minus", failures);
             AssertContains(rcs, "PLEasyEDALoader:EasyEDASwitchNextSignalLayer Command='EasyEDA-Loader:EasyEDASwitchNextSignalLayer' Caption='&Next Signal' Shortcut1='Ctrl+Shift+Plus'", "Next signal command should default to Ctrl+Shift+Plus", failures);
@@ -10304,6 +10309,25 @@ namespace StepCleaner.Tests
             AssertContains(module, "RegisterCommand(\"EasyEDA-Loader:EasyEDADuplicateLayout\"", "module must register the namespaced Duplicate layout command", failures);
             AssertContains(module, "RegisterCommand(\"EasyEDAExportShapeSelectedLibraries\"", "module must register selected-library shape export", failures);
             AssertContains(module, "RegisterCommand(\"EasyEDA-Loader:EasyEDAExportShapeSelectedLibraries\"", "module must register namespaced selected-library shape export", failures);
+            AssertContains(module, "RegisterCommand(\"EasyEDAOpenSymbolLibrary\"", "module must register schematic symbol-library navigation", failures);
+            AssertContains(module, "RegisterCommand(\"EasyEDAOpenFootprintLibrary\"", "module must register PCB footprint-library navigation", failures);
+            AssertContains(libraryNavigation, "component.GetState_LibraryPath()", "symbol-library navigation must read the selected schematic component library path", failures);
+            AssertContains(libraryNavigation, "manager.FindComponentSymbol(", "symbol-library navigation must use Altium's resolver for installed and integrated libraries", failures);
+            AssertDoesNotContain(libraryNavigation, "component.GetState_Selection()", "schematic selection must not query the unsupported inherited graphical-object COM interface", failures);
+            AssertDoesNotContain(libraryNavigation, "CountContextMenuObjects", "schematic selection must not use Altium's popup-context object count", failures);
+            AssertContains(libraryNavigation, "SCH.ISch_DocumentHelper.BoundingRectangle_Selected(schematic)", "schematic selection must use the SDK value-rectangle helper", failures);
+            AssertContains(libraryNavigation, "iterator.AddFilter_Area(left, bottom, right, top)", "schematic selection must resolve components with a selected-bounds spatial iterator", failures);
+            AssertContains(libraryNavigation, "EDP.Utils.LoadIntegratedLibraryManager()", "library navigation must obtain Altium's library manager through the supported API", failures);
+            AssertContains(libraryNavigation, "manager.AvailableLibraryPath(index)", "library navigation must search project, installed, and search-path libraries known to Altium", failures);
+            AssertContains(libraryNavigation, "manager.InstalledLibraryPath(index)", "library navigation must search common installed libraries known to Altium", failures);
+            AssertContains(libraryNavigation, "workspace?.DM_Preferences()", "library navigation must read Altium workspace library preferences", failures);
+            AssertContains(libraryNavigation, "preferences?.GetDefaultLibraryPath()", "library navigation must expand relative installed-library paths from Altium's configured root", failures);
+            AssertContains(libraryNavigation, "component.GetState_SourceFootprintLibrary()", "footprint-library navigation must read the selected PCB component source library", failures);
+            AssertContains(libraryNavigation, "DXP.Utils.RunCommand(\"PCB:GotoLibraryComponent\"", "footprint-library navigation must use Altium's resolver for installed and integrated libraries", failures);
+            AssertContains(libraryNavigation, "DXP.Utils.RunCommand(\"Sch:FirstComponentLibraryEditor\"", "symbol-library navigation must synchronize the SCH Library panel through native editor commands", failures);
+            AssertContains(libraryNavigation, "DXP.Utils.RunCommand(\"Sch:NextComponentLibraryEditor\"", "symbol-library navigation must advance natively to the referenced symbol", failures);
+            AssertContains(libraryNavigation, "library.SetState_Current_SchComponent(libraryComponent)", "symbol-library navigation must retain an API selection fallback", failures);
+            AssertContains(libraryNavigation, "library.SetState_CurrentComponent(footprint)", "footprint-library navigation must select the referenced footprint", failures);
             AssertContains(module, "dialog.Filter = \"Altium PCB libraries (*.PcbLib)|*.PcbLib", "selected-library export must filter for PcbLib files", failures);
             AssertContains(module, "dialog.Multiselect = true;", "selected-library export must allow multiple PcbLib files", failures);
             AssertContains(module, "ShapeExportSettings.LoadLastLibraryFolder()", "selected-library export must restore its source folder", failures);
