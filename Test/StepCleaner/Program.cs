@@ -10238,6 +10238,7 @@ namespace StepCleaner.Tests
             string shapeExportSettings = File.ReadAllText(Path.Combine(repoRoot, "EasyEDA-Loader", "ShapeExportSettings.cs"));
             string shapeExportProgress = File.ReadAllText(Path.Combine(repoRoot, "EasyEDA-Loader", "ShapeExportProgressForm.cs"));
             string shapeExportErrors = File.ReadAllText(Path.Combine(repoRoot, "EasyEDA-Loader", "ShapeExportErrorForm.cs"));
+            string stepSilhouette = File.ReadAllText(Path.Combine(repoRoot, "EasyEDA-Loader", "StepSilhouetteProjection.cs"));
             string layoutModelsPath = Path.Combine(repoRoot, "EasyEDA-Loader", "LayoutDuplicationModels.cs");
             string layoutCapturePath = Path.Combine(repoRoot, "EasyEDA-Loader", "LayoutDuplicationCapture.cs");
             string layoutMapperPath = Path.Combine(repoRoot, "EasyEDA-Loader", "LayoutDuplicationMapper.cs");
@@ -10443,6 +10444,9 @@ namespace StepCleaner.Tests
             AssertContains(eePcb, "ReprojectComponentBodySilhouette", "Reproject 3D must regenerate silhouette primitives from a 3D body", failures);
             AssertContains(eePcb, "Rotation2D = FootprintModelPlacement.ProjectionPlacementRotationDeg()", "Reproject 3D must apply the common Altium 180-degree projection placement correction", failures);
             AssertContains(footprint3dModel, "Rotation2D = FootprintModelPlacement.ProjectionPlacementRotationDeg()", "3D model import must apply the common Altium 180-degree projection placement correction", failures);
+            AssertContains(stepSilhouette, "EasyEDALoaderHlrResult_", "OCCT HLR bridge must write result JSON to a temp file instead of parsing stdout that native OCCT diagnostics can pollute", failures);
+            AssertContains(stepSilhouette, "startInfo.ArgumentList.Add(outputPath);", "OCCT HLR bridge must pass the temp JSON output path to StepOcctHlr", failures);
+            AssertContains(stepSilhouette, "resultJson = File.Exists(outputPath) ? File.ReadAllText(outputPath) : \"\";", "OCCT HLR bridge must parse JSON from the temp output file", failures);
 
             AssertContains(eePcb, "CreateCustomPadFromSelected", "PCB helper must implement selected-geometry to custom-pad conversion", failures);
             AssertContains(eePcb, "GetSelectedObjects(board)", "custom-pad helper must read the editor selection from the active PcbLib board", failures);

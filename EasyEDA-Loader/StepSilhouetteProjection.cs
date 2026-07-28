@@ -301,6 +301,7 @@ namespace EasyEDA_Loader
                 throw new InvalidOperationException(
                     "OCCT HLR helper was not found. Reinstall EasyEDA-Loader with the StepOcctHlr folder or set EASYEDA_LOADER_OCCT_HLR to StepOcctHlr.exe.");
 
+            string outputPath = Path.Combine(Path.GetTempPath(), "EasyEDALoaderHlrResult_" + Guid.NewGuid().ToString("N") + ".json");
             var startInfo = new ProcessStartInfo
             {
                 FileName = helperPath,
@@ -312,52 +313,62 @@ namespace EasyEDA_Loader
                 RedirectStandardError = true
             };
             startInfo.ArgumentList.Add(inputPath);
-            startInfo.ArgumentList.Add("-");
+            startInfo.ArgumentList.Add(outputPath);
             addArguments?.Invoke(startInfo.ArgumentList);
 
+            string resultJson = "";
             string standardOutput = "";
             string standardError = "";
-            ModelImportTrace.Measure("occt_hlr_projection", null, () =>
+            try
             {
-                using (Process process = Process.Start(startInfo))
+                ModelImportTrace.Measure("occt_hlr_projection", null, () =>
                 {
-                    if (process == null)
-                        throw new InvalidOperationException("OCCT HLR helper process did not start: " + helperPath);
-
-                    Task<string> standardOutputTask = process.StandardOutput.ReadToEndAsync();
-                    Task<string> standardErrorTask = process.StandardError.ReadToEndAsync();
-                    if (UseStandardInputForStepData(stepData))
+                    using (Process process = Process.Start(startInfo))
                     {
-                        process.StandardInput.BaseStream.Write(stepData, 0, stepData.Length);
-                        process.StandardInput.Close();
-                    }
+                        if (process == null)
+                            throw new InvalidOperationException("OCCT HLR helper process did not start: " + helperPath);
 
-                    if (!process.WaitForExit(30000))
-                    {
-                        try { process.Kill(); }
-                        catch { }
-                        throw new TimeoutException("OCCT HLR helper timed out after 30 seconds: " + helperPath);
-                    }
-                    process.WaitForExit();
-                    standardOutput = standardOutputTask.GetAwaiter().GetResult();
-                    standardError = standardErrorTask.GetAwaiter().GetResult();
+                        Task<string> standardOutputTask = process.StandardOutput.ReadToEndAsync();
+                        Task<string> standardErrorTask = process.StandardError.ReadToEndAsync();
+                        if (UseStandardInputForStepData(stepData))
+                        {
+                            process.StandardInput.BaseStream.Write(stepData, 0, stepData.Length);
+                            process.StandardInput.Close();
+                        }
 
-                    if (process.ExitCode != 0 || string.IsNullOrWhiteSpace(standardOutput))
-                    {
-                        string detail = FirstNonEmpty(
-                            standardError.Trim(),
-                            standardOutput.Trim(),
-                            "No error output.");
-                        throw new InvalidOperationException(
-                            "OCCT HLR helper failed with exit code " +
-                            process.ExitCode.ToString(CultureInfo.InvariantCulture) +
-                            ": " +
-                            detail);
-                    }
-                }
-            });
+                        if (!process.WaitForExit(30000))
+                        {
+                            try { process.Kill(); }
+                            catch { }
+                            throw new TimeoutException("OCCT HLR helper timed out after 30 seconds: " + helperPath);
+                        }
+                        process.WaitForExit();
+                        standardOutput = standardOutputTask.GetAwaiter().GetResult();
+                        standardError = standardErrorTask.GetAwaiter().GetResult();
+                        resultJson = File.Exists(outputPath) ? File.ReadAllText(outputPath) : "";
 
-            return standardOutput;
+                        if (process.ExitCode != 0 || string.IsNullOrWhiteSpace(resultJson))
+                        {
+                            string detail = FirstNonEmpty(
+                                ReadOcctErrorFromString(resultJson),
+                                standardError.Trim(),
+                                standardOutput.Trim(),
+                                "No error output.");
+                            throw new InvalidOperationException(
+                                "OCCT HLR helper failed with exit code " +
+                                process.ExitCode.ToString(CultureInfo.InvariantCulture) +
+                                ": " +
+                                detail);
+                        }
+                    }
+                });
+            }
+            finally
+            {
+                TryDeleteFile(outputPath);
+            }
+
+            return resultJson;
         }
 
         private static bool UseStandardInputForStepData(byte[] stepData)
@@ -946,6 +957,24 @@ namespace EasyEDA_Loader
             }
         }
 
+        private static string ReadOcctErrorFromString(string json)
+        {
+            if (string.IsNullOrWhiteSpace(json))
+                return string.Empty;
+
+            try
+            {
+                using (JsonDocument document = JsonDocument.Parse(json))
+                {
+                    return ReadOcctError(document.RootElement);
+                }
+            }
+            catch
+            {
+                return string.Empty;
+            }
+        }
+
         private static string ReadOcctError(JsonElement root)
         {
             if (root.TryGetProperty("Error", out JsonElement errorElement) &&
@@ -954,6 +983,21 @@ namespace EasyEDA_Loader
                 return errorElement.GetString();
 
             return "Unknown helper error.";
+        }
+
+        private static void TryDeleteFile(string path)
+        {
+            if (string.IsNullOrWhiteSpace(path))
+                return;
+
+            try
+            {
+                if (File.Exists(path))
+                    File.Delete(path);
+            }
+            catch
+            {
+            }
         }
 
         private static string FirstNonEmpty(params string[] values)
