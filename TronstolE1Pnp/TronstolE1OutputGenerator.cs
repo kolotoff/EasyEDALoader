@@ -202,8 +202,6 @@ namespace EasyEDA_Loader.TronstolE1Pnp
             string partNumber,
             TronstolE1Settings settings)
         {
-            bool isBottom = component.GetState_FlippedOnLayer()
-                || component.Internal_GetState_Layer() == (int)TLayerConstant.eBottomLayer;
             string footprint = component.GetState_Pattern() ?? string.Empty;
 
             return new TronstolE1Placement
@@ -214,9 +212,113 @@ namespace EasyEDA_Loader.TronstolE1Pnp
                 Footprint = settings.FormatFootprintName(footprint),
                 CenterXMillimeters = EDP.Utils.CoordToMMs(component.GetState_XLocation()),
                 CenterYMillimeters = EDP.Utils.CoordToMMs(component.GetState_YLocation()),
-                IsBottom = isBottom,
+                IsBottom = IsBottomComponent(component),
                 RotationDegrees = component.GetState_Rotation()
             };
+        }
+
+        private static bool IsBottomComponent(IPCB_Component component)
+        {
+            if (component == null)
+                return false;
+
+            try
+            {
+                if (component.GetState_FlippedOnLayer())
+                    return true;
+            }
+            catch
+            {
+            }
+
+            int topCount = 0;
+            int bottomCount = 0;
+            foreach (IPCB_Primitive primitive in EnumerateComponentPrimitives(component))
+            {
+                if (!TryGetPrimitiveLayerNumber(primitive, out int layerNumber))
+                    continue;
+
+                if (IsLayer(layerNumber, TLayerConstant.eBottomLayer))
+                    bottomCount++;
+                else if (IsLayer(layerNumber, TLayerConstant.eTopLayer))
+                    topCount++;
+            }
+
+            return bottomCount > topCount;
+        }
+
+        private static IEnumerable<IPCB_Primitive> EnumerateComponentPrimitives(IPCB_Component component)
+        {
+            if (!(component is IPCB_Group group))
+                yield break;
+
+            IPCB_GroupIterator iterator = null;
+            try
+            {
+                iterator = group.Internal_GroupIterator_Create() as IPCB_GroupIterator;
+                if (iterator == null)
+                    yield break;
+
+                iterator.SetState_FilterAll();
+                object current = iterator.Internal_FirstPCBObject();
+                while (current != null)
+                {
+                    if (current is IPCB_Primitive primitive)
+                        yield return primitive;
+
+                    current = iterator.Internal_NextPCBObject();
+                }
+            }
+            finally
+            {
+                if (iterator != null)
+                    group.GroupIterator_Destroy(ref iterator);
+            }
+        }
+
+        private static bool TryGetPrimitiveLayerNumber(IPCB_Primitive primitive, out int layerNumber)
+        {
+            layerNumber = 0;
+            if (primitive == null)
+                return false;
+
+            try
+            {
+                IV7_Layer v7Layer = primitive.Internal_GetState_V7Layer();
+                if (v7Layer != null)
+                {
+                    layerNumber = new V7_Layer(v7Layer).Number();
+                    return true;
+                }
+            }
+            catch
+            {
+            }
+
+            try
+            {
+                layerNumber = primitive.Internal_GetState_Layer();
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static bool IsLayer(int layerNumber, TLayerConstant layer)
+        {
+            if (layerNumber == (int)layer)
+                return true;
+
+            try
+            {
+                return layerNumber == new V7_Layer(layer).Number();
+            }
+            catch
+            {
+                return false;
+            }
         }
 
         private static Dictionary<string, CompiledComponentData> ReadCompiledComponents(IPCB_Board board)
