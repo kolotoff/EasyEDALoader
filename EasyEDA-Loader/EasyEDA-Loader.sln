@@ -11,6 +11,10 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "StepCleaner", "..\StepClean
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "StepCleaner.Tests", "..\Test\StepCleaner\StepCleaner.Tests.csproj", "{4B64F760-0D8C-4CA0-8E17-E1A8491B4A41}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TronstolE1Pnp", "..\TronstolE1Pnp\TronstolE1Pnp.csproj", "{7D283458-4191-4D8D-AEB1-75D5D7F68954}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TronstolE1Pnp.Tests", "..\Test\TronstolE1Pnp\TronstolE1Pnp.Tests.csproj", "{355F9C3C-1D03-47E3-B3B8-508DE1B8C903}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -31,6 +35,14 @@ Global
 		{4B64F760-0D8C-4CA0-8E17-E1A8491B4A41}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{4B64F760-0D8C-4CA0-8E17-E1A8491B4A41}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{4B64F760-0D8C-4CA0-8E17-E1A8491B4A41}.Release|Any CPU.Build.0 = Release|Any CPU
+		{7D283458-4191-4D8D-AEB1-75D5D7F68954}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{7D283458-4191-4D8D-AEB1-75D5D7F68954}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{7D283458-4191-4D8D-AEB1-75D5D7F68954}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{7D283458-4191-4D8D-AEB1-75D5D7F68954}.Release|Any CPU.Build.0 = Release|Any CPU
+		{355F9C3C-1D03-47E3-B3B8-508DE1B8C903}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{355F9C3C-1D03-47E3-B3B8-508DE1B8C903}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{355F9C3C-1D03-47E3-B3B8-508DE1B8C903}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{355F9C3C-1D03-47E3-B3B8-508DE1B8C903}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

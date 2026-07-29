@@ -16,6 +16,49 @@ Using the extension is pretty straight forward once it is installed, there will 
 
 `Import to temp` will automatically create `EasyEDA.pcblib` and `EasyEDA.schlib` if they don't already exist in `Documents/AltiumEE`, create the footprint, download the 3d model, create the symbol, add part info, map the footprint to the symbol, then place the component into the active schematic at the bottom left. `Add footprint` imports only the footprint into the active PCB library, and `Add symbol` imports only the schematic symbol into the active schematic library.
 
+## Tronstol E1 pick-and-place output
+
+The extension adds a Tronstol E1 pick-and-place CSV generator to Altium
+OutJobs. In an OutJob, choose:
+
+`Assembly Outputs` -> `Generate Tronstol E1 PNP`
+
+Select the source `.PcbDoc` in the same way as for Altium's generic
+pick-and-place output. The default output filename is
+`<PCB name> Tronstol E1 PNP.csv`.
+
+The generated comma-delimited CSV uses a dot as the decimal separator,
+millimetres for coordinates, and the following columns:
+
+```text
+"Designator","PartNumber","Footprint","Mix X","Mid Y","Layer","Rotation"
+```
+
+- `PartNumber` is read from the component's schematic `PartNumber` parameter;
+  it is not copied from the component comment.
+- Top-side components are labelled `Top`; bottom-side components are labelled
+  `Bottom`.
+- The X coordinate of every bottom-side component is multiplied by `-1.0`.
+- Components whose type is `No BOM` are always omitted.
+- Rows are grouped by the original schematic `PartNumber` value before output
+  cleanup. Components inside each group are sorted by designator using natural
+  order (`R2` before `R10`), and the groups are ordered by the first designator
+  in each group.
+
+The output's configuration dialog provides the following options. They are all
+enabled by default:
+
+- Remove a trailing `_BGA` from footprint names.
+- Remove a trailing ` BGA` from footprint names.
+- Skip components whose comment is `NF`.
+- Skip components whose comment is `DNP` (surrounding whitespace is ignored).
+- Skip components whose `SolderingType` parameter is `Manual`.
+- Skip components whose `SolderingType` parameter is `Wave`.
+- Remove a trailing footprint name from `PartNumber`, unless `PartNumber`
+  consists only of that footprint name. For example,
+  `100nF 50V ±10% X7R C0603` becomes `100nF 50V ±10% X7R`.
+- Replace multiple spaces in `PartNumber` with a single space.
+
 # Runtime Dependencies
 
 ## Experimental local AI layout duplication

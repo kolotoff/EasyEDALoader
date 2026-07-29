@@ -1,0 +1,24 @@
+[OutputGenerator]
+Name                   = Tronstol E1 PNP
+Module                 = TronstolE1Pnp.Outputer.dll
+ServerName             = EasyEDA-Loader
+ClassName              = EasyEDA_Loader.TronstolE1Pnp.PluginFactory
+Description            = Generates Tronstol E1 pick and place CSV files
+DocumentKind           = PCB
+DefaultFolderName      = Pick Place Output
+CanGenerateNetlist     = False
+CanGenerateReport      = False
+CanGenerateOutputFiles = True
+CanGenerateMetaPages   = False
+CanPreferencesForm     = False
+CanPropertiesForm      = True
+CanGenerateFromProject = True
+CanGenerateFromDocument= True
+
+[Output1]
+Name            = Tronstol E1 PNP
+Caption         = Generate Tronstol E1 PNP
+Description     = Generates a Tronstol E1 pick and place CSV file
+Category        = Assembly
+RequiresCompile = True
+SupportsVariants= False

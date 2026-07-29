@@ -448,9 +448,11 @@ function Assert-AltiumClosed {
 
 $repoRoot = $PSScriptRoot
 $projectPath = Join-Path $repoRoot "EasyEDA-Loader\EasyEDA-Loader.csproj"
+$tronstolProjectPath = Join-Path $repoRoot "TronstolE1Pnp\TronstolE1Pnp.csproj"
 $helperProjectPath = Join-Path $repoRoot "StepOcctHlr\StepOcctHlr.csproj"
 $f3dHelperProjectPath = Join-Path $repoRoot "StepF3DRender\StepF3DRender.csproj"
 $sourceDir = Split-Path -Parent $projectPath
+$tronstolSourceDir = Split-Path -Parent $tronstolProjectPath
 $helperSourceDir = Split-Path -Parent $helperProjectPath
 $f3dHelperSourceDir = Split-Path -Parent $f3dHelperProjectPath
 $altiumInstallation = Resolve-AltiumInstallation -ConfiguredProfile $AltiumProfile -ConfiguredExe $AltiumExe -ProcessName $AltiumProcessName
@@ -461,6 +463,10 @@ $registryPath = Join-Path $AltiumProfile "Extensions\ExtensionsRegistry.xml"
 
 if (-not (Test-Path -LiteralPath $projectPath)) {
     throw "Project file was not found: $projectPath"
+}
+
+if (-not (Test-Path -LiteralPath $tronstolProjectPath)) {
+    throw "Tronstol E1 PNP output project file was not found: $tronstolProjectPath"
 }
 
 if (-not (Test-Path -LiteralPath $helperProjectPath)) {
@@ -490,6 +496,12 @@ if ($LASTEXITCODE -ne 0) {
     throw "dotnet build failed for EasyEDA Loader with exit code $LASTEXITCODE."
 }
 
+Write-Step "Building Tronstol E1 PNP output generator ($Configuration)"
+dotnet build $tronstolProjectPath -c $Configuration --nologo
+if ($LASTEXITCODE -ne 0) {
+    throw "dotnet build failed for Tronstol E1 PNP output generator with exit code $LASTEXITCODE."
+}
+
 Write-Step "Building OCCT HLR helper ($Configuration)"
 dotnet build $helperProjectPath -c $Configuration --nologo
 if ($LASTEXITCODE -ne 0) {
@@ -514,6 +526,18 @@ $buildDir = Join-Path $sourceDir "bin\$Configuration\$targetFramework"
 $builtDll = Join-Path $buildDir "EasyEDA-Loader.dll"
 if (-not (Test-Path -LiteralPath $builtDll)) {
     throw "Built DLL was not found: $builtDll"
+}
+
+[xml]$tronstolProjectXml = Get-Content -LiteralPath $tronstolProjectPath
+$tronstolTargetFramework = @($tronstolProjectXml.Project.PropertyGroup.TargetFramework | Where-Object { $_ } | Select-Object -First 1)[0]
+if ([string]::IsNullOrWhiteSpace($tronstolTargetFramework)) {
+    $tronstolTargetFramework = "net8.0-windows"
+}
+
+$tronstolBuildDir = Join-Path $tronstolSourceDir "bin\$Configuration\$tronstolTargetFramework"
+$builtTronstolDll = Join-Path $tronstolBuildDir "TronstolE1Pnp.Outputer.dll"
+if (-not (Test-Path -LiteralPath $builtTronstolDll)) {
+    throw "Built Tronstol E1 PNP output DLL was not found: $builtTronstolDll"
 }
 
 [xml]$helperProjectXml = Get-Content -LiteralPath $helperProjectPath
@@ -563,6 +587,8 @@ New-Item -ItemType Directory -Path $installDir -Force | Out-Null
 Copy-Item -Path (Join-Path $buildDir "*") -Destination $installDir -Force
 Copy-Item -LiteralPath (Join-Path $sourceDir "EasyEDA-Loader.ins") -Destination $installDir -Force
 Copy-Item -LiteralPath (Join-Path $sourceDir "EasyEDA-Loader.rcs") -Destination $installDir -Force
+Copy-Item -Path (Join-Path $tronstolBuildDir "TronstolE1Pnp.Outputer.*") -Destination $installDir -Force
+Copy-Item -LiteralPath (Join-Path $tronstolSourceDir "TronstolE1Pnp.OUT") -Destination $installDir -Force
 
 $helperInstallDir = Join-Path $installDir "StepOcctHlr"
 New-Item -ItemType Directory -Path $helperInstallDir -Force | Out-Null
@@ -586,6 +612,15 @@ if (-not [string]::IsNullOrWhiteSpace($f3dNativeRuntimeSourceDir)) {
 }
 
 $installedDll = Join-Path $installDir "EasyEDA-Loader.dll"
+$installedTronstolDll = Join-Path $installDir "TronstolE1Pnp.Outputer.dll"
+$installedTronstolConfig = Join-Path $installDir "TronstolE1Pnp.OUT"
+if (-not (Test-Path -LiteralPath $installedTronstolDll)) {
+    throw "Installed Tronstol E1 PNP output DLL was not found: $installedTronstolDll"
+}
+if (-not (Test-Path -LiteralPath $installedTronstolConfig)) {
+    throw "Installed Tronstol E1 PNP output registration was not found: $installedTronstolConfig"
+}
+
 $installedHelperExe = Join-Path $helperInstallDir "StepOcctHlr.exe"
 if (-not (Test-Path -LiteralPath $installedHelperExe)) {
     throw "Installed OCCT HLR helper executable was not found: $installedHelperExe"
@@ -623,6 +658,7 @@ $nonItemNodes = @($registryXml.Extensions.ChildNodes | Where-Object { $_.LocalNa
 $easyEdaItem = @($registryXml.Extensions.Item | Where-Object { $_.HRID -eq "EasyEDA-Loader" }) | Select-Object -First 1
 
 $hash = (Get-FileHash -LiteralPath $installedDll -Algorithm SHA256).Hash
+$tronstolHash = (Get-FileHash -LiteralPath $installedTronstolDll -Algorithm SHA256).Hash
 $helperHash = (Get-FileHash -LiteralPath $installedHelperExe -Algorithm SHA256).Hash
 $f3dHelperHash = (Get-FileHash -LiteralPath $installedF3DHelperExe -Algorithm SHA256).Hash
 $f3dNativeHash = $null
@@ -632,6 +668,8 @@ if (Test-Path -LiteralPath $installedF3DNativeLibrary) {
 Write-Host "Installed DLL: $installedDll"
 Write-Host "Assembly version: $version"
 Write-Host "SHA256: $hash"
+Write-Host "Installed Tronstol E1 PNP output DLL: $installedTronstolDll"
+Write-Host "Tronstol E1 PNP SHA256: $tronstolHash"
 Write-Host "Installed OCCT HLR helper: $installedHelperExe"
 Write-Host "OCCT HLR helper SHA256: $helperHash"
 Write-Host "Installed F3D render helper: $installedF3DHelperExe"

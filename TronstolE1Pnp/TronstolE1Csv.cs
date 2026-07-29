@@ -1,0 +1,180 @@
+using System;
+using System.Collections.Generic;
+using System.Globalization;
+using System.IO;
+using System.Linq;
+using System.Text;
+
+namespace EasyEDA_Loader.TronstolE1Pnp
+{
+    public sealed class TronstolE1Placement
+    {
+        public string Designator { get; set; }
+        public string OriginalPartNumber { get; set; }
+        public string PartNumber { get; set; }
+        public string Footprint { get; set; }
+        public double CenterXMillimeters { get; set; }
+        public double CenterYMillimeters { get; set; }
+        public bool IsBottom { get; set; }
+        public double RotationDegrees { get; set; }
+    }
+
+    public static class TronstolE1Csv
+    {
+        public const string Header =
+            "\"Designator\",\"PartNumber\",\"Footprint\",\"Mix X\",\"Mid Y\",\"Layer\",\"Rotation\"";
+
+        public static void Write(TextWriter writer, IEnumerable<TronstolE1Placement> placements)
+        {
+            if (writer == null)
+                throw new ArgumentNullException(nameof(writer));
+            if (placements == null)
+                throw new ArgumentNullException(nameof(placements));
+
+            writer.WriteLine(Header);
+            foreach (TronstolE1Placement placement in OrderPlacements(placements))
+            {
+                double outputX = placement.IsBottom
+                    ? placement.CenterXMillimeters * -1.0
+                    : placement.CenterXMillimeters;
+
+                writer.Write(Quote(placement.Designator));
+                writer.Write(',');
+                writer.Write(Quote(placement.PartNumber));
+                writer.Write(',');
+                writer.Write(Quote(placement.Footprint));
+                writer.Write(',');
+                writer.Write(Quote(FormatCoordinate(outputX)));
+                writer.Write(',');
+                writer.Write(Quote(FormatCoordinate(placement.CenterYMillimeters)));
+                writer.Write(',');
+                writer.Write(Quote(placement.IsBottom ? "Bottom" : "Top"));
+                writer.Write(',');
+                writer.WriteLine(Quote(FormatRotation(placement.RotationDegrees)));
+            }
+        }
+
+        public static string Render(IEnumerable<TronstolE1Placement> placements)
+        {
+            var builder = new StringBuilder();
+            using (var writer = new StringWriter(builder, CultureInfo.InvariantCulture))
+                Write(writer, placements);
+            return builder.ToString();
+        }
+
+        private static IEnumerable<TronstolE1Placement> OrderPlacements(
+            IEnumerable<TronstolE1Placement> placements)
+        {
+            return placements
+                .Where(placement => placement != null)
+                .GroupBy(
+                    placement => placement.OriginalPartNumber ?? placement.PartNumber ?? string.Empty,
+                    StringComparer.Ordinal)
+                .Select(group => new
+                {
+                    PartNumber = group.Key,
+                    Rows = group
+                        .OrderBy(
+                            placement => placement.Designator ?? string.Empty,
+                            NaturalDesignatorComparer.Instance)
+                        .ToList()
+                })
+                .OrderBy(
+                    group => group.Rows[0].Designator ?? string.Empty,
+                    NaturalDesignatorComparer.Instance)
+                .ThenBy(group => group.PartNumber, StringComparer.Ordinal)
+                .SelectMany(group => group.Rows);
+        }
+
+        private static string FormatCoordinate(double value)
+        {
+            if (value == 0.0)
+                value = 0.0;
+            return value.ToString("0.0000", CultureInfo.InvariantCulture);
+        }
+
+        private static string FormatRotation(double value)
+        {
+            if (value == 0.0)
+                value = 0.0;
+            return value.ToString("0.####", CultureInfo.InvariantCulture);
+        }
+
+        private static string Quote(string value)
+        {
+            return "\"" + (value ?? string.Empty).Replace("\"", "\"\"") + "\"";
+        }
+
+        private sealed class NaturalDesignatorComparer : IComparer<string>
+        {
+            public static readonly NaturalDesignatorComparer Instance =
+                new NaturalDesignatorComparer();
+
+            public int Compare(string left, string right)
+            {
+                left = left ?? string.Empty;
+                right = right ?? string.Empty;
+
+                int leftIndex = 0;
+                int rightIndex = 0;
+                while (leftIndex < left.Length && rightIndex < right.Length)
+                {
+                    bool leftIsDigit = char.IsDigit(left[leftIndex]);
+                    bool rightIsDigit = char.IsDigit(right[rightIndex]);
+                    if (leftIsDigit && rightIsDigit)
+                    {
+                        int leftStart = leftIndex;
+                        int rightStart = rightIndex;
+                        while (leftIndex < left.Length && char.IsDigit(left[leftIndex]))
+                            leftIndex++;
+                        while (rightIndex < right.Length && char.IsDigit(right[rightIndex]))
+                            rightIndex++;
+
+                        int leftSignificant = leftStart;
+                        int rightSignificant = rightStart;
+                        while (leftSignificant < leftIndex && left[leftSignificant] == '0')
+                            leftSignificant++;
+                        while (rightSignificant < rightIndex && right[rightSignificant] == '0')
+                            rightSignificant++;
+
+                        int leftDigits = leftIndex - leftSignificant;
+                        int rightDigits = rightIndex - rightSignificant;
+                        int digitCountComparison = leftDigits.CompareTo(rightDigits);
+                        if (digitCountComparison != 0)
+                            return digitCountComparison;
+
+                        int digitComparison = string.Compare(
+                            left,
+                            leftSignificant,
+                            right,
+                            rightSignificant,
+                            leftDigits,
+                            StringComparison.Ordinal);
+                        if (digitComparison != 0)
+                            return digitComparison;
+
+                        int runLengthComparison =
+                            (leftIndex - leftStart).CompareTo(rightIndex - rightStart);
+                        if (runLengthComparison != 0)
+                            return runLengthComparison;
+                    }
+                    else
+                    {
+                        int characterComparison = char.ToUpperInvariant(left[leftIndex])
+                            .CompareTo(char.ToUpperInvariant(right[rightIndex]));
+                        if (characterComparison != 0)
+                            return characterComparison;
+
+                        leftIndex++;
+                        rightIndex++;
+                    }
+                }
+
+                int lengthComparison = left.Length.CompareTo(right.Length);
+                return lengthComparison != 0
+                    ? lengthComparison
+                    : string.Compare(left, right, StringComparison.Ordinal);
+            }
+        }
+    }
+}
