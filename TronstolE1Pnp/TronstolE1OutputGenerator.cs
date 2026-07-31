@@ -3,6 +3,7 @@ using DXP;
 using PCB;
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -47,6 +48,7 @@ namespace EasyEDA_Loader.TronstolE1Pnp
                 settings.SkipDnpComponents,
                 settings.SkipManualSolderingComponents,
                 settings.SkipWaveSolderingComponents,
+                settings.ExportPanelFiducials,
                 settings.RemoveFootprintFromPartNumber,
                 settings.CollapsePartNumberSpaces))
             {
@@ -59,6 +61,7 @@ namespace EasyEDA_Loader.TronstolE1Pnp
                 settings.SkipDnpComponents = form.SkipDnpComponents;
                 settings.SkipManualSolderingComponents = form.SkipManualSolderingComponents;
                 settings.SkipWaveSolderingComponents = form.SkipWaveSolderingComponents;
+                settings.ExportPanelFiducials = form.ExportPanelFiducials;
                 settings.RemoveFootprintFromPartNumber = form.RemoveFootprintFromPartNumber;
                 settings.CollapsePartNumberSpaces = form.CollapsePartNumberSpaces;
                 return true;
@@ -82,7 +85,7 @@ namespace EasyEDA_Loader.TronstolE1Pnp
                 try
                 {
                     using (var writer = new StreamWriter(outputFile, false, new UTF8Encoding(false)))
-                        TronstolE1Csv.Write(writer, ReadPlacements(board));
+                        TronstolE1Csv.Write(writer, ReadOutputPlacements(board));
                 }
                 finally
                 {
@@ -129,6 +132,18 @@ namespace EasyEDA_Loader.TronstolE1Pnp
                 : documentDirectory;
         }
 
+        private IEnumerable<TronstolE1Placement> ReadOutputPlacements(IPCB_Board board)
+        {
+            if (settings.ExportPanelFiducials)
+            {
+                foreach (TronstolE1Placement fiducial in ReadPanelFiducials(board))
+                    yield return fiducial;
+            }
+
+            foreach (TronstolE1Placement placement in ReadPlacements(board))
+                yield return placement;
+        }
+
         private static string EnsureCsvExtension(string path)
         {
             return string.Equals(Path.GetExtension(path), ".csv", StringComparison.OrdinalIgnoreCase)
@@ -152,6 +167,135 @@ namespace EasyEDA_Loader.TronstolE1Pnp
 
             return pcbServer.Internal_GetPCBBoardByPath(documentPath) as IPCB_Board
                 ?? pcbServer.Internal_LoadPCBBoardByPath(documentPath) as IPCB_Board;
+        }
+
+        private IEnumerable<TronstolE1Placement> ReadPanelFiducials(IPCB_Board board)
+        {
+            IPCB_BoardIterator iterator = null;
+            try
+            {
+                iterator = board.Internal_BoardIterator_Create() as IPCB_BoardIterator;
+                if (iterator == null)
+                    yield break;
+
+                iterator.AddFilter_ObjectSet(CreateObjectSet((int)TObjectId.ePadObject));
+                object current = iterator.Internal_FirstPCBObject();
+                while (current != null)
+                {
+                    if (current is IPCB_Pad pad
+                        && TryParsePanelFiducialNumber(pad.GetState_Name(), out int number))
+                    {
+                        yield return ReadPanelFiducial(pad, number);
+                    }
+
+                    current = iterator.Internal_NextPCBObject();
+                }
+            }
+            finally
+            {
+                if (iterator != null)
+                    board.BoardIterator_Destroy(ref iterator);
+            }
+        }
+
+        private static TronstolE1Placement ReadPanelFiducial(IPCB_Pad pad, int number)
+        {
+            bool isBottom = IsBottomPad(pad);
+            return new TronstolE1Placement
+            {
+                Designator = "Fiducial" + number.ToString(CultureInfo.InvariantCulture),
+                OriginalPartNumber = "PanelFiducial",
+                PartNumber = "PanelFiducial",
+                Footprint = FormatPadFootprint(pad, isBottom),
+                CenterXMillimeters = EDP.Utils.CoordToMMs(pad.GetState_XLocation()),
+                CenterYMillimeters = EDP.Utils.CoordToMMs(pad.GetState_YLocation()),
+                IsBottom = isBottom,
+                RotationDegrees = 0.0,
+                RotationText = "0.0",
+                IsPanelFiducial = true,
+                PanelFiducialNumber = number
+            };
+        }
+
+        private static bool TryParsePanelFiducialNumber(string name, out int number)
+        {
+            number = 0;
+            const string prefix = "PanelFiducial";
+            if (name == null || !name.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                return false;
+
+            string suffix = name.Substring(prefix.Length);
+            if (suffix.Length == 0)
+                return false;
+
+            for (int index = 0; index < suffix.Length; index++)
+            {
+                if (!char.IsDigit(suffix[index]))
+                    return false;
+            }
+
+            return int.TryParse(suffix, NumberStyles.None, CultureInfo.InvariantCulture, out number);
+        }
+
+        private static bool IsBottomPad(IPCB_Pad pad)
+        {
+            return TryGetPrimitiveLayerNumber(pad, out int layerNumber)
+                && IsLayer(layerNumber, TLayerConstant.eBottomLayer);
+        }
+
+        private static string FormatPadFootprint(IPCB_Pad pad, bool isBottom)
+        {
+            ReadPadShapeAndXSize(pad, isBottom, out int shape, out int xSize);
+
+            return FormatPadShape(shape)
+                + " "
+                + EDP.Utils.CoordToMMs(xSize).ToString("0.00", CultureInfo.InvariantCulture)
+                + "mm";
+        }
+
+        private static string FormatPadShape(int shape)
+        {
+            if (shape == (int)TShape.eRounded)
+                return "Round";
+            if (shape == (int)TShape.eRectangular)
+                return "Rectangular";
+            if (shape == (int)TShape.eRoundedRectangular
+                || shape == (int)TShape.eRoundRectShape)
+            {
+                return "RoundedRectangular";
+            }
+            if (shape == (int)TShape.eCustomShape)
+                return "Custom";
+
+            return "Shape" + shape.ToString(CultureInfo.InvariantCulture);
+        }
+
+        private static void ReadPadShapeAndXSize(
+            IPCB_Pad pad,
+            bool preferBottom,
+            out int shape,
+            out int xSize)
+        {
+            shape = preferBottom
+                ? pad.Internal_GetState_BotShape()
+                : pad.Internal_GetState_TopShape();
+            xSize = preferBottom
+                ? pad.GetState_BotXSize()
+                : pad.GetState_TopXSize();
+            if (xSize > 0)
+                return;
+
+            shape = preferBottom
+                ? pad.Internal_GetState_TopShape()
+                : pad.Internal_GetState_BotShape();
+            xSize = preferBottom
+                ? pad.GetState_TopXSize()
+                : pad.GetState_BotXSize();
+            if (xSize > 0)
+                return;
+
+            shape = pad.Internal_GetState_MidShape();
+            xSize = pad.GetState_MidXSize();
         }
 
         private IEnumerable<TronstolE1Placement> ReadPlacements(IPCB_Board board)

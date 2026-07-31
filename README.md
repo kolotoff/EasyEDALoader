@@ -59,6 +59,13 @@ millimetres for coordinates, and the following columns:
   `Bottom`.
 - The X coordinate of every bottom-side component is multiplied by `-1.0`.
 - Components whose type is `No BOM` are always omitted.
+- When panel fiducial export is enabled, board pads named
+  `PanelFiducial<number>` are added before component rows. They are ordered by
+  number, renamed to `Fiducial<number>`, exported with `PanelFiducial` in the
+  `PartNumber` column, and use a footprint value based on pad shape and X size
+  such as `Round 2.00mm`. Fiducial rotation is always exported as `0.0`; bottom
+  fiducials are labelled `Bottom` and use the same inverted X coordinate rule as
+  bottom-side components.
 - Rows are grouped by the original schematic `PartNumber` value before output
   cleanup. Components inside each group are sorted by designator using natural
   order (`R2` before `R10`), and the groups are ordered by the first designator
@@ -73,6 +80,7 @@ enabled by default:
 - Skip components whose comment is `DNP` (surrounding whitespace is ignored).
 - Skip components whose `SolderingType` parameter is `Manual`.
 - Skip components whose `SolderingType` parameter is `Wave`.
+- Export panel fiducials from board pads named `PanelFiducial<number>`.
 - Remove a trailing footprint name from `PartNumber`, unless `PartNumber`
   consists only of that footprint name. For example,
   `100nF 50V ±10% X7R C0603` becomes `100nF 50V ±10% X7R`.

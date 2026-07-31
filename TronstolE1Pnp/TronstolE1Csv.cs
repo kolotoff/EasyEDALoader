@@ -17,6 +17,9 @@ namespace EasyEDA_Loader.TronstolE1Pnp
         public double CenterYMillimeters { get; set; }
         public bool IsBottom { get; set; }
         public double RotationDegrees { get; set; }
+        public string RotationText { get; set; }
+        public bool IsPanelFiducial { get; set; }
+        public int PanelFiducialNumber { get; set; }
     }
 
     public static class TronstolE1Csv
@@ -50,7 +53,7 @@ namespace EasyEDA_Loader.TronstolE1Pnp
                 writer.Write(',');
                 writer.Write(Quote(placement.IsBottom ? "Bottom" : "Top"));
                 writer.Write(',');
-                writer.WriteLine(Quote(FormatRotation(placement.RotationDegrees)));
+                writer.WriteLine(Quote(placement.RotationText ?? FormatRotation(placement.RotationDegrees)));
             }
         }
 
@@ -65,8 +68,19 @@ namespace EasyEDA_Loader.TronstolE1Pnp
         private static IEnumerable<TronstolE1Placement> OrderPlacements(
             IEnumerable<TronstolE1Placement> placements)
         {
-            return placements
+            List<TronstolE1Placement> rows = placements
                 .Where(placement => placement != null)
+                .ToList();
+
+            IEnumerable<TronstolE1Placement> panelFiducials = rows
+                .Where(placement => placement.IsPanelFiducial)
+                .OrderBy(placement => placement.PanelFiducialNumber)
+                .ThenBy(
+                    placement => placement.Designator ?? string.Empty,
+                    NaturalDesignatorComparer.Instance);
+
+            IEnumerable<TronstolE1Placement> components = rows
+                .Where(placement => !placement.IsPanelFiducial)
                 .GroupBy(
                     placement => placement.OriginalPartNumber ?? placement.PartNumber ?? string.Empty,
                     StringComparer.Ordinal)
@@ -84,6 +98,8 @@ namespace EasyEDA_Loader.TronstolE1Pnp
                     NaturalDesignatorComparer.Instance)
                 .ThenBy(group => group.PartNumber, StringComparer.Ordinal)
                 .SelectMany(group => group.Rows);
+
+            return panelFiducials.Concat(components);
         }
 
         private static string FormatCoordinate(double value)
