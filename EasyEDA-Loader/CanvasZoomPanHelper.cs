@@ -10,6 +10,8 @@ namespace EasyEDA_Loader
     public class CanvasZoomPanHelper
     {
         private readonly Canvas _canvas;
+        private readonly FrameworkElement _viewport;
+        private readonly bool _fitCanvasExtent;
         private Point _lastDragPoint;
         private bool _isDragging;
 
@@ -17,9 +19,19 @@ namespace EasyEDA_Loader
         private readonly TranslateTransform _translateTransform = new TranslateTransform();
         private readonly TransformGroup _transformGroup = new TransformGroup();
 
-        public CanvasZoomPanHelper(Canvas canvas)
+        public CanvasZoomPanHelper(Canvas canvas) : this(canvas, null, false)
+        {
+        }
+
+        // Supplying a viewport lets preview hosts use a clipped panel instead
+        // of a ScrollViewer.  This is useful when the canvas has an explicit
+        // drawing extent and must remain centered while still supporting pan
+        // and wheel zoom.
+        public CanvasZoomPanHelper(Canvas canvas, FrameworkElement viewport, bool fitCanvasExtent)
         {
             _canvas = canvas ?? throw new ArgumentNullException(nameof(canvas));
+            _viewport = viewport;
+            _fitCanvasExtent = fitCanvasExtent;
 
             _transformGroup.Children.Add(_scaleTransform);
             _transformGroup.Children.Add(_translateTransform);
@@ -43,15 +55,15 @@ namespace EasyEDA_Loader
 
         private void AttachEvents()
         {
-            var scrollViewer = _canvas.Parent as ScrollViewer;
-            if (scrollViewer == null)
-                throw new InvalidOperationException("Canvas must be inside a ScrollViewer.");
+            FrameworkElement viewport = _viewport ?? (_canvas.Parent as ScrollViewer);
+            if (viewport == null)
+                throw new InvalidOperationException("Canvas must be inside a ScrollViewer or supplied with a viewport.");
 
-            scrollViewer.PreviewMouseWheel += Canvas_MouseWheel;
-            scrollViewer.PreviewMouseLeftButtonDown += Canvas_MouseLeftButtonDown;
-            scrollViewer.PreviewMouseLeftButtonUp += Canvas_MouseLeftButtonUp;
-            scrollViewer.PreviewMouseMove += Canvas_MouseMove;
-            scrollViewer.PreviewMouseRightButtonDown += Canvas_MouseRightButtonDown;
+            viewport.PreviewMouseWheel += Canvas_MouseWheel;
+            viewport.PreviewMouseLeftButtonDown += Canvas_MouseLeftButtonDown;
+            viewport.PreviewMouseLeftButtonUp += Canvas_MouseLeftButtonUp;
+            viewport.PreviewMouseMove += Canvas_MouseMove;
+            viewport.PreviewMouseRightButtonDown += Canvas_MouseRightButtonDown;
         }
 
         public void FitToBoundingBox()
@@ -59,16 +71,18 @@ namespace EasyEDA_Loader
             if (_canvas == null || _canvas.Children.Count == 0)
                 return;
 
-            var scrollViewer = FindParent<ScrollViewer>(_canvas);
-            if (scrollViewer == null)
+            FrameworkElement viewport = _viewport ?? FindParent<ScrollViewer>(_canvas);
+            if (viewport == null)
                 return;
 
-            Rect contentBounds = CalculateCanvasBounds();
+            Rect contentBounds = _fitCanvasExtent
+                ? new Rect(0, 0, _canvas.Width, _canvas.Height)
+                : CalculateCanvasBounds();
             if (contentBounds.IsEmpty || contentBounds.Width == 0 || contentBounds.Height == 0)
                 return;
 
-            double viewportWidth = scrollViewer.ViewportWidth;
-            double viewportHeight = scrollViewer.ViewportHeight;
+            double viewportWidth = _viewport != null ? _viewport.ActualWidth : ((ScrollViewer)viewport).ViewportWidth;
+            double viewportHeight = _viewport != null ? _viewport.ActualHeight : ((ScrollViewer)viewport).ViewportHeight;
 
             if (viewportWidth <= 0 || viewportHeight <= 0)
                 return;
@@ -188,8 +202,7 @@ namespace EasyEDA_Loader
 
         private void Canvas_MouseWheel(object sender, MouseWheelEventArgs e)
         {
-            var scrollViewer = sender as ScrollViewer;
-            if (scrollViewer == null)
+            if (!(sender is FrameworkElement))
                 return;
 
             Point mousePos = e.GetPosition(_canvas);

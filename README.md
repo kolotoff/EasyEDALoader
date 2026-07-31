@@ -16,6 +16,25 @@ Using the extension is pretty straight forward once it is installed, there will 
 
 `Import to temp` will automatically create `EasyEDA.pcblib` and `EasyEDA.schlib` if they don't already exist in `Documents/AltiumEE`, create the footprint, download the 3d model, create the symbol, add part info, map the footprint to the symbol, then place the component into the active schematic at the bottom left. `Add footprint` imports only the footprint into the active PCB library, and `Add symbol` imports only the schematic symbol into the active schematic library.
 
+## JLCCAM production-panel import
+
+In the PCB editor, use either of these actions:
+
+`Tools` -> `EasyEDA` -> `Import JLCCAM` -> `Import archive`
+
+`Tools` -> `EasyEDA` -> `Import JLCCAM` -> `Import folder`
+
+`Import archive` selects a JLC production `.rar`; `Import folder` selects an
+already extracted production folder. Both open a review dialog before changing
+the board. The dialog previews the original board outline and panel rails,
+lists edge-hole and per-side fiducial coordinates in millimetres, and can copy
+the session report to the clipboard.
+
+All three import categories are selected by default. On import, rail geometry
+is added as 0.1 mm keepout tracks/arcs, edge holes are added as unplated
+no-copper `PanelHole*` pads, and fiducials are added as side-specific no-paste
+`PanelFiducial*` SMD pads.
+
 ## Tronstol E1 pick-and-place output
 
 The extension adds a Tronstol E1 pick-and-place CSV generator to Altium

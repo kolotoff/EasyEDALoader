@@ -1,0 +1,42 @@
+<Window x:Class="EasyEDA_Loader.JlcCamImportDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Import JLCCAM" Height="760" Width="1200" MinHeight="600" MinWidth="900"
+        ShowInTaskbar="False" WindowStartupLocation="CenterScreen" FontFamily="Segoe UI" Background="#3E3E3E" Foreground="#F4F4F4" Loaded="Window_Loaded" SizeChanged="Window_SizeChanged" Closed="Window_Closed">
+    <Window.Resources>
+        <Style TargetType="{x:Type TextBlock}"><Setter Property="Foreground" Value="#F4F4F4"/></Style>
+        <Style TargetType="{x:Type GroupBox}"><Setter Property="Foreground" Value="#F4F4F4"/><Setter Property="BorderBrush" Value="#666666"/><Setter Property="Background" Value="#464646"/></Style>
+        <Style TargetType="{x:Type Button}"><Setter Property="Foreground" Value="#F4F4F4"/><Setter Property="Background" Value="#4A4A4A"/><Setter Property="BorderBrush" Value="#171717"/><Setter Property="Padding" Value="12,4"/></Style>
+        <Style TargetType="{x:Type CheckBox}"><Setter Property="Foreground" Value="#F4F4F4"/></Style>
+        <Style TargetType="{x:Type DataGrid}"><Setter Property="Background" Value="#363636"/><Setter Property="Foreground" Value="#F4F4F4"/><Setter Property="BorderBrush" Value="#646464"/><Setter Property="RowBackground" Value="#383838"/><Setter Property="AlternatingRowBackground" Value="#414141"/><Setter Property="GridLinesVisibility" Value="Horizontal"/><Setter Property="HorizontalGridLinesBrush" Value="#555555"/><Setter Property="VerticalGridLinesBrush" Value="#555555"/></Style>
+        <Style TargetType="{x:Type DataGridCell}"><Setter Property="Foreground" Value="#F4F4F4"/><Setter Property="BorderBrush" Value="#555555"/></Style>
+        <Style TargetType="{x:Type DataGridColumnHeader}"><Setter Property="Foreground" Value="#F4F4F4"/><Setter Property="Background" Value="#4A4A4A"/><Setter Property="BorderBrush" Value="#666666"/></Style>
+    </Window.Resources>
+    <Grid Margin="12">
+        <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+        <StackPanel Grid.Row="0" Margin="0,0,0,10">
+            <TextBlock x:Name="sourceText" FontWeight="SemiBold" TextWrapping="Wrap"/>
+            <TextBlock x:Name="statusText" Margin="0,4,0,0" TextWrapping="Wrap"/>
+        </StackPanel>
+        <Grid Grid.Row="1">
+            <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="12"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+            <Border Grid.Column="0" BorderBrush="#666666" Background="#303030" BorderThickness="1" Padding="4">
+                <Border x:Name="previewViewport" Background="#303030" ClipToBounds="True">
+                    <Canvas x:Name="previewCanvas" Background="Transparent" HorizontalAlignment="Left" VerticalAlignment="Top"/>
+                </Border>
+            </Border>
+            <Grid Grid.Column="2"><Grid.RowDefinitions><RowDefinition Height="*"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+                <GroupBox Header="Edge holes (mm)" Grid.Row="0" Margin="0,0,0,6"><DataGrid x:Name="holesGrid" AutoGenerateColumns="False" HeadersVisibility="Column" IsReadOnly="True" CanUserAddRows="False"><DataGrid.Columns>
+                    <DataGridTextColumn Header="#" Binding="{Binding Number}" Width="40"/><DataGridTextColumn Header="X (mm)" Binding="{Binding Center.X, StringFormat=0.00}" Width="*"/><DataGridTextColumn Header="Y (mm)" Binding="{Binding Center.Y, StringFormat=0.00}" Width="*"/><DataGridTextColumn Header="Nominal (mm)" Binding="{Binding NominalDiameterMm, StringFormat=0.00}" Width="*"/><DataGridTextColumn Header="Top mask (mm)" Binding="{Binding TopMaskOpeningMm, StringFormat=0.00}" Width="*"/><DataGridTextColumn Header="Bottom mask (mm)" Binding="{Binding BottomMaskOpeningMm, StringFormat=0.00}" Width="*"/><DataGridTextColumn Header="Status" Binding="{Binding Status}" Width="2*"/>
+                </DataGrid.Columns></DataGrid></GroupBox>
+                <GroupBox Header="Fiducials (mm)" Grid.Row="1" Margin="0,6,0,0"><DataGrid x:Name="fiducialsGrid" AutoGenerateColumns="False" HeadersVisibility="Column" IsReadOnly="True" CanUserAddRows="False"><DataGrid.Columns>
+                    <DataGridTextColumn Header="#" Binding="{Binding Number}" Width="40"/><DataGridTextColumn Header="X (mm)" Binding="{Binding Center.X, StringFormat=0.00}" Width="*"/><DataGridTextColumn Header="Y (mm)" Binding="{Binding Center.Y, StringFormat=0.00}" Width="*"/><DataGridTextColumn Header="Layer" Binding="{Binding Side}" Width="80"/><DataGridTextColumn Header="Nominal (mm)" Binding="{Binding NominalDiameterMm, StringFormat=0.00}" Width="*"/><DataGridTextColumn Header="Solder-mask opening (mm)" Binding="{Binding MaskOpeningMm, StringFormat=0.00}" Width="*"/><DataGridTextColumn Header="Status" Binding="{Binding Status}" Width="2*"/>
+                </DataGrid.Columns></DataGrid></GroupBox>
+            </Grid>
+        </Grid>
+        <Grid Grid.Row="2" Margin="0,10,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+            <StackPanel Grid.Column="0" Orientation="Horizontal"><CheckBox x:Name="railsCheckBox" IsChecked="True" Content="Import edge rails" Margin="0,0,14,0" Checked="ImportOptionChanged" Unchecked="ImportOptionChanged"/><CheckBox x:Name="fiducialsCheckBox" IsChecked="True" Content="Import fiducials" Margin="0,0,14,0" Checked="ImportOptionChanged" Unchecked="ImportOptionChanged"/><CheckBox x:Name="holesCheckBox" IsChecked="True" Content="Import edge holes" Checked="ImportOptionChanged" Unchecked="ImportOptionChanged"/></StackPanel>
+            <Button Grid.Column="1" Content="Copy report to clipboard" Margin="8,0" Padding="12,4" Click="CopyReport_Click"/><Button x:Name="importButton" Grid.Column="2" Content="Import" Margin="0,0,8,0" Padding="20,4" Click="Import_Click"/><Button Grid.Column="3" Content="Cancel" Padding="20,4" Click="Cancel_Click"/>
+        </Grid>
+    </Grid>
+</Window>

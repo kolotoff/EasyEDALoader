@@ -68,6 +68,10 @@ namespace EasyEDA_Loader
             RegisterCommand("EasyEDA-Loader:EasyEDAOpenSymbolLibrary", new CommandProc(OpenSymbolLibrary));
             RegisterCommand("EasyEDAOpenFootprintLibrary", new CommandProc(OpenFootprintLibrary));
             RegisterCommand("EasyEDA-Loader:EasyEDAOpenFootprintLibrary", new CommandProc(OpenFootprintLibrary));
+            RegisterCommand("EasyEDAImportJlcCamArchive", new CommandProc(ImportJlcCamArchive));
+            RegisterCommand("EasyEDA-Loader:EasyEDAImportJlcCamArchive", new CommandProc(ImportJlcCamArchive));
+            RegisterCommand("EasyEDAImportJlcCamFolder", new CommandProc(ImportJlcCamFolder));
+            RegisterCommand("EasyEDA-Loader:EasyEDAImportJlcCamFolder", new CommandProc(ImportJlcCamFolder));
         }
 
         private void RegisterCommand(string argCommandId, CommandProc commandProc)
@@ -496,6 +500,50 @@ namespace EasyEDA_Loader
         {
             Trace("OpenFootprintLibrary entered.");
             LibraryNavigation.OpenSelectedPcbComponentLibrary(argContext);
+        }
+
+        private void ImportJlcCamArchive(IServerDocumentView argContext, ref string argParameters)
+        {
+            if (IsLoaderDialogOpen()) return;
+            IPCB_Board board = EEPCB.GetCurrentPcbBoard(argContext);
+            if (board == null) throw new InvalidOperationException("Open a PCB document before importing JLCCAM.");
+            using (var dialog = new OpenFileDialog { Title = "Import JLCCAM archive", Filter = "JLC production archive (*.rar)|*.rar", CheckFileExists = true, InitialDirectory = JlcCamSettings.LoadArchiveFolder() })
+            {
+                if (dialog.ShowDialog() != DialogResult.OK) return;
+                JlcCamSettings.SaveArchiveFolder(Path.GetDirectoryName(dialog.FileName));
+                RunJlcCamDialog(board, () => JlcCamSource.OpenArchive(dialog.FileName));
+            }
+        }
+
+        private void ImportJlcCamFolder(IServerDocumentView argContext, ref string argParameters)
+        {
+            if (IsLoaderDialogOpen()) return;
+            IPCB_Board board = EEPCB.GetCurrentPcbBoard(argContext);
+            if (board == null) throw new InvalidOperationException("Open a PCB document before importing JLCCAM.");
+            using (var dialog = new FolderBrowserDialog { Description = "Select extracted JLCCAM production folder", SelectedPath = JlcCamSettings.LoadFolder(), ShowNewFolderButton = false })
+            {
+                if (dialog.ShowDialog() != DialogResult.OK) return;
+                JlcCamSettings.SaveFolder(dialog.SelectedPath);
+                RunJlcCamDialog(board, () => JlcCamSource.OpenFolder(dialog.SelectedPath));
+            }
+        }
+
+        private void RunJlcCamDialog(IPCB_Board board, Func<JlcCamAnalysisSession> open)
+        {
+            Interlocked.Exchange(ref loaderDialogOpen, 1);
+            JlcCamAnalysisSession session = null;
+            try
+            {
+                session = JlcCamAnalyzer.Analyze(open());
+                var dialog = new JlcCamImportDialog(session, board) { ShowActivated = true, WindowStartupLocation = System.Windows.WindowStartupLocation.CenterScreen };
+                IntPtr ownerHandle = Process.GetCurrentProcess().MainWindowHandle;
+                if (ownerHandle != IntPtr.Zero) new System.Windows.Interop.WindowInteropHelper(dialog).Owner = ownerHandle;
+                bool? dialogResult = dialog.ShowDialog();
+                if (dialogResult == true)
+                    MarkCurrentDocumentModified();
+            }
+            catch { session?.Dispose(); throw; }
+            finally { Interlocked.Exchange(ref loaderDialogOpen, 0); }
         }
 
         private void ExportShapeSelectedLibraries(
