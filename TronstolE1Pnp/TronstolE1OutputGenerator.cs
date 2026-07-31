@@ -49,6 +49,7 @@ namespace EasyEDA_Loader.TronstolE1Pnp
                 settings.SkipManualSolderingComponents,
                 settings.SkipWaveSolderingComponents,
                 settings.ExportPanelFiducials,
+                settings.ExportBoardDimensions,
                 settings.RemoveFootprintFromPartNumber,
                 settings.CollapsePartNumberSpaces))
             {
@@ -62,6 +63,7 @@ namespace EasyEDA_Loader.TronstolE1Pnp
                 settings.SkipManualSolderingComponents = form.SkipManualSolderingComponents;
                 settings.SkipWaveSolderingComponents = form.SkipWaveSolderingComponents;
                 settings.ExportPanelFiducials = form.ExportPanelFiducials;
+                settings.ExportBoardDimensions = form.ExportBoardDimensions;
                 settings.RemoveFootprintFromPartNumber = form.RemoveFootprintFromPartNumber;
                 settings.CollapsePartNumberSpaces = form.CollapsePartNumberSpaces;
                 return true;
@@ -134,13 +136,21 @@ namespace EasyEDA_Loader.TronstolE1Pnp
 
         private IEnumerable<TronstolE1Placement> ReadOutputPlacements(IPCB_Board board)
         {
+            BoardCoordinateOrigin origin = ReadBoardCoordinateOrigin(board);
+
             if (settings.ExportPanelFiducials)
             {
-                foreach (TronstolE1Placement fiducial in ReadPanelFiducials(board))
+                foreach (TronstolE1Placement fiducial in ReadPanelFiducials(board, origin))
                     yield return fiducial;
             }
 
-            foreach (TronstolE1Placement placement in ReadPlacements(board))
+            if (settings.ExportBoardDimensions)
+            {
+                foreach (TronstolE1Placement boardInfo in ReadBoardDimensions(board, origin))
+                    yield return boardInfo;
+            }
+
+            foreach (TronstolE1Placement placement in ReadPlacements(board, origin))
                 yield return placement;
         }
 
@@ -169,7 +179,423 @@ namespace EasyEDA_Loader.TronstolE1Pnp
                 ?? pcbServer.Internal_LoadPCBBoardByPath(documentPath) as IPCB_Board;
         }
 
-        private IEnumerable<TronstolE1Placement> ReadPanelFiducials(IPCB_Board board)
+        private static BoardCoordinateOrigin ReadBoardCoordinateOrigin(IPCB_Board board)
+        {
+            try
+            {
+                return new BoardCoordinateOrigin(board.GetState_XOrigin(), board.GetState_YOrigin());
+            }
+            catch (Exception ex)
+            {
+                throw new InvalidOperationException(
+                    "Unable to read PCB coordinate origin for Tronstol E1 PNP rows.",
+                    ex);
+            }
+        }
+
+        private static IEnumerable<TronstolE1Placement> ReadBoardDimensions(
+            IPCB_Board board,
+            BoardCoordinateOrigin origin)
+        {
+            if (!TryGetBoardBounds(board, out int left, out int bottom, out int right, out int top))
+            {
+                throw new InvalidOperationException(
+                    "Unable to read board outline bounds for PCB_Size and PCB_BTLC rows.");
+            }
+
+            if (right <= left || top <= bottom)
+            {
+                throw new InvalidOperationException(
+                    "Invalid board outline bounds for PCB_Size and PCB_BTLC rows.");
+            }
+
+            double leftMm = EDP.Utils.CoordToMMs(left - origin.X);
+            double bottomMm = EDP.Utils.CoordToMMs(bottom - origin.Y);
+            double widthMm = EDP.Utils.CoordToMMs(right - left);
+            double heightMm = EDP.Utils.CoordToMMs(top - bottom);
+
+            yield return CreateBoardInfoPlacement(
+                "PCB_Size1",
+                "Board dimensions",
+                "PCB_Size",
+                widthMm,
+                heightMm,
+                false,
+                1);
+            yield return CreateBoardInfoPlacement(
+                "PCB_BTLC1",
+                "Board bottom left corner",
+                "PCB_BTLC",
+                leftMm,
+                bottomMm,
+                false,
+                2);
+            yield return CreateBoardInfoPlacement(
+                "PCB_Size2",
+                "Board dimensions",
+                "PCB_Size",
+                widthMm,
+                heightMm,
+                true,
+                3);
+            yield return CreateBoardInfoPlacement(
+                "PCB_BTLC2",
+                "Board bottom left corner",
+                "PCB_BTLC",
+                leftMm,
+                bottomMm,
+                true,
+                4);
+        }
+
+        private static TronstolE1Placement CreateBoardInfoPlacement(
+            string designator,
+            string partNumber,
+            string footprint,
+            double xMillimeters,
+            double yMillimeters,
+            bool isBottom,
+            int order)
+        {
+            return new TronstolE1Placement
+            {
+                Designator = designator,
+                OriginalPartNumber = partNumber,
+                PartNumber = partNumber,
+                Footprint = footprint,
+                CenterXMillimeters = xMillimeters,
+                CenterYMillimeters = yMillimeters,
+                IsBottom = isBottom,
+                RotationDegrees = 0.0,
+                RotationText = "0.0",
+                IsBoardInfo = true,
+                BoardInfoOrder = order,
+                DisableBottomXInversion = true
+            };
+        }
+
+        private readonly struct BoardCoordinateOrigin
+        {
+            public BoardCoordinateOrigin(int x, int y)
+            {
+                X = x;
+                Y = y;
+            }
+
+            public int X { get; }
+            public int Y { get; }
+        }
+
+        private static bool TryGetBoardBounds(
+            IPCB_Board board,
+            out int left,
+            out int bottom,
+            out int right,
+            out int top)
+        {
+            left = 0;
+            bottom = 0;
+            right = 0;
+            top = 0;
+            try
+            {
+                if (board == null)
+                    return false;
+
+                object outline;
+                try
+                {
+                    outline = board.Internal_GetState_BoardOutline();
+                }
+                catch
+                {
+                    return false;
+                }
+
+                return TryGetBoardOutlineBounds(outline, out left, out bottom, out right, out top);
+            }
+            catch
+            {
+                left = 0;
+                bottom = 0;
+                right = 0;
+                top = 0;
+                return false;
+            }
+        }
+
+        private static bool TryGetBoardOutlineBounds(
+            object outline,
+            out int left,
+            out int bottom,
+            out int right,
+            out int top)
+        {
+            left = 0;
+            bottom = 0;
+            right = 0;
+            top = 0;
+
+            if (outline is IPCB_BoardOutline boardOutline
+                && TryGetBoardOutlinePolygonBounds(boardOutline, out left, out bottom, out right, out top))
+            {
+                return true;
+            }
+
+            if (!(outline is IPCB_Group group))
+                return false;
+
+            bool found = false;
+            IPCB_GroupIterator iterator = null;
+            try
+            {
+                iterator = group.Internal_GroupIterator_Create() as IPCB_GroupIterator;
+                if (iterator == null)
+                    return false;
+
+                iterator.SetState_FilterAll();
+                object current = iterator.Internal_FirstPCBObject();
+                int count = 0;
+                while (current != null)
+                {
+                    count++;
+                    if (count > 10000)
+                        return false;
+
+                    if (current is IPCB_Primitive primitive
+                        && TryReadPrimitiveBounds(
+                            primitive,
+                            out int primitiveLeft,
+                            out int primitiveBottom,
+                            out int primitiveRight,
+                            out int primitiveTop))
+                    {
+                        if (!found)
+                        {
+                            left = primitiveLeft;
+                            bottom = primitiveBottom;
+                            right = primitiveRight;
+                            top = primitiveTop;
+                            found = true;
+                        }
+                        else
+                        {
+                            left = Math.Min(left, primitiveLeft);
+                            bottom = Math.Min(bottom, primitiveBottom);
+                            right = Math.Max(right, primitiveRight);
+                            top = Math.Max(top, primitiveTop);
+                        }
+                    }
+
+                    current = iterator.Internal_NextPCBObject();
+                }
+            }
+            catch
+            {
+                return false;
+            }
+            finally
+            {
+                if (iterator != null)
+                    group.GroupIterator_Destroy(ref iterator);
+            }
+
+            return found && right > left && top > bottom;
+        }
+
+        private static bool TryGetBoardOutlinePolygonBounds(
+            IPCB_BoardOutline boardOutline,
+            out int left,
+            out int bottom,
+            out int right,
+            out int top)
+        {
+            left = 0;
+            bottom = 0;
+            right = 0;
+            top = 0;
+            try
+            {
+                IPCB_GeometricPolygon polygon =
+                    boardOutline.Internal_BoardOutline_GeometricPolygon() as IPCB_GeometricPolygon;
+                if (polygon == null)
+                    return false;
+
+                return TryReadPolygonBounds(polygon, 0, out left, out bottom, out right, out top)
+                    || TryReadPolygonBounds(polygon, 1, out left, out bottom, out right, out top);
+            }
+            catch
+            {
+                left = 0;
+                bottom = 0;
+                right = 0;
+                top = 0;
+                return false;
+            }
+        }
+
+        private static bool TryReadPolygonBounds(
+            IPCB_GeometricPolygon polygon,
+            int firstIndex,
+            out int left,
+            out int bottom,
+            out int right,
+            out int top)
+        {
+            left = 0;
+            bottom = 0;
+            right = 0;
+            top = 0;
+            try
+            {
+                int count = polygon.GetState_Count();
+                if (count <= 0 || count > 10000)
+                    return false;
+
+                bool found = false;
+                for (int offset = 0; offset < count; offset++)
+                {
+                    int index = firstIndex + offset;
+                    IPCB_Contour contour = polygon.Internal_GetState_Contour(index) as IPCB_Contour;
+                    if (contour == null
+                        || !TryReadContourBounds(
+                            contour,
+                            out int contourLeft,
+                            out int contourBottom,
+                            out int contourRight,
+                            out int contourTop))
+                    {
+                        continue;
+                    }
+
+                    if (!found)
+                    {
+                        left = contourLeft;
+                        bottom = contourBottom;
+                        right = contourRight;
+                        top = contourTop;
+                        found = true;
+                    }
+                    else
+                    {
+                        left = Math.Min(left, contourLeft);
+                        bottom = Math.Min(bottom, contourBottom);
+                        right = Math.Max(right, contourRight);
+                        top = Math.Max(top, contourTop);
+                    }
+                }
+
+                return found && right > left && top > bottom;
+            }
+            catch
+            {
+                left = 0;
+                bottom = 0;
+                right = 0;
+                top = 0;
+                return false;
+            }
+        }
+
+        private static bool TryReadContourBounds(
+            IPCB_Contour contour,
+            out int left,
+            out int bottom,
+            out int right,
+            out int top)
+        {
+            return TryReadContourBounds(contour, 0, out left, out bottom, out right, out top)
+                || TryReadContourBounds(contour, 1, out left, out bottom, out right, out top);
+        }
+
+        private static bool TryReadContourBounds(
+            IPCB_Contour contour,
+            int firstIndex,
+            out int left,
+            out int bottom,
+            out int right,
+            out int top)
+        {
+            left = 0;
+            bottom = 0;
+            right = 0;
+            top = 0;
+            try
+            {
+                int count = contour.GetState_Count();
+                if (count <= 0 || count > 100000)
+                    return false;
+
+                for (int offset = 0; offset < count; offset++)
+                {
+                    int index = firstIndex + offset;
+                    int x = contour.GetState_PointX(index);
+                    int y = contour.GetState_PointY(index);
+
+                    if (offset == 0)
+                    {
+                        left = x;
+                        right = x;
+                        bottom = y;
+                        top = y;
+                    }
+                    else
+                    {
+                        left = Math.Min(left, x);
+                        right = Math.Max(right, x);
+                        bottom = Math.Min(bottom, y);
+                        top = Math.Max(top, y);
+                    }
+                }
+
+                return right > left && top > bottom;
+            }
+            catch
+            {
+                left = 0;
+                bottom = 0;
+                right = 0;
+                top = 0;
+                return false;
+            }
+        }
+
+        private static bool TryReadPrimitiveBounds(
+            IPCB_Primitive primitive,
+            out int left,
+            out int bottom,
+            out int right,
+            out int top)
+        {
+            left = 0;
+            bottom = 0;
+            right = 0;
+            top = 0;
+            try
+            {
+                ICoordRect rect = primitive?.Internal_BoundingRectangle();
+                if (rect == null)
+                    return false;
+
+                left = rect.GetLeft();
+                bottom = rect.GetBottom();
+                right = rect.GetRight();
+                top = rect.GetTop();
+                return right > left && top > bottom;
+            }
+            catch
+            {
+                left = 0;
+                bottom = 0;
+                right = 0;
+                top = 0;
+                return false;
+            }
+        }
+
+        private IEnumerable<TronstolE1Placement> ReadPanelFiducials(
+            IPCB_Board board,
+            BoardCoordinateOrigin origin)
         {
             IPCB_BoardIterator iterator = null;
             try
@@ -185,7 +611,7 @@ namespace EasyEDA_Loader.TronstolE1Pnp
                     if (current is IPCB_Pad pad
                         && TryParsePanelFiducialNumber(pad.GetState_Name(), out int number))
                     {
-                        yield return ReadPanelFiducial(pad, number);
+                        yield return ReadPanelFiducial(pad, number, origin);
                     }
 
                     current = iterator.Internal_NextPCBObject();
@@ -198,7 +624,10 @@ namespace EasyEDA_Loader.TronstolE1Pnp
             }
         }
 
-        private static TronstolE1Placement ReadPanelFiducial(IPCB_Pad pad, int number)
+        private static TronstolE1Placement ReadPanelFiducial(
+            IPCB_Pad pad,
+            int number,
+            BoardCoordinateOrigin origin)
         {
             bool isBottom = IsBottomPad(pad);
             return new TronstolE1Placement
@@ -207,8 +636,8 @@ namespace EasyEDA_Loader.TronstolE1Pnp
                 OriginalPartNumber = "PanelFiducial",
                 PartNumber = "PanelFiducial",
                 Footprint = FormatPadFootprint(pad, isBottom),
-                CenterXMillimeters = EDP.Utils.CoordToMMs(pad.GetState_XLocation()),
-                CenterYMillimeters = EDP.Utils.CoordToMMs(pad.GetState_YLocation()),
+                CenterXMillimeters = EDP.Utils.CoordToMMs(pad.GetState_XLocation() - origin.X),
+                CenterYMillimeters = EDP.Utils.CoordToMMs(pad.GetState_YLocation() - origin.Y),
                 IsBottom = isBottom,
                 RotationDegrees = 0.0,
                 RotationText = "0.0",
@@ -298,7 +727,9 @@ namespace EasyEDA_Loader.TronstolE1Pnp
             xSize = pad.GetState_MidXSize();
         }
 
-        private IEnumerable<TronstolE1Placement> ReadPlacements(IPCB_Board board)
+        private IEnumerable<TronstolE1Placement> ReadPlacements(
+            IPCB_Board board,
+            BoardCoordinateOrigin origin)
         {
             Dictionary<string, CompiledComponentData> compiledComponents = ReadCompiledComponents(board);
             IPCB_BoardIterator iterator = null;
@@ -327,7 +758,8 @@ namespace EasyEDA_Loader.TronstolE1Pnp
                                 component,
                                 designator,
                                 compiledComponent?.PartNumber,
-                                settings);
+                                settings,
+                                origin);
                         }
                     }
                     current = iterator.Internal_NextPCBObject();
@@ -344,7 +776,8 @@ namespace EasyEDA_Loader.TronstolE1Pnp
             IPCB_Component component,
             string designator,
             string partNumber,
-            TronstolE1Settings settings)
+            TronstolE1Settings settings,
+            BoardCoordinateOrigin origin)
         {
             string footprint = component.GetState_Pattern() ?? string.Empty;
 
@@ -354,8 +787,8 @@ namespace EasyEDA_Loader.TronstolE1Pnp
                 OriginalPartNumber = partNumber,
                 PartNumber = settings.FormatPartNumber(partNumber, footprint),
                 Footprint = settings.FormatFootprintName(footprint),
-                CenterXMillimeters = EDP.Utils.CoordToMMs(component.GetState_XLocation()),
-                CenterYMillimeters = EDP.Utils.CoordToMMs(component.GetState_YLocation()),
+                CenterXMillimeters = EDP.Utils.CoordToMMs(component.GetState_XLocation() - origin.X),
+                CenterYMillimeters = EDP.Utils.CoordToMMs(component.GetState_YLocation() - origin.Y),
                 IsBottom = IsBottomComponent(component),
                 RotationDegrees = component.GetState_Rotation()
             };

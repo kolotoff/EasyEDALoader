@@ -47,7 +47,8 @@ pick-and-place output. The default output filename is
 `<PCB name> Tronstol E1 PNP.csv`.
 
 The generated comma-delimited CSV uses a dot as the decimal separator,
-millimetres for coordinates, and the following columns:
+millimetres for coordinates relative to the PCB coordinate origin, and the
+following columns:
 
 ```text
 "Designator","PartNumber","Footprint","Mix X","Mid Y","Layer","Rotation"
@@ -66,6 +67,20 @@ millimetres for coordinates, and the following columns:
   such as `Round 2.00mm`. Fiducial rotation is always exported as `0.0`; bottom
   fiducials are labelled `Bottom` and use the same inverted X coordinate rule as
   bottom-side components.
+- When board dimension export is enabled, four rows are added below panel
+  fiducials and above component rows: `PCB_Size1` and `PCB_BTLC1` for `Top`,
+  followed by `PCB_Size2` and `PCB_BTLC2` for `Bottom`. `PCB_Size1` and
+  `PCB_Size2` export `Board dimensions` in the `PartNumber` column, `PCB_Size`
+  in the `Footprint` column, board width in `Mix X`, board height in `Mid Y`,
+  and rotation `0.0`. `PCB_BTLC1` and `PCB_BTLC2` export `Board bottom left
+  corner` in the `PartNumber` column, `PCB_BTLC` in the `Footprint` column, the
+  board bottom-left X coordinate relative to the PCB coordinate origin in
+  `Mix X`, the board bottom-left Y coordinate relative to the PCB coordinate
+  origin in `Mid Y`, and rotation `0.0`. Bottom board-dimension rows are
+  labelled `Bottom` but keep the same numeric size and corner values because
+  they are board metadata, not component placements. If board bounds or the PCB
+  coordinate origin cannot be read, generation stops with an error instead of
+  emitting placeholder zero values.
 - Rows are grouped by the original schematic `PartNumber` value before output
   cleanup. Components inside each group are sorted by designator using natural
   order (`R2` before `R10`), and the groups are ordered by the first designator
@@ -81,6 +96,7 @@ enabled by default:
 - Skip components whose `SolderingType` parameter is `Manual`.
 - Skip components whose `SolderingType` parameter is `Wave`.
 - Export panel fiducials from board pads named `PanelFiducial<number>`.
+- Export board dimensions and board bottom-left corner rows.
 - Remove a trailing footprint name from `PartNumber`, unless `PartNumber`
   consists only of that footprint name. For example,
   `100nF 50V ±10% X7R C0603` becomes `100nF 50V ±10% X7R`.

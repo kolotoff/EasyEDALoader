@@ -12,6 +12,7 @@ namespace EasyEDA_Loader.TronstolE1Pnp
         private readonly CheckBox skipManualSolderingComponentsCheckBox;
         private readonly CheckBox skipWaveSolderingComponentsCheckBox;
         private readonly CheckBox exportPanelFiducialsCheckBox;
+        private readonly CheckBox exportBoardDimensionsCheckBox;
         private readonly CheckBox removeFootprintFromPartNumberCheckBox;
         private readonly CheckBox collapsePartNumberSpacesCheckBox;
 
@@ -22,6 +23,7 @@ namespace EasyEDA_Loader.TronstolE1Pnp
         public bool SkipManualSolderingComponents => skipManualSolderingComponentsCheckBox.Checked;
         public bool SkipWaveSolderingComponents => skipWaveSolderingComponentsCheckBox.Checked;
         public bool ExportPanelFiducials => exportPanelFiducialsCheckBox.Checked;
+        public bool ExportBoardDimensions => exportBoardDimensionsCheckBox.Checked;
         public bool RemoveFootprintFromPartNumber => removeFootprintFromPartNumberCheckBox.Checked;
         public bool CollapsePartNumberSpaces => collapsePartNumberSpacesCheckBox.Checked;
 
@@ -33,6 +35,7 @@ namespace EasyEDA_Loader.TronstolE1Pnp
             bool skipManualSolderingComponents,
             bool skipWaveSolderingComponents,
             bool exportPanelFiducials,
+            bool exportBoardDimensions,
             bool removeFootprintFromPartNumber,
             bool collapsePartNumberSpaces)
         {
@@ -42,7 +45,7 @@ namespace EasyEDA_Loader.TronstolE1Pnp
             MaximizeBox = false;
             MinimizeBox = false;
             ShowInTaskbar = false;
-            ClientSize = new Size(576, 345);
+            ClientSize = new Size(576, 375);
 
             removeBgaSuffixCheckBox = new CheckBox
             {
@@ -100,11 +103,19 @@ namespace EasyEDA_Loader.TronstolE1Pnp
                 Text = "Export panel fiducials"
             };
 
+            exportBoardDimensionsCheckBox = new CheckBox
+            {
+                AutoSize = true,
+                Checked = exportBoardDimensions,
+                Location = new Point(16, 228),
+                Text = "Export board dimensions"
+            };
+
             removeFootprintFromPartNumberCheckBox = new CheckBox
             {
                 AutoSize = true,
                 Checked = removeFootprintFromPartNumber,
-                Location = new Point(16, 228),
+                Location = new Point(16, 258),
                 Text = "Remove footprint name from end of PartNumber"
             };
 
@@ -112,14 +123,14 @@ namespace EasyEDA_Loader.TronstolE1Pnp
             {
                 AutoSize = true,
                 Checked = collapsePartNumberSpaces,
-                Location = new Point(16, 258),
+                Location = new Point(16, 288),
                 Text = "Replace multiple spaces in PartNumber with a single space"
             };
 
             var okButton = new Button
             {
                 DialogResult = DialogResult.OK,
-                Location = new Point(404, 298),
+                Location = new Point(404, 328),
                 Size = new Size(75, 31),
                 Text = "OK"
             };
@@ -127,7 +138,7 @@ namespace EasyEDA_Loader.TronstolE1Pnp
             var cancelButton = new Button
             {
                 DialogResult = DialogResult.Cancel,
-                Location = new Point(485, 298),
+                Location = new Point(485, 328),
                 Size = new Size(75, 31),
                 Text = "Cancel"
             };
@@ -141,6 +152,7 @@ namespace EasyEDA_Loader.TronstolE1Pnp
             Controls.Add(skipManualSolderingComponentsCheckBox);
             Controls.Add(skipWaveSolderingComponentsCheckBox);
             Controls.Add(exportPanelFiducialsCheckBox);
+            Controls.Add(exportBoardDimensionsCheckBox);
             Controls.Add(removeFootprintFromPartNumberCheckBox);
             Controls.Add(collapsePartNumberSpacesCheckBox);
             Controls.Add(okButton);

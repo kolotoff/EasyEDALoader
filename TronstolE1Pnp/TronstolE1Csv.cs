@@ -20,6 +20,9 @@ namespace EasyEDA_Loader.TronstolE1Pnp
         public string RotationText { get; set; }
         public bool IsPanelFiducial { get; set; }
         public int PanelFiducialNumber { get; set; }
+        public bool IsBoardInfo { get; set; }
+        public int BoardInfoOrder { get; set; }
+        public bool DisableBottomXInversion { get; set; }
     }
 
     public static class TronstolE1Csv
@@ -37,7 +40,7 @@ namespace EasyEDA_Loader.TronstolE1Pnp
             writer.WriteLine(Header);
             foreach (TronstolE1Placement placement in OrderPlacements(placements))
             {
-                double outputX = placement.IsBottom
+                double outputX = placement.IsBottom && !placement.DisableBottomXInversion
                     ? placement.CenterXMillimeters * -1.0
                     : placement.CenterXMillimeters;
 
@@ -79,8 +82,15 @@ namespace EasyEDA_Loader.TronstolE1Pnp
                     placement => placement.Designator ?? string.Empty,
                     NaturalDesignatorComparer.Instance);
 
+            IEnumerable<TronstolE1Placement> boardInfo = rows
+                .Where(placement => placement.IsBoardInfo)
+                .OrderBy(placement => placement.BoardInfoOrder)
+                .ThenBy(
+                    placement => placement.Designator ?? string.Empty,
+                    NaturalDesignatorComparer.Instance);
+
             IEnumerable<TronstolE1Placement> components = rows
-                .Where(placement => !placement.IsPanelFiducial)
+                .Where(placement => !placement.IsPanelFiducial && !placement.IsBoardInfo)
                 .GroupBy(
                     placement => placement.OriginalPartNumber ?? placement.PartNumber ?? string.Empty,
                     StringComparer.Ordinal)
@@ -99,7 +109,7 @@ namespace EasyEDA_Loader.TronstolE1Pnp
                 .ThenBy(group => group.PartNumber, StringComparer.Ordinal)
                 .SelectMany(group => group.Rows);
 
-            return panelFiducials.Concat(components);
+            return panelFiducials.Concat(boardInfo).Concat(components);
         }
 
         private static string FormatCoordinate(double value)
