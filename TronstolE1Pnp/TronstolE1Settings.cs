@@ -13,6 +13,7 @@ namespace EasyEDA_Loader.TronstolE1Pnp
         private const string SkipWaveSolderingComponentsKey = "SkipWaveSolderingComponents";
         private const string ExportPanelFiducialsKey = "ExportPanelFiducials";
         private const string ExportBoardDimensionsKey = "ExportBoardDimensions";
+        private const string ExportEdgeRailsSizeKey = "ExportEdgeRailsSize";
         private const string RemoveFootprintFromPartNumberKey = "RemoveFootprintFromPartNumber";
         private const string CollapsePartNumberSpacesKey = "CollapsePartNumberSpaces";
 
@@ -24,6 +25,7 @@ namespace EasyEDA_Loader.TronstolE1Pnp
         public bool SkipWaveSolderingComponents { get; set; } = true;
         public bool ExportPanelFiducials { get; set; } = true;
         public bool ExportBoardDimensions { get; set; } = true;
+        public bool ExportEdgeRailsSize { get; set; } = true;
         public bool RemoveFootprintFromPartNumber { get; set; } = true;
         public bool CollapsePartNumberSpaces { get; set; } = true;
 
@@ -44,6 +46,8 @@ namespace EasyEDA_Loader.TronstolE1Pnp
                 + ExportPanelFiducialsKey + "=" + (ExportPanelFiducials ? "True" : "False")
                 + "|"
                 + ExportBoardDimensionsKey + "=" + (ExportBoardDimensions ? "True" : "False")
+                + "|"
+                + ExportEdgeRailsSizeKey + "=" + (ExportEdgeRailsSize ? "True" : "False")
                 + "|"
                 + RemoveFootprintFromPartNumberKey + "=" + (RemoveFootprintFromPartNumber ? "True" : "False")
                 + "|"
@@ -104,6 +108,11 @@ namespace EasyEDA_Loader.TronstolE1Pnp
                 {
                     ExportBoardDimensions = exportBoardDimensions;
                 }
+                else if (string.Equals(key, ExportEdgeRailsSizeKey, StringComparison.OrdinalIgnoreCase)
+                    && bool.TryParse(value, out bool exportEdgeRailsSize))
+                {
+                    ExportEdgeRailsSize = exportEdgeRailsSize;
+                }
                 else if (string.Equals(key, RemoveFootprintFromPartNumberKey, StringComparison.OrdinalIgnoreCase)
                     && bool.TryParse(value, out bool removeFootprintFromPartNumber))
                 {
@@ -127,6 +136,7 @@ namespace EasyEDA_Loader.TronstolE1Pnp
             SkipWaveSolderingComponents = true;
             ExportPanelFiducials = true;
             ExportBoardDimensions = true;
+            ExportEdgeRailsSize = true;
             RemoveFootprintFromPartNumber = true;
             CollapsePartNumberSpaces = true;
         }

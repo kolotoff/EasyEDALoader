@@ -6,6 +6,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Reflection;
 using System.Text;
 using System.Windows.Forms;
 
@@ -50,6 +51,7 @@ namespace EasyEDA_Loader.TronstolE1Pnp
                 settings.SkipWaveSolderingComponents,
                 settings.ExportPanelFiducials,
                 settings.ExportBoardDimensions,
+                settings.ExportEdgeRailsSize,
                 settings.RemoveFootprintFromPartNumber,
                 settings.CollapsePartNumberSpaces))
             {
@@ -64,6 +66,7 @@ namespace EasyEDA_Loader.TronstolE1Pnp
                 settings.SkipWaveSolderingComponents = form.SkipWaveSolderingComponents;
                 settings.ExportPanelFiducials = form.ExportPanelFiducials;
                 settings.ExportBoardDimensions = form.ExportBoardDimensions;
+                settings.ExportEdgeRailsSize = form.ExportEdgeRailsSize;
                 settings.RemoveFootprintFromPartNumber = form.RemoveFootprintFromPartNumber;
                 settings.CollapsePartNumberSpaces = form.CollapsePartNumberSpaces;
                 return true;
@@ -150,6 +153,9 @@ namespace EasyEDA_Loader.TronstolE1Pnp
                 foreach (TronstolE1Placement boardInfo in ReadBoardDimensions(bounds))
                     yield return boardInfo;
             }
+
+            if (settings.ExportEdgeRailsSize)
+                yield return ReadEdgeRailsSize(board, origin, bounds);
 
             foreach (TronstolE1Placement placement in ReadPlacements(board, origin, bounds))
                 yield return placement;
@@ -259,6 +265,42 @@ namespace EasyEDA_Loader.TronstolE1Pnp
                 4);
         }
 
+        private static TronstolE1Placement ReadEdgeRailsSize(
+            IPCB_Board board,
+            BoardCoordinateOrigin origin,
+            BoardCoordinateBounds bounds)
+        {
+            if (!TryGetKeepoutBounds(
+                board,
+                origin,
+                out BoardCoordinateBounds keepoutBounds,
+                out KeepoutScanDiagnostics diagnostics))
+            {
+                throw new InvalidOperationException(
+                    "Unable to calculate edge rail size from Keep-Out Layer. " + diagnostics);
+            }
+
+            double leftRailMm = ClampRailWidth(
+                EDP.Utils.CoordToMMs(bounds.Left - keepoutBounds.Left));
+            double bottomRailMm = ClampRailWidth(
+                EDP.Utils.CoordToMMs(bounds.Bottom - keepoutBounds.Bottom));
+
+            return CreateBoardInfoPlacement(
+                "EdgeRail",
+                "Edge rails size",
+                "EdgeRail",
+                leftRailMm,
+                bottomRailMm,
+                false,
+                5);
+        }
+
+        private static double ClampRailWidth(double value)
+        {
+            const double absentRailToleranceMm = 0.05;
+            return value <= absentRailToleranceMm ? 0.0 : value;
+        }
+
         private static TronstolE1Placement CreateBoardInfoPlacement(
             string designator,
             string partNumber,
@@ -316,6 +358,302 @@ namespace EasyEDA_Loader.TronstolE1Pnp
                 EDP.Utils.CoordToMMs(Bottom + Top) / 2.0;
         }
 
+        private sealed class KeepoutScanDiagnostics
+        {
+            public bool LayerFilterApplied { get; set; }
+            public int ObjectsScanned { get; set; }
+            public int KeepoutCandidates { get; set; }
+            public int UsableBounds { get; set; }
+            public string Error { get; set; }
+
+            public override string ToString()
+            {
+                var message = string.Format(
+                    CultureInfo.InvariantCulture,
+                    "Scanned {0} track/arc object(s); {1} matched Keep-Out; {2} had usable bounds; Keep-Out layer filter applied: {3}.",
+                    ObjectsScanned,
+                    KeepoutCandidates,
+                    UsableBounds,
+                    LayerFilterApplied ? "yes" : "no");
+
+                return string.IsNullOrWhiteSpace(Error)
+                    ? message
+                    : message + " Last error: " + Error;
+            }
+        }
+
+        private static bool TryGetKeepoutBounds(
+            IPCB_Board board,
+            BoardCoordinateOrigin origin,
+            out BoardCoordinateBounds bounds,
+            out KeepoutScanDiagnostics diagnostics)
+        {
+            bounds = default;
+            diagnostics = new KeepoutScanDiagnostics();
+            if (board == null)
+            {
+                diagnostics.Error = "PCB board is null.";
+                return false;
+            }
+
+            bool found = false;
+            int left = 0;
+            int bottom = 0;
+            int right = 0;
+            int top = 0;
+            IPCB_BoardIterator iterator = null;
+            try
+            {
+                iterator = board.Internal_BoardIterator_Create() as IPCB_BoardIterator;
+                if (iterator == null)
+                    return false;
+
+                iterator.AddFilter_ObjectSet(
+                    CreateObjectSet(
+                        (int)TObjectId.eTrackObject,
+                        (int)TObjectId.eArcObject));
+                diagnostics.LayerFilterApplied = TryApplyKeepoutLayerFilter(iterator);
+
+                object current = iterator.Internal_FirstPCBObject();
+                int count = 0;
+                while (current != null)
+                {
+                    count++;
+                    if (count > 10000)
+                    {
+                        diagnostics.Error = "Keep-Out primitive scan limit exceeded.";
+                        return false;
+                    }
+
+                    diagnostics.ObjectsScanned++;
+
+                    if ((current is IPCB_Track || current is IPCB_Arc)
+                        && current is IPCB_Primitive primitive
+                        && IsKeepoutPrimitive(primitive))
+                    {
+                        diagnostics.KeepoutCandidates++;
+                        if (!TryReadKeepoutRailBounds(
+                                current,
+                                out int primitiveLeft,
+                                out int primitiveBottom,
+                                out int primitiveRight,
+                                out int primitiveTop))
+                        {
+                            current = iterator.Internal_NextPCBObject();
+                            continue;
+                        }
+
+                        diagnostics.UsableBounds++;
+                        primitiveLeft -= origin.X;
+                        primitiveRight -= origin.X;
+                        primitiveBottom -= origin.Y;
+                        primitiveTop -= origin.Y;
+
+                        if (!found)
+                        {
+                            left = primitiveLeft;
+                            bottom = primitiveBottom;
+                            right = primitiveRight;
+                            top = primitiveTop;
+                            found = true;
+                        }
+                        else
+                        {
+                            left = Math.Min(left, primitiveLeft);
+                            bottom = Math.Min(bottom, primitiveBottom);
+                            right = Math.Max(right, primitiveRight);
+                            top = Math.Max(top, primitiveTop);
+                        }
+                    }
+
+                    current = iterator.Internal_NextPCBObject();
+                }
+            }
+            catch (Exception ex)
+            {
+                diagnostics.Error = ex.Message;
+                return false;
+            }
+            finally
+            {
+                if (iterator != null)
+                    board.BoardIterator_Destroy(ref iterator);
+            }
+
+            if (!found || right <= left || top <= bottom)
+            {
+                if (string.IsNullOrWhiteSpace(diagnostics.Error))
+                    diagnostics.Error = "No bounded Keep-Out Layer tracks/arcs found.";
+                return false;
+            }
+
+            bounds = new BoardCoordinateBounds(left, bottom, right, top);
+            return true;
+        }
+
+        private static bool TryApplyKeepoutLayerFilter(IPCB_BoardIterator iterator)
+        {
+            object layerSet = CreatePcbLayerSet(TLayerConstant.eKeepOutLayer);
+            if (layerSet != null && TryInvoke(iterator, "AddFilter_IPCB_LayerSet", layerSet))
+                return true;
+
+            try
+            {
+                return TryInvoke(
+                    iterator,
+                    "AddFilter_LayerSet",
+                    CreateObjectSet(new V7_Layer(TLayerConstant.eKeepOutLayer).Number()));
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static object CreatePcbLayerSet(TLayerConstant layer)
+        {
+            try
+            {
+                object server = GetPcbServer();
+                object layerSetUtils = TryInvokeResult(server, "LayerSet")
+                    ?? TryInvokeResult(server, "Internal_LayerSet");
+                if (layerSetUtils == null)
+                    return null;
+
+                var v7Layer = new V7_Layer(layer);
+                return TryInvokeResult(layerSetUtils, "Factory", v7Layer)
+                    ?? TryInvokeResult(layerSetUtils, "Internal_Factory", v7Layer);
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private static IPCB_ServerInterface GetPcbServer()
+        {
+            IClient client = DXP.GlobalVars.Client;
+            if (client == null)
+                return null;
+
+            client.StartServer("PCB");
+            return client.GetServerModuleByName("PCB") as IPCB_ServerInterface;
+        }
+
+        private static bool IsKeepoutPrimitive(IPCB_Primitive primitive)
+        {
+            bool isKeepout = false;
+            try
+            {
+                isKeepout = primitive.GetState_IsKeepout();
+            }
+            catch
+            {
+            }
+
+            if (TryGetPrimitiveLayerNumber(primitive, out int layerNumber))
+                return isKeepout || IsKeepoutLayerNumber(layerNumber);
+
+            return isKeepout;
+        }
+
+        private static bool IsKeepoutLayerNumber(int layerNumber)
+        {
+            const int keepoutLayerNumber = 56;
+            if (layerNumber == keepoutLayerNumber)
+                return true;
+
+            try
+            {
+                return layerNumber == new V7_Layer(TLayerConstant.eKeepOutLayer).Number();
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static bool TryReadKeepoutRailBounds(
+            object primitive,
+            out int left,
+            out int bottom,
+            out int right,
+            out int top)
+        {
+            left = 0;
+            bottom = 0;
+            right = 0;
+            top = 0;
+
+            if (TryReadTrackCoordinateBounds(primitive, out left, out bottom, out right, out top))
+                return true;
+
+            if (TryReadArcCoordinateBounds(primitive, out left, out bottom, out right, out top))
+                return true;
+
+            if (primitive is IPCB_Primitive pcbPrimitive
+                && TryReadPrimitiveBounds(pcbPrimitive, out left, out bottom, out right, out top))
+            {
+                return true;
+            }
+
+            return false;
+        }
+
+        private static bool TryReadTrackCoordinateBounds(
+            object primitive,
+            out int left,
+            out int bottom,
+            out int right,
+            out int top)
+        {
+            left = 0;
+            bottom = 0;
+            right = 0;
+            top = 0;
+
+            if (!TryGetIntMember(primitive, out int x1, "GetState_X1", "Internal_GetState_X1", "X1")
+                || !TryGetIntMember(primitive, out int y1, "GetState_Y1", "Internal_GetState_Y1", "Y1")
+                || !TryGetIntMember(primitive, out int x2, "GetState_X2", "Internal_GetState_X2", "X2")
+                || !TryGetIntMember(primitive, out int y2, "GetState_Y2", "Internal_GetState_Y2", "Y2"))
+            {
+                return false;
+            }
+
+            left = Math.Min(x1, x2);
+            right = Math.Max(x1, x2);
+            bottom = Math.Min(y1, y2);
+            top = Math.Max(y1, y2);
+            return right > left || top > bottom;
+        }
+
+        private static bool TryReadArcCoordinateBounds(
+            object primitive,
+            out int left,
+            out int bottom,
+            out int right,
+            out int top)
+        {
+            left = 0;
+            bottom = 0;
+            right = 0;
+            top = 0;
+
+            if (!TryGetIntMember(primitive, out int centerX, "GetState_CenterX", "Internal_GetState_CenterX", "XCenter", "CenterX")
+                || !TryGetIntMember(primitive, out int centerY, "GetState_CenterY", "Internal_GetState_CenterY", "YCenter", "CenterY")
+                || !TryGetIntMember(primitive, out int radius, "GetState_Radius", "Internal_GetState_Radius", "Radius")
+                || radius <= 0)
+            {
+                return false;
+            }
+
+            left = centerX - radius;
+            right = centerX + radius;
+            bottom = centerY - radius;
+            top = centerY + radius;
+            return right > left && top > bottom;
+        }
+
         private static bool TryGetBoardBounds(
             IPCB_Board board,
             out int left,
@@ -351,6 +689,70 @@ namespace EasyEDA_Loader.TronstolE1Pnp
                 right = 0;
                 top = 0;
                 return false;
+            }
+        }
+
+        private static bool TryGetIntMember(object target, out int value, params string[] memberNames)
+        {
+            value = 0;
+            if (target == null || memberNames == null)
+                return false;
+
+            foreach (string memberName in memberNames)
+            {
+                object rawValue = TryInvokeResult(target, memberName);
+                if (TryConvertToInt(rawValue, out value))
+                    return true;
+
+                rawValue = TryGetPropertyValue(target, memberName);
+                if (TryConvertToInt(rawValue, out value))
+                    return true;
+            }
+
+            return false;
+        }
+
+        private static bool TryConvertToInt(object rawValue, out int value)
+        {
+            value = 0;
+            if (rawValue == null)
+                return false;
+
+            try
+            {
+                if (rawValue is int intValue)
+                {
+                    value = intValue;
+                    return true;
+                }
+
+                value = Convert.ToInt32(rawValue, CultureInfo.InvariantCulture);
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static object TryGetPropertyValue(object target, string propertyName)
+        {
+            if (target == null || string.IsNullOrWhiteSpace(propertyName))
+                return null;
+
+            try
+            {
+                return target.GetType().InvokeMember(
+                    propertyName,
+                    BindingFlags.GetProperty | BindingFlags.Instance | BindingFlags.Public,
+                    null,
+                    target,
+                    null,
+                    CultureInfo.InvariantCulture);
+            }
+            catch
+            {
+                return null;
             }
         }
 
@@ -1030,14 +1432,118 @@ namespace EasyEDA_Loader.TronstolE1Pnp
             return string.Empty;
         }
 
-        private static ITransportSet CreateObjectSet(int objectId)
+        private static ITransportSet CreateObjectSet(params int[] objectIds)
         {
             var set = new GenericSet();
             int[] mask = set.Mask;
-            int index = objectId / 32;
-            if (index >= 0 && index < mask.Length)
-                mask[index] |= unchecked((int)(1u << (objectId % 32)));
+            foreach (int objectId in objectIds)
+            {
+                int index = objectId / 32;
+                if (index >= 0 && index < mask.Length)
+                    mask[index] |= unchecked((int)(1u << (objectId % 32)));
+            }
             return new TransportSet(set);
+        }
+
+        private static bool TryInvoke(object target, string methodName, params object[] args)
+        {
+            if (target == null)
+                return false;
+
+            if (target is IPCB_BoardIterator iterator)
+            {
+                try
+                {
+                    switch (methodName)
+                    {
+                        case "AddFilter_IPCB_LayerSet" when args.Length == 1:
+                            iterator.AddFilter_IPCB_LayerSet(args[0]);
+                            return true;
+                        case "AddFilter_LayerSet" when args.Length == 1 && args[0] is ITransportSet layerSet:
+                            iterator.AddFilter_LayerSet(layerSet);
+                            return true;
+                    }
+                }
+                catch
+                {
+                    return false;
+                }
+            }
+
+            foreach (MethodInfo method in target.GetType().GetMethods(BindingFlags.Instance | BindingFlags.Public))
+            {
+                if (method.Name != methodName || method.GetParameters().Length != args.Length)
+                    continue;
+
+                try
+                {
+                    method.Invoke(target, args);
+                    return true;
+                }
+                catch
+                {
+                }
+            }
+
+            return false;
+        }
+
+        private static object TryInvokeResult(object target, string methodName, params object[] args)
+        {
+            if (target == null)
+                return null;
+
+            if (target is IPCB_ServerInterface pcbServer)
+            {
+                try
+                {
+                    switch (methodName)
+                    {
+                        case "LayerSet" when args.Length == 0:
+                            return pcbServer.LayerSet();
+                        case "Internal_LayerSet" when args.Length == 0:
+                            return pcbServer.Internal_LayerSet();
+                    }
+                }
+                catch
+                {
+                    return null;
+                }
+            }
+
+            if (target is IPCB_LayerSetUtils layerSetUtils)
+            {
+                try
+                {
+                    switch (methodName)
+                    {
+                        case "Factory" when args.Length == 1 && args[0] is V7_LayerBase layer:
+                            return layerSetUtils.Factory(layer);
+                        case "Internal_Factory" when args.Length == 1 && args[0] is IV7_Layer internalLayer:
+                            return layerSetUtils.Internal_Factory(internalLayer);
+                    }
+                }
+                catch
+                {
+                    return null;
+                }
+            }
+
+            foreach (MethodInfo method in target.GetType().GetMethods(BindingFlags.Instance | BindingFlags.Public))
+            {
+                if (method.Name != methodName || method.GetParameters().Length != args.Length)
+                    continue;
+
+                try
+                {
+                    return method.Invoke(target, args);
+                }
+                catch
+                {
+                }
+            }
+
+            return null;
         }
     }
 }

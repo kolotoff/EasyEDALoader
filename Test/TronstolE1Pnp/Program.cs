@@ -124,6 +124,18 @@ internal static class Program
                     IsBoardInfo = true,
                     BoardInfoOrder = 3,
                     DisableBottomTransform = true
+                },
+                new TronstolE1Placement
+                {
+                    Designator = "EdgeRail",
+                    PartNumber = "Edge rails size",
+                    Footprint = "EdgeRail",
+                    CenterXMillimeters = 0.0,
+                    CenterYMillimeters = 4.0,
+                    RotationText = "0.0",
+                    IsBoardInfo = true,
+                    BoardInfoOrder = 5,
+                    DisableBottomTransform = true
                 }
             });
             string[] sortedLines = sortedCsv.Split(
@@ -153,11 +165,15 @@ internal static class Program
                 "\"PCB_BTLC2\",\"Board bottom left corner\",\"PCB_BTLC\",\"-1.2500\",\"2.5000\",\"Bottom\",\"0.0\"",
                 sortedLines[6],
                 "bottom board bottom-left row");
-            AssertStartsWith("\"C1\",\"C-PART\",", sortedLines[7], "first group by first designator");
-            AssertStartsWith("\"C10\",\"C-PART\",", sortedLines[8], "same cleaned PartNumber remains separate original group");
-            AssertStartsWith("\"R2\",\"B-PART\",", sortedLines[9], "second group by first designator");
-            AssertStartsWith("\"R10\",\"A-PART\",", sortedLines[10], "third group by first designator");
-            AssertStartsWith("\"R11\",\"A-PART\",", sortedLines[11], "designator order within group");
+            AssertEqual(
+                "\"EdgeRail\",\"Edge rails size\",\"EdgeRail\",\"0.0000\",\"4.0000\",\"Top\",\"0.0\"",
+                sortedLines[7],
+                "edge rail size row");
+            AssertStartsWith("\"C1\",\"C-PART\",", sortedLines[8], "first group by first designator");
+            AssertStartsWith("\"C10\",\"C-PART\",", sortedLines[9], "same cleaned PartNumber remains separate original group");
+            AssertStartsWith("\"R2\",\"B-PART\",", sortedLines[10], "second group by first designator");
+            AssertStartsWith("\"R10\",\"A-PART\",", sortedLines[11], "third group by first designator");
+            AssertStartsWith("\"R11\",\"A-PART\",", sortedLines[12], "designator order within group");
 
             var settings = new TronstolE1Settings();
             AssertEqual("BGA144", settings.FormatFootprintName("BGA144_BGA"), "default suffix removal");
@@ -165,7 +181,7 @@ internal static class Program
             AssertEqual("BGA144", settings.FormatFootprintName("BGA144 BGA"), "default space suffix removal");
             AssertEqual("BGA144_BGA_TOP", settings.FormatFootprintName("BGA144_BGA_TOP"), "non-suffix preservation");
             AssertEqual(
-                "RemoveBgaSuffix=True|RemoveSpaceBgaSuffix=True|SkipNfComponents=True|SkipDnpComponents=True|SkipManualSolderingComponents=True|SkipWaveSolderingComponents=True|ExportPanelFiducials=True|ExportBoardDimensions=True|RemoveFootprintFromPartNumber=True|CollapsePartNumberSpaces=True",
+                "RemoveBgaSuffix=True|RemoveSpaceBgaSuffix=True|SkipNfComponents=True|SkipDnpComponents=True|SkipManualSolderingComponents=True|SkipWaveSolderingComponents=True|ExportPanelFiducials=True|ExportBoardDimensions=True|ExportEdgeRailsSize=True|RemoveFootprintFromPartNumber=True|CollapsePartNumberSpaces=True",
                 settings.ExportToParameters(),
                 "default parameters");
 
@@ -173,7 +189,7 @@ internal static class Program
             AssertEqual("BGA144_BGA", settings.FormatFootprintName("BGA144_BGA"), "disabled suffix removal");
             AssertEqual("BGA144 BGA", settings.FormatFootprintName("BGA144 BGA"), "disabled space suffix removal");
             AssertEqual(
-                "RemoveBgaSuffix=False|RemoveSpaceBgaSuffix=False|SkipNfComponents=True|SkipDnpComponents=True|SkipManualSolderingComponents=True|SkipWaveSolderingComponents=True|ExportPanelFiducials=True|ExportBoardDimensions=True|RemoveFootprintFromPartNumber=True|CollapsePartNumberSpaces=True",
+                "RemoveBgaSuffix=False|RemoveSpaceBgaSuffix=False|SkipNfComponents=True|SkipDnpComponents=True|SkipManualSolderingComponents=True|SkipWaveSolderingComponents=True|ExportPanelFiducials=True|ExportBoardDimensions=True|ExportEdgeRailsSize=True|RemoveFootprintFromPartNumber=True|CollapsePartNumberSpaces=True",
                 settings.ExportToParameters(),
                 "backward-compatible parameters");
 
@@ -223,12 +239,14 @@ internal static class Program
             settings.SkipWaveSolderingComponents = false;
             settings.ExportPanelFiducials = false;
             settings.ExportBoardDimensions = false;
+            settings.ExportEdgeRailsSize = false;
             AssertEqual("False", settings.ShouldSkipComment("NF").ToString(), "disabled NF skip");
             AssertEqual("False", settings.ShouldSkipComment("DNP ").ToString(), "disabled DNP skip");
             AssertEqual("False", settings.ShouldSkipSolderingType("Manual").ToString(), "disabled manual skip");
             AssertEqual("False", settings.ShouldSkipSolderingType("Wave").ToString(), "disabled Wave skip");
             AssertEqual("False", settings.ExportPanelFiducials.ToString(), "disabled panel fiducial export");
             AssertEqual("False", settings.ExportBoardDimensions.ToString(), "disabled board dimensions export");
+            AssertEqual("False", settings.ExportEdgeRailsSize.ToString(), "disabled edge rails size export");
 
             string partNumber = TronstolE1PartNumber.FromParameters(
                 new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)

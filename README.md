@@ -85,6 +85,16 @@ following columns:
   they are board metadata, not component placements. If board bounds or the PCB
   coordinate origin cannot be read, generation stops with an error instead of
   emitting placeholder zero values.
+- When edge rail export is enabled, an `EdgeRail` row is added in the same PCB
+  metadata block. It exports `Edge rails size` in the `PartNumber` column,
+  `EdgeRail` in the `Footprint` column, the left rail width in `Mid X`, the
+  bottom rail width in `Mid Y`, layer `Top`, and rotation `0.0`. Rail size is
+  calculated from the Keep-Out Layer outer envelope compared with the board
+  outline bounds. The Keep-Out envelope is read from Keep-Out Layer track and
+  arc primitives; when Altium does not expose their typed track/arc coordinate
+  interfaces, the generator falls back to each primitive's bounding rectangle.
+  Absent rails smaller than 0.05 mm are exported as `0.0000`. If Keep-Out Layer
+  bounds cannot be read, generation stops with an error.
 - Rows are grouped by the original schematic `PartNumber` value before output
   cleanup. Components inside each group are sorted by designator using natural
   order (`R2` before `R10`), and the groups are ordered by the first designator
@@ -101,6 +111,7 @@ enabled by default:
 - Skip components whose `SolderingType` parameter is `Wave`.
 - Export panel fiducials from board pads named `PanelFiducial<number>`.
 - Export board dimensions and board bottom-left corner rows.
+- Export edge rails size from the Keep-Out Layer.
 - Remove a trailing footprint name from `PartNumber`, unless `PartNumber`
   consists only of that footprint name. For example,
   `100nF 50V ±10% X7R C0603` becomes `100nF 50V ±10% X7R`.
