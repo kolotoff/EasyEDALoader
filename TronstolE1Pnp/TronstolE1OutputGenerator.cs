@@ -137,20 +137,21 @@ namespace EasyEDA_Loader.TronstolE1Pnp
         private IEnumerable<TronstolE1Placement> ReadOutputPlacements(IPCB_Board board)
         {
             BoardCoordinateOrigin origin = ReadBoardCoordinateOrigin(board);
+            BoardCoordinateBounds bounds = ReadBoardCoordinateBounds(board, origin);
 
             if (settings.ExportPanelFiducials)
             {
-                foreach (TronstolE1Placement fiducial in ReadPanelFiducials(board, origin))
+                foreach (TronstolE1Placement fiducial in ReadPanelFiducials(board, origin, bounds))
                     yield return fiducial;
             }
 
             if (settings.ExportBoardDimensions)
             {
-                foreach (TronstolE1Placement boardInfo in ReadBoardDimensions(board, origin))
+                foreach (TronstolE1Placement boardInfo in ReadBoardDimensions(bounds))
                     yield return boardInfo;
             }
 
-            foreach (TronstolE1Placement placement in ReadPlacements(board, origin))
+            foreach (TronstolE1Placement placement in ReadPlacements(board, origin, bounds))
                 yield return placement;
         }
 
@@ -193,26 +194,36 @@ namespace EasyEDA_Loader.TronstolE1Pnp
             }
         }
 
-        private static IEnumerable<TronstolE1Placement> ReadBoardDimensions(
+        private static BoardCoordinateBounds ReadBoardCoordinateBounds(
             IPCB_Board board,
             BoardCoordinateOrigin origin)
         {
             if (!TryGetBoardBounds(board, out int left, out int bottom, out int right, out int top))
             {
                 throw new InvalidOperationException(
-                    "Unable to read board outline bounds for PCB_Size and PCB_BTLC rows.");
+                    "Unable to read board outline bounds for Tronstol E1 PNP rows.");
             }
 
             if (right <= left || top <= bottom)
             {
                 throw new InvalidOperationException(
-                    "Invalid board outline bounds for PCB_Size and PCB_BTLC rows.");
+                    "Invalid board outline bounds for Tronstol E1 PNP rows.");
             }
 
-            double leftMm = EDP.Utils.CoordToMMs(left - origin.X);
-            double bottomMm = EDP.Utils.CoordToMMs(bottom - origin.Y);
-            double widthMm = EDP.Utils.CoordToMMs(right - left);
-            double heightMm = EDP.Utils.CoordToMMs(top - bottom);
+            return new BoardCoordinateBounds(
+                left - origin.X,
+                bottom - origin.Y,
+                right - origin.X,
+                top - origin.Y);
+        }
+
+        private static IEnumerable<TronstolE1Placement> ReadBoardDimensions(
+            BoardCoordinateBounds bounds)
+        {
+            double leftMm = EDP.Utils.CoordToMMs(bounds.Left);
+            double bottomMm = EDP.Utils.CoordToMMs(bounds.Bottom);
+            double widthMm = EDP.Utils.CoordToMMs(bounds.Right - bounds.Left);
+            double heightMm = EDP.Utils.CoordToMMs(bounds.Top - bounds.Bottom);
 
             yield return CreateBoardInfoPlacement(
                 "PCB_Size1",
@@ -270,7 +281,7 @@ namespace EasyEDA_Loader.TronstolE1Pnp
                 RotationText = "0.0",
                 IsBoardInfo = true,
                 BoardInfoOrder = order,
-                DisableBottomXInversion = true
+                DisableBottomTransform = true
             };
         }
 
@@ -284,6 +295,25 @@ namespace EasyEDA_Loader.TronstolE1Pnp
 
             public int X { get; }
             public int Y { get; }
+        }
+
+        private readonly struct BoardCoordinateBounds
+        {
+            public BoardCoordinateBounds(int left, int bottom, int right, int top)
+            {
+                Left = left;
+                Bottom = bottom;
+                Right = right;
+                Top = top;
+            }
+
+            public int Left { get; }
+            public int Bottom { get; }
+            public int Right { get; }
+            public int Top { get; }
+
+            public double MirrorAxisYMillimeters =>
+                EDP.Utils.CoordToMMs(Bottom + Top) / 2.0;
         }
 
         private static bool TryGetBoardBounds(
@@ -595,7 +625,8 @@ namespace EasyEDA_Loader.TronstolE1Pnp
 
         private IEnumerable<TronstolE1Placement> ReadPanelFiducials(
             IPCB_Board board,
-            BoardCoordinateOrigin origin)
+            BoardCoordinateOrigin origin,
+            BoardCoordinateBounds bounds)
         {
             IPCB_BoardIterator iterator = null;
             try
@@ -611,7 +642,7 @@ namespace EasyEDA_Loader.TronstolE1Pnp
                     if (current is IPCB_Pad pad
                         && TryParsePanelFiducialNumber(pad.GetState_Name(), out int number))
                     {
-                        yield return ReadPanelFiducial(pad, number, origin);
+                        yield return ReadPanelFiducial(pad, number, origin, bounds);
                     }
 
                     current = iterator.Internal_NextPCBObject();
@@ -627,7 +658,8 @@ namespace EasyEDA_Loader.TronstolE1Pnp
         private static TronstolE1Placement ReadPanelFiducial(
             IPCB_Pad pad,
             int number,
-            BoardCoordinateOrigin origin)
+            BoardCoordinateOrigin origin,
+            BoardCoordinateBounds bounds)
         {
             bool isBottom = IsBottomPad(pad);
             return new TronstolE1Placement
@@ -642,7 +674,9 @@ namespace EasyEDA_Loader.TronstolE1Pnp
                 RotationDegrees = 0.0,
                 RotationText = "0.0",
                 IsPanelFiducial = true,
-                PanelFiducialNumber = number
+                PanelFiducialNumber = number,
+                HasBottomMirrorAxisY = true,
+                BottomMirrorAxisYMillimeters = bounds.MirrorAxisYMillimeters
             };
         }
 
@@ -729,7 +763,8 @@ namespace EasyEDA_Loader.TronstolE1Pnp
 
         private IEnumerable<TronstolE1Placement> ReadPlacements(
             IPCB_Board board,
-            BoardCoordinateOrigin origin)
+            BoardCoordinateOrigin origin,
+            BoardCoordinateBounds bounds)
         {
             Dictionary<string, CompiledComponentData> compiledComponents = ReadCompiledComponents(board);
             IPCB_BoardIterator iterator = null;
@@ -759,7 +794,8 @@ namespace EasyEDA_Loader.TronstolE1Pnp
                                 designator,
                                 compiledComponent?.PartNumber,
                                 settings,
-                                origin);
+                                origin,
+                                bounds);
                         }
                     }
                     current = iterator.Internal_NextPCBObject();
@@ -777,7 +813,8 @@ namespace EasyEDA_Loader.TronstolE1Pnp
             string designator,
             string partNumber,
             TronstolE1Settings settings,
-            BoardCoordinateOrigin origin)
+            BoardCoordinateOrigin origin,
+            BoardCoordinateBounds bounds)
         {
             string footprint = component.GetState_Pattern() ?? string.Empty;
 
@@ -790,7 +827,9 @@ namespace EasyEDA_Loader.TronstolE1Pnp
                 CenterXMillimeters = EDP.Utils.CoordToMMs(component.GetState_XLocation() - origin.X),
                 CenterYMillimeters = EDP.Utils.CoordToMMs(component.GetState_YLocation() - origin.Y),
                 IsBottom = IsBottomComponent(component),
-                RotationDegrees = component.GetState_Rotation()
+                RotationDegrees = component.GetState_Rotation(),
+                HasBottomMirrorAxisY = true,
+                BottomMirrorAxisYMillimeters = bounds.MirrorAxisYMillimeters
             };
         }
 

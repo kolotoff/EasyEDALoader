@@ -22,7 +22,9 @@ namespace EasyEDA_Loader.TronstolE1Pnp
         public int PanelFiducialNumber { get; set; }
         public bool IsBoardInfo { get; set; }
         public int BoardInfoOrder { get; set; }
-        public bool DisableBottomXInversion { get; set; }
+        public bool DisableBottomTransform { get; set; }
+        public bool HasBottomMirrorAxisY { get; set; }
+        public double BottomMirrorAxisYMillimeters { get; set; }
     }
 
     public static class TronstolE1Csv
@@ -40,9 +42,25 @@ namespace EasyEDA_Loader.TronstolE1Pnp
             writer.WriteLine(Header);
             foreach (TronstolE1Placement placement in OrderPlacements(placements))
             {
-                double outputX = placement.IsBottom && !placement.DisableBottomXInversion
-                    ? placement.CenterXMillimeters * -1.0
-                    : placement.CenterXMillimeters;
+                bool transformBottom = placement.IsBottom && !placement.DisableBottomTransform;
+                double outputX = placement.CenterXMillimeters;
+                double outputY = placement.CenterYMillimeters;
+                if (transformBottom)
+                {
+                    if (!placement.HasBottomMirrorAxisY)
+                    {
+                        throw new InvalidOperationException(
+                            "Bottom placement transform requires board mirror axis.");
+                    }
+
+                    outputY = (2.0 * placement.BottomMirrorAxisYMillimeters)
+                        - placement.CenterYMillimeters;
+                }
+                string rotation = placement.RotationText
+                    ?? FormatRotation(
+                        transformBottom
+                            ? FlipRotationViaXAxis(placement.RotationDegrees)
+                            : placement.RotationDegrees);
 
                 writer.Write(Quote(placement.Designator));
                 writer.Write(',');
@@ -52,11 +70,11 @@ namespace EasyEDA_Loader.TronstolE1Pnp
                 writer.Write(',');
                 writer.Write(Quote(FormatCoordinate(outputX)));
                 writer.Write(',');
-                writer.Write(Quote(FormatCoordinate(placement.CenterYMillimeters)));
+                writer.Write(Quote(FormatCoordinate(outputY)));
                 writer.Write(',');
                 writer.Write(Quote(placement.IsBottom ? "Bottom" : "Top"));
                 writer.Write(',');
-                writer.WriteLine(Quote(placement.RotationText ?? FormatRotation(placement.RotationDegrees)));
+                writer.WriteLine(Quote(rotation));
             }
         }
 
@@ -124,6 +142,17 @@ namespace EasyEDA_Loader.TronstolE1Pnp
             if (value == 0.0)
                 value = 0.0;
             return value.ToString("0.####", CultureInfo.InvariantCulture);
+        }
+
+        private static double FlipRotationViaXAxis(double value)
+        {
+            double result = 360.0 - value;
+            result %= 360.0;
+            if (result < 0.0)
+                result += 360.0;
+            if (result == 360.0)
+                result = 0.0;
+            return result;
         }
 
         private static string Quote(string value)

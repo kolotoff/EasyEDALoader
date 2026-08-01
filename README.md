@@ -58,15 +58,19 @@ following columns:
   it is not copied from the component comment.
 - Top-side components are labelled `Top`; bottom-side components are labelled
   `Bottom`.
-- The X coordinate of every bottom-side component is multiplied by `-1.0`.
+- Bottom-side components are transformed as if the PCB is flipped around its X
+  axis while keeping the board's left side on the left. X stays unchanged, Y is
+  mirrored around the board outline's Y span (`Y' = BoardBottom + BoardTop - Y`,
+  using coordinates relative to the PCB coordinate origin), and rotation is
+  mirrored to `360 - rotation`.
 - Components whose type is `No BOM` are always omitted.
 - When panel fiducial export is enabled, board pads named
   `PanelFiducial<number>` are added before component rows. They are ordered by
   number, renamed to `Fiducial<number>`, exported with `PanelFiducial` in the
   `PartNumber` column, and use a footprint value based on pad shape and X size
   such as `Round 2.00mm`. Fiducial rotation is always exported as `0.0`; bottom
-  fiducials are labelled `Bottom` and use the same inverted X coordinate rule as
-  bottom-side components.
+  fiducials are labelled `Bottom` and use the same X-axis flip coordinate rule
+  as bottom-side components.
 - When board dimension export is enabled, four rows are added below panel
   fiducials and above component rows: `PCB_Size1` and `PCB_BTLC1` for `Top`,
   followed by `PCB_Size2` and `PCB_BTLC2` for `Bottom`. `PCB_Size1` and

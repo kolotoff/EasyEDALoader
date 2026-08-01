@@ -32,7 +32,9 @@ internal static class Program
                     CenterXMillimeters = 7.125,
                     CenterYMillimeters = -2.5,
                     IsBottom = true,
-                    RotationDegrees = 270.5
+                    RotationDegrees = 270.5,
+                    HasBottomMirrorAxisY = true,
+                    BottomMirrorAxisYMillimeters = 10.0
                 }
             });
 
@@ -46,7 +48,7 @@ internal static class Program
                 lines[1],
                 "top row");
             AssertEqual(
-                "\"U\"\"2\",\"MPN,2\",\"QFN-16\",\"-7.1250\",\"-2.5000\",\"Bottom\",\"270.5\"",
+                "\"U\"\"2\",\"MPN,2\",\"QFN-16\",\"7.1250\",\"22.5000\",\"Bottom\",\"89.5\"",
                 lines[2],
                 "bottom row");
 
@@ -108,7 +110,7 @@ internal static class Program
                     RotationText = "0.0",
                     IsBoardInfo = true,
                     BoardInfoOrder = 4,
-                    DisableBottomXInversion = true
+                    DisableBottomTransform = true
                 },
                 new TronstolE1Placement
                 {
@@ -121,7 +123,7 @@ internal static class Program
                     RotationText = "0.0",
                     IsBoardInfo = true,
                     BoardInfoOrder = 3,
-                    DisableBottomXInversion = true
+                    DisableBottomTransform = true
                 }
             });
             string[] sortedLines = sortedCsv.Split(
