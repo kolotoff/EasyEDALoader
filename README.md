@@ -51,7 +51,7 @@ millimetres for coordinates relative to the PCB coordinate origin, and the
 following columns:
 
 ```text
-"Designator","PartNumber","Footprint","Mix X","Mid Y","Layer","Rotation"
+"Designator","PartNumber","Footprint","Mid X","Mid Y","Layer","Rotation"
 ```
 
 - `PartNumber` is read from the component's schematic `PartNumber` parameter;
@@ -75,11 +75,11 @@ following columns:
   fiducials and above component rows: `PCB_Size1` and `PCB_BTLC1` for `Top`,
   followed by `PCB_Size2` and `PCB_BTLC2` for `Bottom`. `PCB_Size1` and
   `PCB_Size2` export `Board dimensions` in the `PartNumber` column, `PCB_Size`
-  in the `Footprint` column, board width in `Mix X`, board height in `Mid Y`,
+  in the `Footprint` column, board width in `Mid X`, board height in `Mid Y`,
   and rotation `0.0`. `PCB_BTLC1` and `PCB_BTLC2` export `Board bottom left
   corner` in the `PartNumber` column, `PCB_BTLC` in the `Footprint` column, the
   board bottom-left X coordinate relative to the PCB coordinate origin in
-  `Mix X`, the board bottom-left Y coordinate relative to the PCB coordinate
+  `Mid X`, the board bottom-left Y coordinate relative to the PCB coordinate
   origin in `Mid Y`, and rotation `0.0`. Bottom board-dimension rows are
   labelled `Bottom` but keep the same numeric size and corner values because
   they are board metadata, not component placements. If board bounds or the PCB

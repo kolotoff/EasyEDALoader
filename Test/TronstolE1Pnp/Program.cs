@@ -40,7 +40,7 @@ internal static class Program
 
             string[] lines = csv.Split(new[] { "\r\n", "\n" }, StringSplitOptions.RemoveEmptyEntries);
             AssertEqual(
-                "\"Designator\",\"PartNumber\",\"Footprint\",\"Mix X\",\"Mid Y\",\"Layer\",\"Rotation\"",
+                "\"Designator\",\"PartNumber\",\"Footprint\",\"Mid X\",\"Mid Y\",\"Layer\",\"Rotation\"",
                 lines[0],
                 "header");
             AssertEqual(

@@ -30,7 +30,7 @@ namespace EasyEDA_Loader.TronstolE1Pnp
     public static class TronstolE1Csv
     {
         public const string Header =
-            "\"Designator\",\"PartNumber\",\"Footprint\",\"Mix X\",\"Mid Y\",\"Layer\",\"Rotation\"";
+            "\"Designator\",\"PartNumber\",\"Footprint\",\"Mid X\",\"Mid Y\",\"Layer\",\"Rotation\"";
 
         public static void Write(TextWriter writer, IEnumerable<TronstolE1Placement> placements)
         {
