@@ -16,6 +16,7 @@ namespace EasyEDA_Loader.TronstolE1Pnp
         public string Description { get; set; }
         public string Footprint { get; set; }
         public string Carrier { get; set; }
+        public string ReelPitch { get; set; }
         public double CenterXMillimeters { get; set; }
         public double CenterYMillimeters { get; set; }
         public bool IsBottom { get; set; }
@@ -33,7 +34,7 @@ namespace EasyEDA_Loader.TronstolE1Pnp
     public static class TronstolE1Csv
     {
         public const string Header =
-            "\"Designator\",\"PartNumber\",\"Footprint\",\"Manufacturer\",\"Description\",\"Mid X\",\"Mid Y\",\"Layer\",\"Rotation\",\"Carrier\"";
+            "\"Designator\",\"PartNumber\",\"Footprint\",\"Manufacturer\",\"Description\",\"Mid X\",\"Mid Y\",\"Layer\",\"Rotation\",\"Carrier\",\"ReelPitch\"";
 
         public static void Write(TextWriter writer, IEnumerable<TronstolE1Placement> placements)
         {
@@ -83,7 +84,9 @@ namespace EasyEDA_Loader.TronstolE1Pnp
                 writer.Write(',');
                 writer.Write(Quote(rotation));
                 writer.Write(',');
-                writer.WriteLine(Quote(placement.Carrier));
+                writer.Write(Quote(placement.Carrier));
+                writer.Write(',');
+                writer.WriteLine(Quote(placement.ReelPitch));
             }
         }
 

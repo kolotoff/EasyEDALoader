@@ -51,7 +51,7 @@ millimetres for coordinates relative to the PCB coordinate origin, and the
 following columns:
 
 ```text
-"Designator","PartNumber","Footprint","Manufacturer","Description","Mid X","Mid Y","Layer","Rotation","Carrier"
+"Designator","PartNumber","Footprint","Manufacturer","Description","Mid X","Mid Y","Layer","Rotation","Carrier","ReelPitch"
 ```
 
 - `PartNumber` is read from the component's schematic `PartNumber` parameter;
@@ -59,6 +59,7 @@ following columns:
 - `Manufacturer` is read from the component's schematic `Manufacturer`
   parameter.
 - `Carrier` is read from the component's schematic `Carrier` parameter.
+- `ReelPitch` is read from the component's schematic `ReelPitch` parameter.
 - `Description` is selected from normalized schematic text. If normalized
   `PartNumber` does not contain the normalized component comment
   case-insensitively, the comment is exported as `Description`; otherwise the

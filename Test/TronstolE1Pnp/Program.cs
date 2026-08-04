@@ -22,6 +22,7 @@ internal static class Program
                     Description = "Line1\nLine2  tab\tend",
                     Footprint = "R0402",
                     Carrier = "Tape\nReel",
+                    ReelPitch = "8mm",
                     CenterXMillimeters = 12.5,
                     CenterYMillimeters = 3.25,
                     IsBottom = false,
@@ -46,15 +47,15 @@ internal static class Program
 
             string[] lines = csv.Split(new[] { "\r\n", "\n" }, StringSplitOptions.RemoveEmptyEntries);
             AssertEqual(
-                "\"Designator\",\"PartNumber\",\"Footprint\",\"Manufacturer\",\"Description\",\"Mid X\",\"Mid Y\",\"Layer\",\"Rotation\",\"Carrier\"",
+                "\"Designator\",\"PartNumber\",\"Footprint\",\"Manufacturer\",\"Description\",\"Mid X\",\"Mid Y\",\"Layer\",\"Rotation\",\"Carrier\",\"ReelPitch\"",
                 lines[0],
                 "header");
             AssertEqual(
-                "\"R1\",\"10k Res\",\"R0402\",\"Yageo Corp\",\"Line1 Line2 tab end\",\"12.5000\",\"3.2500\",\"Top\",\"90\",\"Tape Reel\"",
+                "\"R1\",\"10k Res\",\"R0402\",\"Yageo Corp\",\"Line1 Line2 tab end\",\"12.5000\",\"3.2500\",\"Top\",\"90\",\"Tape Reel\",\"8mm\"",
                 lines[1],
                 "top row");
             AssertEqual(
-                "\"U\"\"2\",\"MPN,2\",\"QFN-16\",\"Maker\",\"Quoted \"\"description\"\"\",\"7.1250\",\"22.5000\",\"Bottom\",\"89.5\",\"Tray\"",
+                "\"U\"\"2\",\"MPN,2\",\"QFN-16\",\"Maker\",\"Quoted \"\"description\"\"\",\"7.1250\",\"22.5000\",\"Bottom\",\"89.5\",\"Tray\",\"\"",
                 lines[2],
                 "bottom row");
 
@@ -148,31 +149,31 @@ internal static class Program
                 new[] { "\r\n", "\n" },
                 StringSplitOptions.RemoveEmptyEntries);
             AssertEqual(
-                "\"Fiducial2\",\"PanelFiducial\",\"Rectangular 1.00mm\",\"\",\"\",\"0.0000\",\"0.0000\",\"Top\",\"0.0\",\"\"",
+                "\"Fiducial2\",\"PanelFiducial\",\"Rectangular 1.00mm\",\"\",\"\",\"0.0000\",\"0.0000\",\"Top\",\"0.0\",\"\",\"\"",
                 sortedLines[1],
                 "first panel fiducial row");
             AssertEqual(
-                "\"Fiducial10\",\"PanelFiducial\",\"Round 2.00mm\",\"\",\"\",\"0.0000\",\"0.0000\",\"Top\",\"0.0\",\"\"",
+                "\"Fiducial10\",\"PanelFiducial\",\"Round 2.00mm\",\"\",\"\",\"0.0000\",\"0.0000\",\"Top\",\"0.0\",\"\",\"\"",
                 sortedLines[2],
                 "second panel fiducial row");
             AssertEqual(
-                "\"PCB_Size1\",\"Board dimensions\",\"PCB_Size\",\"\",\"\",\"120.0000\",\"55.2500\",\"Top\",\"0.0\",\"\"",
+                "\"PCB_Size1\",\"Board dimensions\",\"PCB_Size\",\"\",\"\",\"120.0000\",\"55.2500\",\"Top\",\"0.0\",\"\",\"\"",
                 sortedLines[3],
                 "board size row");
             AssertEqual(
-                "\"PCB_BTLC1\",\"Board bottom left corner\",\"PCB_BTLC\",\"\",\"\",\"-1.2500\",\"2.5000\",\"Top\",\"0.0\",\"\"",
+                "\"PCB_BTLC1\",\"Board bottom left corner\",\"PCB_BTLC\",\"\",\"\",\"-1.2500\",\"2.5000\",\"Top\",\"0.0\",\"\",\"\"",
                 sortedLines[4],
                 "board bottom-left row");
             AssertEqual(
-                "\"PCB_Size2\",\"Board dimensions\",\"PCB_Size\",\"\",\"\",\"120.0000\",\"55.2500\",\"Bottom\",\"0.0\",\"\"",
+                "\"PCB_Size2\",\"Board dimensions\",\"PCB_Size\",\"\",\"\",\"120.0000\",\"55.2500\",\"Bottom\",\"0.0\",\"\",\"\"",
                 sortedLines[5],
                 "bottom board size row");
             AssertEqual(
-                "\"PCB_BTLC2\",\"Board bottom left corner\",\"PCB_BTLC\",\"\",\"\",\"-1.2500\",\"2.5000\",\"Bottom\",\"0.0\",\"\"",
+                "\"PCB_BTLC2\",\"Board bottom left corner\",\"PCB_BTLC\",\"\",\"\",\"-1.2500\",\"2.5000\",\"Bottom\",\"0.0\",\"\",\"\"",
                 sortedLines[6],
                 "bottom board bottom-left row");
             AssertEqual(
-                "\"EdgeRail\",\"Edge rails size\",\"EdgeRail\",\"\",\"\",\"0.0000\",\"4.0000\",\"Top\",\"0.0\",\"\"",
+                "\"EdgeRail\",\"Edge rails size\",\"EdgeRail\",\"\",\"\",\"0.0000\",\"4.0000\",\"Top\",\"0.0\",\"\",\"\"",
                 sortedLines[7],
                 "edge rail size row");
             AssertStartsWith("\"C1\",\"C-PART\",\"\",\"\",\"\",", sortedLines[8], "first group by first designator");

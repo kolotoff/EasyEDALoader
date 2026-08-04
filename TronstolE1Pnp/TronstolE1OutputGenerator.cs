@@ -317,6 +317,7 @@ namespace EasyEDA_Loader.TronstolE1Pnp
                 Description = string.Empty,
                 Footprint = footprint,
                 Carrier = string.Empty,
+                ReelPitch = string.Empty,
                 CenterXMillimeters = xMillimeters,
                 CenterYMillimeters = yMillimeters,
                 IsBottom = isBottom,
@@ -1074,6 +1075,7 @@ namespace EasyEDA_Loader.TronstolE1Pnp
                 Description = string.Empty,
                 Footprint = FormatPadFootprint(pad, isBottom),
                 Carrier = string.Empty,
+                ReelPitch = string.Empty,
                 CenterXMillimeters = EDP.Utils.CoordToMMs(pad.GetState_XLocation() - origin.X),
                 CenterYMillimeters = EDP.Utils.CoordToMMs(pad.GetState_YLocation() - origin.Y),
                 IsBottom = isBottom,
@@ -1241,6 +1243,7 @@ namespace EasyEDA_Loader.TronstolE1Pnp
                     componentDescription),
                 Footprint = settings.FormatFootprintName(footprint),
                 Carrier = compiledComponent?.Carrier,
+                ReelPitch = compiledComponent?.ReelPitch,
                 CenterXMillimeters = EDP.Utils.CoordToMMs(component.GetState_XLocation() - origin.X),
                 CenterYMillimeters = EDP.Utils.CoordToMMs(component.GetState_YLocation() - origin.Y),
                 IsBottom = IsBottomComponent(component),
@@ -1382,6 +1385,9 @@ namespace EasyEDA_Loader.TronstolE1Pnp
                 string carrier = ReadParameterValue(
                     component.Internal_GetParameters() as IPCB_ParameterList,
                     "Carrier");
+                string reelPitch = ReadParameterValue(
+                    component.Internal_GetParameters() as IPCB_ParameterList,
+                    "ReelPitch");
                 string componentDescription = ReadComponentDescription(
                     component,
                     component.Internal_GetParameters() as IPCB_ParameterList);
@@ -1396,6 +1402,7 @@ namespace EasyEDA_Loader.TronstolE1Pnp
                     Manufacturer = manufacturer,
                     Description = ResolveDescription(partNumber, comment, componentDescription),
                     Carrier = carrier,
+                    ReelPitch = reelPitch,
                     SolderingType = solderingType,
                     IsNoBom = componentKind == (int)EDP.TComponentKind.eComponentKind_NetTie_NoBOM
                         || componentKind == (int)EDP.TComponentKind.eComponentKind_Standard_NoBOM
@@ -1492,6 +1499,7 @@ namespace EasyEDA_Loader.TronstolE1Pnp
             public string Manufacturer { get; set; }
             public string Description { get; set; }
             public string Carrier { get; set; }
+            public string ReelPitch { get; set; }
             public string SolderingType { get; set; }
             public bool IsNoBom { get; set; }
         }
