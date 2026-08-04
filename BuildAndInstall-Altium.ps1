@@ -16,6 +16,63 @@ function Write-Step {
     Write-Host "==> $Message" -ForegroundColor Cyan
 }
 
+# Get-FileHash lives in the Microsoft.PowerShell.Utility module and can be
+# missing on some hardened Windows PowerShell 5.1 hosts. Define a faithful
+# fallback that mirrors the cmdlet's output (Algorithm/Hash/Path) so the
+# install-reporting block works regardless. Only installed when absent, so a
+# real cmdlet (when present) keeps running unchanged.
+if (-not (Get-Command Get-FileHash -ErrorAction SilentlyContinue)) {
+    function Get-FileHash {
+        [CmdletBinding()]
+        param(
+            [Parameter(ParameterSetName = "Path", Position = 0)]
+            [string[]]$Path,
+            [Parameter(ParameterSetName = "LiteralPath", Mandatory = $true)]
+            [string[]]$LiteralPath,
+            [ValidateSet("SHA1", "SHA256", "SHA384", "SHA512", "MD5")]
+            [string]$Algorithm = "SHA256"
+        )
+
+        $candidates = if ($PSCmdlet.ParameterSetName -eq "LiteralPath") { $LiteralPath } else { $Path }
+
+        foreach ($candidate in $candidates) {
+            $absolute = if ($PSCmdlet.ParameterSetName -eq "LiteralPath") {
+                $candidate
+            } else {
+                (Resolve-Path -LiteralPath $candidate).Path
+            }
+
+            if (-not (Test-Path -LiteralPath $absolute)) {
+                throw "Cannot find path '$absolute' because it does not exist."
+            }
+            $absolute = (Get-Item -LiteralPath $absolute).FullName
+
+            $hasher = [System.Security.Cryptography.HashAlgorithm]::Create($Algorithm)
+            try {
+                $stream = [System.IO.File]::OpenRead($absolute)
+                try {
+                    $hashBytes = $hasher.ComputeHash($stream)
+                } finally {
+                    $stream.Close()
+                }
+            } finally {
+                $hasher.Dispose()
+            }
+
+            $hex = New-Object System.Text.StringBuilder
+            foreach ($byte in $hashBytes) {
+                [void]$hex.Append($byte.ToString("X2"))
+            }
+
+            [pscustomobject]@{
+                Algorithm = $Algorithm
+                Hash      = $hex.ToString()
+                Path      = $absolute
+            }
+        }
+    }
+}
+
 function Resolve-AltiumProfile {
     param([string]$ConfiguredProfile)
 
