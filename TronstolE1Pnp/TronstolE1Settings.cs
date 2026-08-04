@@ -15,7 +15,6 @@ namespace EasyEDA_Loader.TronstolE1Pnp
         private const string ExportBoardDimensionsKey = "ExportBoardDimensions";
         private const string ExportEdgeRailsSizeKey = "ExportEdgeRailsSize";
         private const string RemoveFootprintFromPartNumberKey = "RemoveFootprintFromPartNumber";
-        private const string CollapsePartNumberSpacesKey = "CollapsePartNumberSpaces";
 
         public bool RemoveBgaSuffix { get; set; } = true;
         public bool RemoveSpaceBgaSuffix { get; set; } = true;
@@ -27,7 +26,6 @@ namespace EasyEDA_Loader.TronstolE1Pnp
         public bool ExportBoardDimensions { get; set; } = true;
         public bool ExportEdgeRailsSize { get; set; } = true;
         public bool RemoveFootprintFromPartNumber { get; set; } = true;
-        public bool CollapsePartNumberSpaces { get; set; } = true;
 
         public string ExportToParameters()
         {
@@ -49,9 +47,7 @@ namespace EasyEDA_Loader.TronstolE1Pnp
                 + "|"
                 + ExportEdgeRailsSizeKey + "=" + (ExportEdgeRailsSize ? "True" : "False")
                 + "|"
-                + RemoveFootprintFromPartNumberKey + "=" + (RemoveFootprintFromPartNumber ? "True" : "False")
-                + "|"
-                + CollapsePartNumberSpacesKey + "=" + (CollapsePartNumberSpaces ? "True" : "False");
+                + RemoveFootprintFromPartNumberKey + "=" + (RemoveFootprintFromPartNumber ? "True" : "False");
         }
 
         public void ImportFromParameters(string parameters)
@@ -118,11 +114,6 @@ namespace EasyEDA_Loader.TronstolE1Pnp
                 {
                     RemoveFootprintFromPartNumber = removeFootprintFromPartNumber;
                 }
-                else if (string.Equals(key, CollapsePartNumberSpacesKey, StringComparison.OrdinalIgnoreCase)
-                    && bool.TryParse(value, out bool collapsePartNumberSpaces))
-                {
-                    CollapsePartNumberSpaces = collapsePartNumberSpaces;
-                }
             }
         }
 
@@ -138,12 +129,11 @@ namespace EasyEDA_Loader.TronstolE1Pnp
             ExportBoardDimensions = true;
             ExportEdgeRailsSize = true;
             RemoveFootprintFromPartNumber = true;
-            CollapsePartNumberSpaces = true;
         }
 
         public string FormatFootprintName(string footprint)
         {
-            string value = footprint ?? string.Empty;
+            string value = TronstolE1Text.Normalize(footprint);
             const string suffix = "_BGA";
             if (RemoveBgaSuffix
                 && value.EndsWith(suffix, StringComparison.OrdinalIgnoreCase))
@@ -163,14 +153,14 @@ namespace EasyEDA_Loader.TronstolE1Pnp
 
         public bool ShouldSkipComment(string comment)
         {
-            string value = (comment ?? string.Empty).Trim();
+            string value = TronstolE1Text.Normalize(comment);
             return (SkipNfComponents && string.Equals(value, "NF", StringComparison.OrdinalIgnoreCase))
                 || (SkipDnpComponents && string.Equals(value, "DNP", StringComparison.OrdinalIgnoreCase));
         }
 
         public bool ShouldSkipSolderingType(string solderingType)
         {
-            string value = (solderingType ?? string.Empty).Trim();
+            string value = TronstolE1Text.Normalize(solderingType);
             return (SkipManualSolderingComponents
                     && string.Equals(value, "Manual", StringComparison.OrdinalIgnoreCase))
                 || (SkipWaveSolderingComponents
@@ -183,7 +173,7 @@ namespace EasyEDA_Loader.TronstolE1Pnp
                 partNumber,
                 footprint,
                 RemoveFootprintFromPartNumber,
-                CollapsePartNumberSpaces);
+                true);
             string formattedFootprint = FormatFootprintName(footprint);
             if (!string.Equals(formattedFootprint, footprint, StringComparison.OrdinalIgnoreCase))
             {
@@ -191,7 +181,7 @@ namespace EasyEDA_Loader.TronstolE1Pnp
                     value,
                     formattedFootprint,
                     RemoveFootprintFromPartNumber,
-                    CollapsePartNumberSpaces);
+                    true);
             }
 
             return value;

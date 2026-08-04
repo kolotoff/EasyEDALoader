@@ -15,7 +15,6 @@ namespace EasyEDA_Loader.TronstolE1Pnp
         private readonly CheckBox exportBoardDimensionsCheckBox;
         private readonly CheckBox exportEdgeRailsSizeCheckBox;
         private readonly CheckBox removeFootprintFromPartNumberCheckBox;
-        private readonly CheckBox collapsePartNumberSpacesCheckBox;
 
         public bool RemoveBgaSuffix => removeBgaSuffixCheckBox.Checked;
         public bool RemoveSpaceBgaSuffix => removeSpaceBgaSuffixCheckBox.Checked;
@@ -27,7 +26,6 @@ namespace EasyEDA_Loader.TronstolE1Pnp
         public bool ExportBoardDimensions => exportBoardDimensionsCheckBox.Checked;
         public bool ExportEdgeRailsSize => exportEdgeRailsSizeCheckBox.Checked;
         public bool RemoveFootprintFromPartNumber => removeFootprintFromPartNumberCheckBox.Checked;
-        public bool CollapsePartNumberSpaces => collapsePartNumberSpacesCheckBox.Checked;
 
         public TronstolE1PropertiesForm(
             bool removeBgaSuffix,
@@ -39,8 +37,7 @@ namespace EasyEDA_Loader.TronstolE1Pnp
             bool exportPanelFiducials,
             bool exportBoardDimensions,
             bool exportEdgeRailsSize,
-            bool removeFootprintFromPartNumber,
-            bool collapsePartNumberSpaces)
+            bool removeFootprintFromPartNumber)
         {
             Text = "Tronstol E1 PNP";
             StartPosition = FormStartPosition.CenterScreen;
@@ -130,14 +127,6 @@ namespace EasyEDA_Loader.TronstolE1Pnp
                 Text = "Remove footprint name from end of PartNumber"
             };
 
-            collapsePartNumberSpacesCheckBox = new CheckBox
-            {
-                AutoSize = true,
-                Checked = collapsePartNumberSpaces,
-                Location = new Point(16, 318),
-                Text = "Replace multiple spaces in PartNumber with a single space"
-            };
-
             var okButton = new Button
             {
                 DialogResult = DialogResult.OK,
@@ -166,7 +155,6 @@ namespace EasyEDA_Loader.TronstolE1Pnp
             Controls.Add(exportBoardDimensionsCheckBox);
             Controls.Add(exportEdgeRailsSizeCheckBox);
             Controls.Add(removeFootprintFromPartNumberCheckBox);
-            Controls.Add(collapsePartNumberSpacesCheckBox);
             Controls.Add(okButton);
             Controls.Add(cancelButton);
         }

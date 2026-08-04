@@ -52,8 +52,7 @@ namespace EasyEDA_Loader.TronstolE1Pnp
                 settings.ExportPanelFiducials,
                 settings.ExportBoardDimensions,
                 settings.ExportEdgeRailsSize,
-                settings.RemoveFootprintFromPartNumber,
-                settings.CollapsePartNumberSpaces))
+                settings.RemoveFootprintFromPartNumber))
             {
                 if (form.ShowDialog() != DialogResult.OK)
                     return false;
@@ -68,7 +67,6 @@ namespace EasyEDA_Loader.TronstolE1Pnp
                 settings.ExportBoardDimensions = form.ExportBoardDimensions;
                 settings.ExportEdgeRailsSize = form.ExportEdgeRailsSize;
                 settings.RemoveFootprintFromPartNumber = form.RemoveFootprintFromPartNumber;
-                settings.CollapsePartNumberSpaces = form.CollapsePartNumberSpaces;
                 return true;
             }
         }
@@ -315,7 +313,10 @@ namespace EasyEDA_Loader.TronstolE1Pnp
                 Designator = designator,
                 OriginalPartNumber = partNumber,
                 PartNumber = partNumber,
+                Manufacturer = string.Empty,
+                Description = string.Empty,
                 Footprint = footprint,
+                Carrier = string.Empty,
                 CenterXMillimeters = xMillimeters,
                 CenterYMillimeters = yMillimeters,
                 IsBottom = isBottom,
@@ -1069,7 +1070,10 @@ namespace EasyEDA_Loader.TronstolE1Pnp
                 Designator = "Fiducial" + number.ToString(CultureInfo.InvariantCulture),
                 OriginalPartNumber = "PanelFiducial",
                 PartNumber = "PanelFiducial",
+                Manufacturer = string.Empty,
+                Description = string.Empty,
                 Footprint = FormatPadFootprint(pad, isBottom),
+                Carrier = string.Empty,
                 CenterXMillimeters = EDP.Utils.CoordToMMs(pad.GetState_XLocation() - origin.X),
                 CenterYMillimeters = EDP.Utils.CoordToMMs(pad.GetState_YLocation() - origin.Y),
                 IsBottom = isBottom,
@@ -1086,6 +1090,7 @@ namespace EasyEDA_Loader.TronstolE1Pnp
         {
             number = 0;
             const string prefix = "PanelFiducial";
+            name = TronstolE1Text.Normalize(name);
             if (name == null || !name.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
                 return false;
 
@@ -1194,7 +1199,7 @@ namespace EasyEDA_Loader.TronstolE1Pnp
                             yield return ReadPlacement(
                                 component,
                                 designator,
-                                compiledComponent?.PartNumber,
+                                compiledComponent,
                                 settings,
                                 origin,
                                 bounds);
@@ -1213,19 +1218,29 @@ namespace EasyEDA_Loader.TronstolE1Pnp
         private static TronstolE1Placement ReadPlacement(
             IPCB_Component component,
             string designator,
-            string partNumber,
+            CompiledComponentData compiledComponent,
             TronstolE1Settings settings,
             BoardCoordinateOrigin origin,
             BoardCoordinateBounds bounds)
         {
             string footprint = component.GetState_Pattern() ?? string.Empty;
+            string partNumber = compiledComponent?.PartNumber ?? string.Empty;
+            string componentDescription = FirstNonEmpty(
+                compiledComponent?.Description,
+                ReadPcbComponentDescription(component));
 
             return new TronstolE1Placement
             {
-                Designator = designator,
+                Designator = TronstolE1Text.Normalize(designator),
                 OriginalPartNumber = partNumber,
                 PartNumber = settings.FormatPartNumber(partNumber, footprint),
+                Manufacturer = compiledComponent?.Manufacturer,
+                Description = ResolveDescription(
+                    partNumber,
+                    compiledComponent?.Comment,
+                    componentDescription),
                 Footprint = settings.FormatFootprintName(footprint),
+                Carrier = compiledComponent?.Carrier,
                 CenterXMillimeters = EDP.Utils.CoordToMMs(component.GetState_XLocation() - origin.X),
                 CenterYMillimeters = EDP.Utils.CoordToMMs(component.GetState_YLocation() - origin.Y),
                 IsBottom = IsBottomComponent(component),
@@ -1360,14 +1375,27 @@ namespace EasyEDA_Loader.TronstolE1Pnp
                 string partNumber = ReadParameterValue(
                     component.Internal_GetParameters() as IPCB_ParameterList,
                     "PartNumber");
+                string comment = TronstolE1Text.Normalize(component.GetComment());
+                string manufacturer = ReadParameterValue(
+                    component.Internal_GetParameters() as IPCB_ParameterList,
+                    "Manufacturer");
+                string carrier = ReadParameterValue(
+                    component.Internal_GetParameters() as IPCB_ParameterList,
+                    "Carrier");
+                string componentDescription = ReadComponentDescription(
+                    component,
+                    component.Internal_GetParameters() as IPCB_ParameterList);
                 string solderingType = ReadParameterValue(
                     component.Internal_GetParameters() as IPCB_ParameterList,
                     "SolderingType");
                 int componentKind = component.Internal_GetKind();
-                result[component.GetDesignator()] = new CompiledComponentData
+                result[TronstolE1Text.Normalize(component.GetDesignator())] = new CompiledComponentData
                 {
                     PartNumber = partNumber,
-                    Comment = component.GetComment() ?? string.Empty,
+                    Comment = comment,
+                    Manufacturer = manufacturer,
+                    Description = ResolveDescription(partNumber, comment, componentDescription),
+                    Carrier = carrier,
                     SolderingType = solderingType,
                     IsNoBom = componentKind == (int)EDP.TComponentKind.eComponentKind_NetTie_NoBOM
                         || componentKind == (int)EDP.TComponentKind.eComponentKind_Standard_NoBOM
@@ -1388,8 +1416,70 @@ namespace EasyEDA_Loader.TronstolE1Pnp
                 if (parameter != null
                     && string.Equals(parameter.GetName(), name, StringComparison.OrdinalIgnoreCase))
                 {
-                    return parameter.GetValue() ?? string.Empty;
+                    return TronstolE1Text.Normalize(parameter.GetValue());
                 }
+            }
+
+            return string.Empty;
+        }
+
+        private static string ReadComponentDescription(
+            IPCB_FullComponent component,
+            IPCB_ParameterList parameters)
+        {
+            string parameterDescription = ReadParameterValue(parameters, "Description");
+            if (!string.IsNullOrEmpty(parameterDescription))
+                return parameterDescription;
+
+            return TryGetStringMember(
+                component,
+                "GetDescription",
+                "GetState_ComponentDescription",
+                "GetState_Description",
+                "Description");
+        }
+
+        private static string ReadPcbComponentDescription(IPCB_Component component)
+        {
+            return FirstNonEmpty(
+                TryGetStringMember(component, "GetState_SourceDescription"),
+                TryGetStringMember(component, "GetState_FootprintDescription"));
+        }
+
+        private static string ResolveDescription(
+            string partNumber,
+            string comment,
+            string componentDescription)
+        {
+            partNumber = TronstolE1Text.Normalize(partNumber);
+            comment = TronstolE1Text.Normalize(comment);
+            componentDescription = TronstolE1Text.Normalize(componentDescription);
+
+            if (!string.IsNullOrEmpty(comment)
+                && partNumber.IndexOf(comment, StringComparison.OrdinalIgnoreCase) < 0)
+            {
+                return comment;
+            }
+
+            return componentDescription;
+        }
+
+        private static string TryGetStringMember(object target, params string[] memberNames)
+        {
+            if (target == null || memberNames == null)
+                return string.Empty;
+
+            foreach (string memberName in memberNames)
+            {
+                object rawValue = TryInvokeResult(target, memberName);
+                string value = TronstolE1Text.Normalize(Convert.ToString(rawValue, CultureInfo.InvariantCulture));
+                if (!string.IsNullOrEmpty(value))
+                    return value;
+
+                rawValue = TryGetPropertyValue(target, memberName);
+                value = TronstolE1Text.Normalize(Convert.ToString(rawValue, CultureInfo.InvariantCulture));
+                if (!string.IsNullOrEmpty(value))
+                    return value;
             }
 
             return string.Empty;
@@ -1399,6 +1489,9 @@ namespace EasyEDA_Loader.TronstolE1Pnp
         {
             public string PartNumber { get; set; }
             public string Comment { get; set; }
+            public string Manufacturer { get; set; }
+            public string Description { get; set; }
+            public string Carrier { get; set; }
             public string SolderingType { get; set; }
             public bool IsNoBom { get; set; }
         }
@@ -1419,15 +1512,16 @@ namespace EasyEDA_Loader.TronstolE1Pnp
                 }
             }
 
-            return fallback ?? string.Empty;
+            return TronstolE1Text.Normalize(fallback);
         }
 
         private static string FirstNonEmpty(params string[] values)
         {
             foreach (string value in values)
             {
-                if (!string.IsNullOrWhiteSpace(value))
-                    return value;
+                string normalized = TronstolE1Text.Normalize(value);
+                if (!string.IsNullOrWhiteSpace(normalized))
+                    return normalized;
             }
             return string.Empty;
         }
@@ -1521,6 +1615,24 @@ namespace EasyEDA_Loader.TronstolE1Pnp
                             return layerSetUtils.Factory(layer);
                         case "Internal_Factory" when args.Length == 1 && args[0] is IV7_Layer internalLayer:
                             return layerSetUtils.Internal_Factory(internalLayer);
+                    }
+                }
+                catch
+                {
+                    return null;
+                }
+            }
+
+            if (target is IPCB_Component component)
+            {
+                try
+                {
+                    switch (methodName)
+                    {
+                        case "GetState_SourceDescription" when args.Length == 0:
+                            return component.GetState_SourceDescription();
+                        case "GetState_FootprintDescription" when args.Length == 0:
+                            return component.GetState_FootprintDescription();
                     }
                 }
                 catch

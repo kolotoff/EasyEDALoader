@@ -17,8 +17,11 @@ internal static class Program
                 new TronstolE1Placement
                 {
                     Designator = "R1",
-                    PartNumber = "10k",
+                    PartNumber = "10k\t  Res\n",
+                    Manufacturer = "Yageo\tCorp",
+                    Description = "Line1\nLine2  tab\tend",
                     Footprint = "R0402",
+                    Carrier = "Tape\nReel",
                     CenterXMillimeters = 12.5,
                     CenterYMillimeters = 3.25,
                     IsBottom = false,
@@ -28,7 +31,10 @@ internal static class Program
                 {
                     Designator = "U\"2",
                     PartNumber = "MPN,2",
+                    Manufacturer = "Maker",
+                    Description = "Quoted \"description\"",
                     Footprint = "QFN-16",
+                    Carrier = "Tray",
                     CenterXMillimeters = 7.125,
                     CenterYMillimeters = -2.5,
                     IsBottom = true,
@@ -40,15 +46,15 @@ internal static class Program
 
             string[] lines = csv.Split(new[] { "\r\n", "\n" }, StringSplitOptions.RemoveEmptyEntries);
             AssertEqual(
-                "\"Designator\",\"PartNumber\",\"Footprint\",\"Mid X\",\"Mid Y\",\"Layer\",\"Rotation\"",
+                "\"Designator\",\"PartNumber\",\"Footprint\",\"Manufacturer\",\"Description\",\"Mid X\",\"Mid Y\",\"Layer\",\"Rotation\",\"Carrier\"",
                 lines[0],
                 "header");
             AssertEqual(
-                "\"R1\",\"10k\",\"R0402\",\"12.5000\",\"3.2500\",\"Top\",\"90\"",
+                "\"R1\",\"10k Res\",\"R0402\",\"Yageo Corp\",\"Line1 Line2 tab end\",\"12.5000\",\"3.2500\",\"Top\",\"90\",\"Tape Reel\"",
                 lines[1],
                 "top row");
             AssertEqual(
-                "\"U\"\"2\",\"MPN,2\",\"QFN-16\",\"7.1250\",\"22.5000\",\"Bottom\",\"89.5\"",
+                "\"U\"\"2\",\"MPN,2\",\"QFN-16\",\"Maker\",\"Quoted \"\"description\"\"\",\"7.1250\",\"22.5000\",\"Bottom\",\"89.5\",\"Tray\"",
                 lines[2],
                 "bottom row");
 
@@ -142,38 +148,38 @@ internal static class Program
                 new[] { "\r\n", "\n" },
                 StringSplitOptions.RemoveEmptyEntries);
             AssertEqual(
-                "\"Fiducial2\",\"PanelFiducial\",\"Rectangular 1.00mm\",\"0.0000\",\"0.0000\",\"Top\",\"0.0\"",
+                "\"Fiducial2\",\"PanelFiducial\",\"Rectangular 1.00mm\",\"\",\"\",\"0.0000\",\"0.0000\",\"Top\",\"0.0\",\"\"",
                 sortedLines[1],
                 "first panel fiducial row");
             AssertEqual(
-                "\"Fiducial10\",\"PanelFiducial\",\"Round 2.00mm\",\"0.0000\",\"0.0000\",\"Top\",\"0.0\"",
+                "\"Fiducial10\",\"PanelFiducial\",\"Round 2.00mm\",\"\",\"\",\"0.0000\",\"0.0000\",\"Top\",\"0.0\",\"\"",
                 sortedLines[2],
                 "second panel fiducial row");
             AssertEqual(
-                "\"PCB_Size1\",\"Board dimensions\",\"PCB_Size\",\"120.0000\",\"55.2500\",\"Top\",\"0.0\"",
+                "\"PCB_Size1\",\"Board dimensions\",\"PCB_Size\",\"\",\"\",\"120.0000\",\"55.2500\",\"Top\",\"0.0\",\"\"",
                 sortedLines[3],
                 "board size row");
             AssertEqual(
-                "\"PCB_BTLC1\",\"Board bottom left corner\",\"PCB_BTLC\",\"-1.2500\",\"2.5000\",\"Top\",\"0.0\"",
+                "\"PCB_BTLC1\",\"Board bottom left corner\",\"PCB_BTLC\",\"\",\"\",\"-1.2500\",\"2.5000\",\"Top\",\"0.0\",\"\"",
                 sortedLines[4],
                 "board bottom-left row");
             AssertEqual(
-                "\"PCB_Size2\",\"Board dimensions\",\"PCB_Size\",\"120.0000\",\"55.2500\",\"Bottom\",\"0.0\"",
+                "\"PCB_Size2\",\"Board dimensions\",\"PCB_Size\",\"\",\"\",\"120.0000\",\"55.2500\",\"Bottom\",\"0.0\",\"\"",
                 sortedLines[5],
                 "bottom board size row");
             AssertEqual(
-                "\"PCB_BTLC2\",\"Board bottom left corner\",\"PCB_BTLC\",\"-1.2500\",\"2.5000\",\"Bottom\",\"0.0\"",
+                "\"PCB_BTLC2\",\"Board bottom left corner\",\"PCB_BTLC\",\"\",\"\",\"-1.2500\",\"2.5000\",\"Bottom\",\"0.0\",\"\"",
                 sortedLines[6],
                 "bottom board bottom-left row");
             AssertEqual(
-                "\"EdgeRail\",\"Edge rails size\",\"EdgeRail\",\"0.0000\",\"4.0000\",\"Top\",\"0.0\"",
+                "\"EdgeRail\",\"Edge rails size\",\"EdgeRail\",\"\",\"\",\"0.0000\",\"4.0000\",\"Top\",\"0.0\",\"\"",
                 sortedLines[7],
                 "edge rail size row");
-            AssertStartsWith("\"C1\",\"C-PART\",", sortedLines[8], "first group by first designator");
-            AssertStartsWith("\"C10\",\"C-PART\",", sortedLines[9], "same cleaned PartNumber remains separate original group");
-            AssertStartsWith("\"R2\",\"B-PART\",", sortedLines[10], "second group by first designator");
-            AssertStartsWith("\"R10\",\"A-PART\",", sortedLines[11], "third group by first designator");
-            AssertStartsWith("\"R11\",\"A-PART\",", sortedLines[12], "designator order within group");
+            AssertStartsWith("\"C1\",\"C-PART\",\"\",\"\",\"\",", sortedLines[8], "first group by first designator");
+            AssertStartsWith("\"C10\",\"C-PART\",\"\",\"\",\"\",", sortedLines[9], "same cleaned PartNumber remains separate original group");
+            AssertStartsWith("\"R2\",\"B-PART\",\"\",\"\",\"\",", sortedLines[10], "second group by first designator");
+            AssertStartsWith("\"R10\",\"A-PART\",\"\",\"\",\"\",", sortedLines[11], "third group by first designator");
+            AssertStartsWith("\"R11\",\"A-PART\",\"\",\"\",\"\",", sortedLines[12], "designator order within group");
 
             var settings = new TronstolE1Settings();
             AssertEqual("BGA144", settings.FormatFootprintName("BGA144_BGA"), "default suffix removal");
@@ -181,17 +187,17 @@ internal static class Program
             AssertEqual("BGA144", settings.FormatFootprintName("BGA144 BGA"), "default space suffix removal");
             AssertEqual("BGA144_BGA_TOP", settings.FormatFootprintName("BGA144_BGA_TOP"), "non-suffix preservation");
             AssertEqual(
-                "RemoveBgaSuffix=True|RemoveSpaceBgaSuffix=True|SkipNfComponents=True|SkipDnpComponents=True|SkipManualSolderingComponents=True|SkipWaveSolderingComponents=True|ExportPanelFiducials=True|ExportBoardDimensions=True|ExportEdgeRailsSize=True|RemoveFootprintFromPartNumber=True|CollapsePartNumberSpaces=True",
+                "RemoveBgaSuffix=True|RemoveSpaceBgaSuffix=True|SkipNfComponents=True|SkipDnpComponents=True|SkipManualSolderingComponents=True|SkipWaveSolderingComponents=True|ExportPanelFiducials=True|ExportBoardDimensions=True|ExportEdgeRailsSize=True|RemoveFootprintFromPartNumber=True",
                 settings.ExportToParameters(),
                 "default parameters");
 
-            settings.ImportFromParameters("RemoveBgaSuffix=False|RemoveSpaceBgaSuffix=False");
+            settings.ImportFromParameters("RemoveBgaSuffix=False|RemoveSpaceBgaSuffix=False|CollapsePartNumberSpaces=False");
             AssertEqual("BGA144_BGA", settings.FormatFootprintName("BGA144_BGA"), "disabled suffix removal");
             AssertEqual("BGA144 BGA", settings.FormatFootprintName("BGA144 BGA"), "disabled space suffix removal");
             AssertEqual(
-                "RemoveBgaSuffix=False|RemoveSpaceBgaSuffix=False|SkipNfComponents=True|SkipDnpComponents=True|SkipManualSolderingComponents=True|SkipWaveSolderingComponents=True|ExportPanelFiducials=True|ExportBoardDimensions=True|ExportEdgeRailsSize=True|RemoveFootprintFromPartNumber=True|CollapsePartNumberSpaces=True",
+                "RemoveBgaSuffix=False|RemoveSpaceBgaSuffix=False|SkipNfComponents=True|SkipDnpComponents=True|SkipManualSolderingComponents=True|SkipWaveSolderingComponents=True|ExportPanelFiducials=True|ExportBoardDimensions=True|ExportEdgeRailsSize=True|RemoveFootprintFromPartNumber=True",
                 settings.ExportToParameters(),
-                "backward-compatible parameters");
+                "backward-compatible parameters ignore obsolete whitespace setting");
 
             settings.ResetToDefault();
             AssertEqual("BGA144", settings.FormatFootprintName("BGA144_BGA"), "reset default");
@@ -227,11 +233,10 @@ internal static class Program
                 "disabled footprint removal");
 
             settings.RemoveFootprintFromPartNumber = true;
-            settings.CollapsePartNumberSpaces = false;
             AssertEqual(
-                "100nF  50V",
+                "100nF 50V",
                 settings.FormatPartNumber("100nF  50V C0603", "C0603"),
-                "disabled space collapse");
+                "mandatory text whitespace cleanup");
 
             settings.SkipNfComponents = false;
             settings.SkipDnpComponents = false;
@@ -256,10 +261,20 @@ internal static class Program
                 });
             AssertEqual("REAL-PART-123", partNumber, "schematic PartNumber parameter");
             AssertEqual(
+                "REAL-PART-123 with tab",
+                TronstolE1PartNumber.FromParameters(
+                    new Dictionary<string, string> { ["PartNumber"] = "REAL-PART-123\twith\n tab" }),
+                "schematic PartNumber text normalization");
+            AssertEqual(
                 "",
                 TronstolE1PartNumber.FromParameters(
                     new Dictionary<string, string> { ["Comment"] = "comment-only" }),
                 "no Comment fallback");
+
+            AssertEqual(
+                "A B C",
+                TronstolE1Text.Normalize(" A\tB\r\nC  "),
+                "generic text normalization");
 
             Console.WriteLine("Tronstol E1 CSV tests passed.");
             return 0;

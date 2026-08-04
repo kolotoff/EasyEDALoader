@@ -51,11 +51,21 @@ millimetres for coordinates relative to the PCB coordinate origin, and the
 following columns:
 
 ```text
-"Designator","PartNumber","Footprint","Mid X","Mid Y","Layer","Rotation"
+"Designator","PartNumber","Footprint","Manufacturer","Description","Mid X","Mid Y","Layer","Rotation","Carrier"
 ```
 
 - `PartNumber` is read from the component's schematic `PartNumber` parameter;
   it is not copied from the component comment.
+- `Manufacturer` is read from the component's schematic `Manufacturer`
+  parameter.
+- `Carrier` is read from the component's schematic `Carrier` parameter.
+- `Description` is selected from normalized schematic text. If normalized
+  `PartNumber` does not contain the normalized component comment
+  case-insensitively, the comment is exported as `Description`; otherwise the
+  component `Description` parameter/property is exported.
+- Text values are normalized before processing and before CSV output: tabs and
+  line breaks are converted to spaces, repeated spaces are collapsed to one
+  space, and leading/trailing whitespace is removed.
 - Top-side components are labelled `Top`; bottom-side components are labelled
   `Bottom`.
 - Bottom-side components are transformed as if the PCB is flipped around its X
@@ -115,7 +125,6 @@ enabled by default:
 - Remove a trailing footprint name from `PartNumber`, unless `PartNumber`
   consists only of that footprint name. For example,
   `100nF 50V ±10% X7R C0603` becomes `100nF 50V ±10% X7R`.
-- Replace multiple spaces in `PartNumber` with a single space.
 
 # Runtime Dependencies
 

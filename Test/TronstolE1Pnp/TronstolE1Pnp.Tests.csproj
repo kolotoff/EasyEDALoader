@@ -10,6 +10,7 @@
     <Compile Include="..\..\TronstolE1Pnp\TronstolE1Csv.cs" Link="TronstolE1Csv.cs" />
     <Compile Include="..\..\TronstolE1Pnp\TronstolE1PartNumber.cs" Link="TronstolE1PartNumber.cs" />
     <Compile Include="..\..\TronstolE1Pnp\TronstolE1Settings.cs" Link="TronstolE1Settings.cs" />
+    <Compile Include="..\..\TronstolE1Pnp\TronstolE1Text.cs" Link="TronstolE1Text.cs" />
   </ItemGroup>
 
   <ItemGroup>
