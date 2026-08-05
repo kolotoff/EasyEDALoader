@@ -44,6 +44,7 @@ namespace EasyEDA_Loader
     {
         public double HorizontalRailMm = 10.0; // top & bottom
         public double VerticalRailMm = 0.0;    // left & right
+        public bool CloseCornerRectangles = true;
         public double HoleSizeMm = 2.0;
         public double FiducialSizeMm = 1.0;
     }

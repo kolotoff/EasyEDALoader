@@ -45,6 +45,49 @@ namespace EasyEDA_Loader
         {
             if (o.HorizontalRailMm > 0) { AddHorizontalStrip(plan, bottom: true, o); AddHorizontalStrip(plan, bottom: false, o); }
             if (o.VerticalRailMm > 0) { AddVerticalStrip(plan, left: true, o); AddVerticalStrip(plan, left: false, o); }
+            if (o.CloseCornerRectangles && o.HorizontalRailMm > 0 && o.VerticalRailMm > 0)
+            {
+                AddCornerClosure(plan, left: true, bottom: true);
+                AddCornerClosure(plan, left: false, bottom: true);
+                AddCornerClosure(plan, left: true, bottom: false);
+                AddCornerClosure(plan, left: false, bottom: false);
+            }
+        }
+
+        private static void AddCornerClosure(EdgeRailPlan plan, bool left, bool bottom)
+        {
+            EdgeRailBounds b = plan.BoardBounds, p = plan.PanelBounds;
+            double outerR = PanelCornerRadiusMm, innerR = CornerClearanceMm;
+            double boardX = left ? b.MinX : b.MaxX;
+            double boardY = bottom ? b.MinY : b.MaxY;
+            double outerX = left ? p.MinX : p.MaxX;
+            double outerY = bottom ? p.MinY : p.MaxY;
+            int xOut = left ? -1 : 1;
+            int yOut = bottom ? -1 : 1;
+            bool clockwise = left == bottom;
+
+            // Extend the adjacent strips to a shared rounded panel corner. The other
+            // halves of this closed contour are already provided by the strip outlines.
+            plan.RailSegments.Add(Line(
+                outerX - xOut * outerR, outerY,
+                boardX, outerY));
+            plan.RailSegments.Add(Arc(
+                outerX - xOut * outerR, outerY - yOut * outerR,
+                outerX - xOut * outerR, outerY,
+                outerX, outerY - yOut * outerR,
+                clockwise));
+            plan.RailSegments.Add(Line(
+                outerX, outerY - yOut * outerR,
+                outerX, boardY));
+
+            // Round the inward-facing connection around the board's bounding corner.
+            // Keeping this arc at the fixed clearance avoids a diagonal/sharp segment
+            // that could cross a PCB outline whose detected corner is imperfect.
+            plan.RailSegments.Add(Arc(
+                boardX, boardY,
+                boardX, boardY + yOut * innerR,
+                boardX + xOut * innerR, boardY,
+                clockwise));
         }
 
         private static void AddHorizontalStrip(EdgeRailPlan plan, bool bottom, EdgeRailOptions o)
@@ -54,9 +97,10 @@ namespace EasyEDA_Loader
             double edgeY = bottom ? b.MinY : b.MaxY;          // board edge this strip faces
             double outerY = bottom ? p.MinY : p.MaxY;         // panel outer edge
             int sgn = bottom ? 1 : -1;                        // +1: inward is +Y (bottom strip); -1: top strip
+            bool squareStripCorners = o.CloseCornerRectangles && o.VerticalRailMm > 0;
             // 1. side edges (from outer arc tangent up to the L-step level / board corner if sharp)
-            plan.RailSegments.Add(Line(b.MinX, outerY + sgn * R, b.MinX, edgeY - sgn * clr));
-            plan.RailSegments.Add(Line(b.MaxX, edgeY - sgn * clr, b.MaxX, outerY + sgn * R));
+            plan.RailSegments.Add(Line(b.MinX, squareStripCorners ? outerY : outerY + sgn * R, b.MinX, edgeY - sgn * clr));
+            plan.RailSegments.Add(Line(b.MaxX, edgeY - sgn * clr, b.MaxX, squareStripCorners ? outerY : outerY + sgn * R));
             if (Rb > 0.001)
             {
                 // 2 & 4. L-steps at both corners
@@ -70,12 +114,21 @@ namespace EasyEDA_Loader
                 plan.RailSegments.Add(Line(b.MinX, edgeY - sgn * clr, b.MinX, edgeY));
                 plan.RailSegments.Add(Line(b.MaxX, edgeY, b.MaxX, edgeY - sgn * clr));
             }
-            // 6-8. outer edge with two R1.5 corners. Each arc carries its true Center and both
-            // tangent points explicitly: Start = side-edge tangent, End = outer-edge tangent.
-            // The left-corner Center is inset by +sgn*R (previously it held a tangent point).
-            plan.RailSegments.Add(Arc(b.MaxX - R, outerY + sgn * R, b.MaxX, outerY + sgn * R, b.MaxX - R, outerY, bottom ? SweepCW : SweepCCW));
-            plan.RailSegments.Add(Line(b.MaxX - R, outerY, b.MinX + R, outerY));
-            plan.RailSegments.Add(Arc(b.MinX + R, outerY + sgn * R, b.MinX + R, outerY, b.MinX, outerY + sgn * R, bottom ? SweepCW : SweepCCW));
+            if (squareStripCorners)
+            {
+                // Closed corner rectangles share these divider edges. Join them directly;
+                // rounding here creates the unwanted internal arcs between adjacent rails.
+                plan.RailSegments.Add(Line(b.MaxX, outerY, b.MinX, outerY));
+            }
+            else
+            {
+                // 6-8. outer edge with two R1.5 corners. Each arc carries its true Center and both
+                // tangent points explicitly: Start = side-edge tangent, End = outer-edge tangent.
+                // The left-corner Center is inset by +sgn*R (previously it held a tangent point).
+                plan.RailSegments.Add(Arc(b.MaxX - R, outerY + sgn * R, b.MaxX, outerY + sgn * R, b.MaxX - R, outerY, bottom ? SweepCW : SweepCCW));
+                plan.RailSegments.Add(Line(b.MaxX - R, outerY, b.MinX + R, outerY));
+                plan.RailSegments.Add(Arc(b.MinX + R, outerY + sgn * R, b.MinX + R, outerY, b.MinX, outerY + sgn * R, bottom ? SweepCW : SweepCCW));
+            }
         }
 
         private static void AddVerticalStrip(EdgeRailPlan plan, bool left, EdgeRailOptions o)
@@ -86,8 +139,9 @@ namespace EasyEDA_Loader
             double R = PanelCornerRadiusMm, Rb = plan.BoardCornerRMm, clr = CornerClearanceMm;
             double edgeX = left ? b.MinX : b.MaxX, outerX = left ? p.MinX : p.MaxX;
             int sgn = left ? 1 : -1;
-            plan.RailSegments.Add(Line(outerX + sgn * R, b.MinY, edgeX - sgn * clr, b.MinY));
-            plan.RailSegments.Add(Line(edgeX - sgn * clr, b.MaxY, outerX + sgn * R, b.MaxY));
+            bool squareStripCorners = o.CloseCornerRectangles && o.HorizontalRailMm > 0;
+            plan.RailSegments.Add(Line(squareStripCorners ? outerX : outerX + sgn * R, b.MinY, edgeX - sgn * clr, b.MinY));
+            plan.RailSegments.Add(Line(edgeX - sgn * clr, b.MaxY, squareStripCorners ? outerX : outerX + sgn * R, b.MaxY));
             if (Rb > 0.001)
             {
                 plan.RailSegments.Add(Line(edgeX - sgn * clr, b.MinY, edgeX - sgn * clr, b.MinY + Rb));
@@ -95,9 +149,16 @@ namespace EasyEDA_Loader
                 plan.RailSegments.Add(Line(edgeX, b.MaxY - Rb, edgeX - sgn * clr, b.MaxY - Rb));
                 plan.RailSegments.Add(Line(edgeX - sgn * clr, b.MaxY - Rb, edgeX - sgn * clr, b.MaxY));
             }
-            plan.RailSegments.Add(Arc(outerX + sgn * R, b.MaxY - R, outerX + sgn * R, b.MaxY, outerX, b.MaxY - R, left ? SweepCCW : SweepCW));
-            plan.RailSegments.Add(Line(outerX, b.MaxY - R, outerX, b.MinY + R));
-            plan.RailSegments.Add(Arc(outerX + sgn * R, b.MinY + R, outerX, b.MinY + R, outerX + sgn * R, b.MinY, left ? SweepCCW : SweepCW));
+            if (squareStripCorners)
+            {
+                plan.RailSegments.Add(Line(outerX, b.MaxY, outerX, b.MinY));
+            }
+            else
+            {
+                plan.RailSegments.Add(Arc(outerX + sgn * R, b.MaxY - R, outerX + sgn * R, b.MaxY, outerX, b.MaxY - R, left ? SweepCCW : SweepCW));
+                plan.RailSegments.Add(Line(outerX, b.MaxY - R, outerX, b.MinY + R));
+                plan.RailSegments.Add(Arc(outerX + sgn * R, b.MinY + R, outerX, b.MinY + R, outerX + sgn * R, b.MinY, left ? SweepCCW : SweepCW));
+            }
         }
 
         private const bool SweepCW = true, SweepCCW = false;

@@ -10,6 +10,8 @@ internal static class Program
         PanelBoundsMatchReference();
         BottomRailMatchesReferenceKo();
         RailArcsHaveCorrectGeometry();
+        CornerRectanglesCloseByDefault();
+        CornerRectanglesCanRemainOpen();
         HolesAndFiducialsMatchReferencePositions();
         RoundedRectangleDetectsR3();
         SharpRectangleDetectsZero();
@@ -94,6 +96,50 @@ internal static class Program
                 && Near(a.End.X, ex) && Near(a.End.Y, ey)
                 && a.Clockwise == cw) return;
         throw new InvalidDataException("Missing expected arc C(" + cx + "," + cy + ") S(" + sx + "," + sy + ") E(" + ex + "," + ey + ") cw=" + cw);
+    }
+
+    private static void CornerRectanglesCloseByDefault()
+    {
+        var options = new EdgeRailOptions { HorizontalRailMm = 10, VerticalRailMm = 8 };
+        Check(options.CloseCornerRectangles, "corner rectangles default to closed");
+        EdgeRailPlan plan = EdgeRailsGenerator.Generate(Program.Board(0, 0, 100, 60), 3.0, new EdgeRailContour(), options);
+        Check(plan.RailSegments.Count == 44, "28 square-corner strip + 16 corner closure segments, got " + plan.RailSegments.Count);
+
+        var arcs = new List<EdgeRailSegment>();
+        foreach (EdgeRailSegment s in plan.RailSegments) if (s.Kind == EdgeRailSegmentKind.Arc) arcs.Add(s);
+        Check(arcs.Count == 8, "only 4 outer + 4 PCB-clearance arcs, got " + arcs.Count);
+
+        // Top-left: the R1.5 outer panel corner and the R1 inner clearance corner.
+        HasArc(arcs, -6.5, 68.5, -6.5, 70, -8, 68.5, false);
+        HasArc(arcs, 0, 60, 0, 61, -1, 60, false);
+        // The remaining corners pin radius, orientation, and placement.
+        HasArc(arcs, 106.5, 68.5, 106.5, 70, 108, 68.5, true);
+        HasArc(arcs, -6.5, -8.5, -6.5, -10, -8, -8.5, true);
+        HasArc(arcs, 106.5, -8.5, 106.5, -10, 108, -8.5, false);
+        HasArc(arcs, 100, 60, 100, 61, 101, 60, true);
+        HasArc(arcs, 0, 0, 0, -1, -1, 0, true);
+        HasArc(arcs, 100, 0, 100, -1, 101, 0, false);
+
+        HasLine(plan.RailSegments, -6.5, 70, 0, 70);
+        HasLine(plan.RailSegments, -8, 68.5, -8, 60);
+        HasLine(plan.RailSegments, 0, 70, 100, 70);
+        HasLine(plan.RailSegments, -8, 60, -8, 0);
+    }
+
+    private static void CornerRectanglesCanRemainOpen()
+    {
+        EdgeRailPlan plan = EdgeRailsGenerator.Generate(Program.Board(0, 0, 100, 60), 3.0, new EdgeRailContour(),
+            new EdgeRailOptions { HorizontalRailMm = 10, VerticalRailMm = 8, CloseCornerRectangles = false });
+        Check(plan.RailSegments.Count == 36, "open corners retain only strip segments, got " + plan.RailSegments.Count);
+    }
+
+    private static void HasLine(List<EdgeRailSegment> segments, double x1, double y1, double x2, double y2)
+    {
+        foreach (EdgeRailSegment s in segments)
+            if (s.Kind == EdgeRailSegmentKind.Line
+                && ((Near(s.Start.X, x1) && Near(s.Start.Y, y1) && Near(s.End.X, x2) && Near(s.End.Y, y2))
+                    || (Near(s.Start.X, x2) && Near(s.Start.Y, y2) && Near(s.End.X, x1) && Near(s.End.Y, y1)))) return;
+        throw new InvalidDataException("Missing expected line (" + x1 + "," + y1 + ")-(" + x2 + "," + y2 + ")");
     }
 
     private static void HolesAndFiducialsMatchReferencePositions()

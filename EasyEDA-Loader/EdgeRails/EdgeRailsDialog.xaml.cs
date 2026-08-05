@@ -44,6 +44,12 @@ namespace EasyEDA_Loader
             Regenerate();
         }
 
+        private void CornerOption_Changed(object sender, RoutedEventArgs e)
+        {
+            if (closeCornerRectanglesCheckBox == null || addButton == null || previewCanvas == null) return;
+            Regenerate();
+        }
+
         private void Regenerate()
         {
             if (previewCanvas == null) return;
@@ -71,7 +77,11 @@ namespace EasyEDA_Loader
             if (!TryReadRange(holeSizeTextBox.Text, 2, 4, "Tooling hole Ø", out double hole, out error)) return false;
             if (!TryReadRange(fiducialSizeTextBox.Text, 1, 4, "Fiducial Ø", out double fid, out error)) return false;
             if (h <= 0 && v <= 0) { error = "Enable at least one rail: enter 5–50 mm for horizontal or vertical (0 disables a pair)."; return false; }
-            options.HorizontalRailMm = h; options.VerticalRailMm = v; options.HoleSizeMm = hole; options.FiducialSizeMm = fid;
+            options.HorizontalRailMm = h;
+            options.VerticalRailMm = v;
+            options.CloseCornerRectangles = closeCornerRectanglesCheckBox.IsChecked == true;
+            options.HoleSizeMm = hole;
+            options.FiducialSizeMm = fid;
             return true;
         }
 

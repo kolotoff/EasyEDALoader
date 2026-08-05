@@ -37,7 +37,9 @@
                         <TextBlock Text="0 disables top/bottom rails" Margin="0,2,0,8" FontSize="11" Foreground="#A0A0A0"/>
                         <TextBlock Text="Vertical (left &amp; right)" Margin="0,0,0,2"/>
                         <TextBox x:Name="verticalRailTextBox" TextChanged="Input_Changed"/>
-                        <TextBlock Text="0 disables left/right rails" Margin="0,2,0,0" FontSize="11" Foreground="#A0A0A0"/>
+                        <TextBlock Text="0 disables left/right rails" Margin="0,2,0,8" FontSize="11" Foreground="#A0A0A0"/>
+                        <CheckBox x:Name="closeCornerRectanglesCheckBox" Content="Close corner rectangles" IsChecked="True" Checked="CornerOption_Changed" Unchecked="CornerOption_Changed"/>
+                        <TextBlock Text="Applies when both rail pairs are enabled" Margin="20,2,0,0" FontSize="11" Foreground="#A0A0A0"/>
                     </StackPanel>
                 </GroupBox>
                 <GroupBox Header="Features (mm)" Margin="0,0,0,8">

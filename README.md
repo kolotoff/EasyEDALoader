@@ -47,12 +47,17 @@ dialog shows a live preview of the board outline (grey), the rail keepout
 fitted to the window. Scroll to zoom, drag to pan, and right-click to reset the
 fit.
 
-The four inputs (millimetres, two decimals):
+The dialog controls are:
 
 - **Horizontal rail width** (top & bottom), default `10`.
 - **Vertical rail width** (left & right), default `0`.
   A value of `0` disables that pair of rails. Valid rail values are `0` or
   `5`–`50` mm; `0` for both rails disables **Add**.
+- **Close corner rectangles**, checked by default. When both horizontal and
+  vertical rails are enabled, this closes all four corner areas with straight
+  sections, **R1.5 mm** rounded panel corners, and rounded **1 mm** inner
+  clearance corners to prevent overlap with the PCB outline. Internal divider
+  lines between adjoining rail sections meet directly without corner arcs.
 - **Tooling hole Ø**, default `2.0` (`2`–`4` mm).
 - **Fiducial Ø**, default `1.0` (`1`–`4` mm).
 
