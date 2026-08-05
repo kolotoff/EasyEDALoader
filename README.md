@@ -35,6 +35,47 @@ is added as 0.1 mm keepout tracks/arcs, edge holes are added as unplated
 no-copper `PanelHole*` pads, and fiducials are added as side-specific no-paste
 `PanelFiducial*` SMD pads.
 
+## Add edge rails
+
+In the PCB editor:
+
+`Tools` -> `EasyEDA` -> `Add edge rails`
+
+This generates a JLC-style production panel frame around the active board. The
+dialog shows a live preview of the board outline (grey), the rail keepout
+(blue), tooling holes (cyan) and fiducials (orange = top, purple = bottom),
+fitted to the window. Scroll to zoom, drag to pan, and right-click to reset the
+fit.
+
+The four inputs (millimetres, two decimals):
+
+- **Horizontal rail width** (top & bottom), default `10`.
+- **Vertical rail width** (left & right), default `0`.
+  A value of `0` disables that pair of rails. Valid rail values are `0` or
+  `5`–`50` mm; `0` for both rails disables **Add**.
+- **Tooling hole Ø**, default `2.0` (`2`–`4` mm).
+- **Fiducial Ø**, default `1.0` (`1`–`4` mm).
+
+The board corner radius is detected automatically from the board outline, so
+rounded corners produce the characteristic L-step that wraps each corner.
+
+**Add rails** creates:
+
+- a rail-region keepout outline — a panel outer rectangle with **R1.5 mm** outer
+  corners and an L-step at every board rounded corner (1 mm clearance, jog equal
+  to the board corner radius), drawn as `0.1 mm` keepout tracks/arcs;
+- four `PanelHole1`–`PanelHole4` unplated, no-copper tooling holes (Ø from the
+  dialog) centred in the rails; and
+- `PanelFiducial1`–`PanelFiducial8` SMD no-paste pads — Ø from the dialog with a
+  solder-mask opening of copper + 1.0 mm — stacked four on top over four on
+  bottom.
+
+Holes and fiducials use a one-corner polarization: standard inset at three
+corners and a +5 mm inboard shift at the top-right corner only, matching a JLC
+production panel. With the defaults on a 146×62 mm board the result matches the
+reference SwarmRK panel. **Add** is disabled when the inputs are out of range or
+both rails are `0`; the changes can be undone.
+
 ## Tronstol E1 pick-and-place output
 
 The extension adds a Tronstol E1 pick-and-place CSV generator to Altium

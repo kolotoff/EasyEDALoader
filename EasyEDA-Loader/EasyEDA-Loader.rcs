@@ -17,6 +17,7 @@ PL PLEasyEDALoader:EasyEDAOpenSymbolLibrary Command='EasyEDA-Loader:EasyEDAOpenS
 PL PLEasyEDALoader:EasyEDAOpenFootprintLibrary Command='EasyEDA-Loader:EasyEDAOpenFootprintLibrary' Caption='Open &footprint library' Description='Open the selected PCB component library and select its footprint' End
 PL PLEasyEDALoader:EasyEDAImportJlcCamArchive Command='EasyEDA-Loader:EasyEDAImportJlcCamArchive' Caption='Import &archive' Description='Select a JLC production RAR archive to review and import rail features' End
 PL PLEasyEDALoader:EasyEDAImportJlcCamFolder Command='EasyEDA-Loader:EasyEDAImportJlcCamFolder' Caption='Import &folder' Description='Select an extracted JLC production folder to review and import rail features' End
+PL PLEasyEDALoader:EasyEDAAddEdgeRails Command='EasyEDA-Loader:EasyEDAAddEdgeRails' Caption='Add &edge rails' Description='Generate keepout edge rails, tooling holes and fiducials around the active board' End
 
 Insertion MNSchematic_EasyEDALoader TargetID='MNSchematic_Tools10' InsertType='After' RefID0='MNSchematic_Tools30'
     Link MNSchematic_EasyEDALoader10 PLID='PLEasyEDALoader:EasyEDARun' End
@@ -35,6 +36,7 @@ Insertion MNPCB_EasyEDALoader TargetID='MNPCB_Tools10' InsertType='Before' RefID
             Link MNPCB_EasyEDAJlcCam10 PLID='PLEasyEDALoader:EasyEDAImportJlcCamArchive' End
             Link MNPCB_EasyEDAJlcCam20 PLID='PLEasyEDALoader:EasyEDAImportJlcCamFolder' End
         End
+        Link MNPCB_EasyEDAEdgeRails10 PLID='PLEasyEDALoader:EasyEDAAddEdgeRails' End
         Separator MNPCB_EasyEDALoader20 End
         Tree MNPCB_EasyEDAExportShapeTree Caption='Export &shape' Popup='1'
             Link MNPCB_EasyEDAExportShape10 PLID='PLEasyEDALoader:EasyEDAExportShapeAll' End

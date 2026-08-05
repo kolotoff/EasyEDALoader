@@ -72,6 +72,8 @@ namespace EasyEDA_Loader
             RegisterCommand("EasyEDA-Loader:EasyEDAImportJlcCamArchive", new CommandProc(ImportJlcCamArchive));
             RegisterCommand("EasyEDAImportJlcCamFolder", new CommandProc(ImportJlcCamFolder));
             RegisterCommand("EasyEDA-Loader:EasyEDAImportJlcCamFolder", new CommandProc(ImportJlcCamFolder));
+            RegisterCommand("EasyEDAAddEdgeRails", new CommandProc(AddEdgeRails));
+            RegisterCommand("EasyEDA-Loader:EasyEDAAddEdgeRails", new CommandProc(AddEdgeRails));
         }
 
         private void RegisterCommand(string argCommandId, CommandProc commandProc)
@@ -543,6 +545,29 @@ namespace EasyEDA_Loader
                     MarkCurrentDocumentModified();
             }
             catch { session?.Dispose(); throw; }
+            finally { Interlocked.Exchange(ref loaderDialogOpen, 0); }
+        }
+
+        private void AddEdgeRails(IServerDocumentView argContext, ref string argParameters)
+        {
+            if (IsLoaderDialogOpen()) return;
+            IPCB_Board board = EEPCB.GetCurrentPcbBoard(argContext);
+            if (board == null) throw new InvalidOperationException("Open a PCB document before adding edge rails.");
+            if (!EdgeRailsPcbReader.TryRead(board, out EdgeRailBounds bounds, out EdgeRailContour contour, out double cornerR) || bounds.IsEmpty)
+                throw new InvalidOperationException("Could not read the board outline. Draw a closed board outline before adding edge rails.");
+            RunEdgeRailsDialog(board, bounds, contour, cornerR);
+        }
+
+        private void RunEdgeRailsDialog(IPCB_Board board, EdgeRailBounds bounds, EdgeRailContour contour, double cornerRMm)
+        {
+            Interlocked.Exchange(ref loaderDialogOpen, 1);
+            try
+            {
+                var dialog = new EdgeRailsDialog(board, bounds, contour, cornerRMm) { ShowActivated = true, WindowStartupLocation = System.Windows.WindowStartupLocation.CenterScreen };
+                IntPtr ownerHandle = Process.GetCurrentProcess().MainWindowHandle;
+                if (ownerHandle != IntPtr.Zero) new System.Windows.Interop.WindowInteropHelper(dialog).Owner = ownerHandle;
+                if (dialog.ShowDialog() == true) MarkCurrentDocumentModified();
+            }
             finally { Interlocked.Exchange(ref loaderDialogOpen, 0); }
         }
 
