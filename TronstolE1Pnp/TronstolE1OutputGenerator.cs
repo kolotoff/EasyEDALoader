@@ -148,7 +148,8 @@ namespace EasyEDA_Loader.TronstolE1Pnp
 
             if (settings.ExportBoardDimensions)
             {
-                foreach (TronstolE1Placement boardInfo in ReadBoardDimensions(bounds))
+                double boardThicknessMm = ReadBoardThickness(board);
+                foreach (TronstolE1Placement boardInfo in ReadBoardDimensions(bounds, boardThicknessMm))
                     yield return boardInfo;
             }
 
@@ -221,8 +222,28 @@ namespace EasyEDA_Loader.TronstolE1Pnp
                 top - origin.Y);
         }
 
+        private static double ReadBoardThickness(IPCB_Board board)
+        {
+            IPCB_LayerStack layerStack = board?.Internal_GetState_LayerStack() as IPCB_LayerStack;
+            if (layerStack == null)
+                throw new InvalidOperationException("Unable to read PCB layer stack for the PCB_Size thickness value.");
+
+            object topDielectric = layerStack.Internal_DielectricTop();
+            object bottomDielectric = layerStack.Internal_DielectricBottom();
+            if (topDielectric == null || bottomDielectric == null)
+                throw new InvalidOperationException("Unable to identify the top and bottom dielectric layers for the PCB_Size thickness value.");
+
+            double thicknessMm = Math.Abs(EDP.Utils.CoordToMMs(
+                layerStack.Get_ZTop(topDielectric) - layerStack.Get_ZBottom(bottomDielectric)));
+            if (double.IsNaN(thicknessMm) || double.IsInfinity(thicknessMm) || thicknessMm <= 0.0)
+                throw new InvalidOperationException("The PCB layer stack does not define a positive PCB thickness for the PCB_Size rotation value.");
+
+            return thicknessMm;
+        }
+
         private static IEnumerable<TronstolE1Placement> ReadBoardDimensions(
-            BoardCoordinateBounds bounds)
+            BoardCoordinateBounds bounds,
+            double boardThicknessMm)
         {
             double leftMm = EDP.Utils.CoordToMMs(bounds.Left);
             double bottomMm = EDP.Utils.CoordToMMs(bounds.Bottom);
@@ -236,7 +257,8 @@ namespace EasyEDA_Loader.TronstolE1Pnp
                 widthMm,
                 heightMm,
                 false,
-                1);
+                1,
+                boardThicknessMm);
             yield return CreateBoardInfoPlacement(
                 "PCB_BTLC1",
                 "Board bottom left corner",
@@ -252,7 +274,8 @@ namespace EasyEDA_Loader.TronstolE1Pnp
                 widthMm,
                 heightMm,
                 true,
-                3);
+                3,
+                boardThicknessMm);
             yield return CreateBoardInfoPlacement(
                 "PCB_BTLC2",
                 "Board bottom left corner",
@@ -306,7 +329,8 @@ namespace EasyEDA_Loader.TronstolE1Pnp
             double xMillimeters,
             double yMillimeters,
             bool isBottom,
-            int order)
+            int order,
+            double rotationValue = 0.0)
         {
             return new TronstolE1Placement
             {
@@ -321,8 +345,10 @@ namespace EasyEDA_Loader.TronstolE1Pnp
                 CenterXMillimeters = xMillimeters,
                 CenterYMillimeters = yMillimeters,
                 IsBottom = isBottom,
-                RotationDegrees = 0.0,
-                RotationText = "0.0",
+                RotationDegrees = rotationValue,
+                RotationText = rotationValue == 0.0
+                    ? "0.0"
+                    : rotationValue.ToString("0.####", CultureInfo.InvariantCulture),
                 IsBoardInfo = true,
                 BoardInfoOrder = order,
                 DisableBottomTransform = true

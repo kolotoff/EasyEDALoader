@@ -102,7 +102,7 @@ internal static class Program
                     Footprint = "PCB_Size",
                     CenterXMillimeters = 120.0,
                     CenterYMillimeters = 55.25,
-                    RotationText = "0.0",
+                    RotationText = "1.6",
                     IsBoardInfo = true,
                     BoardInfoOrder = 1
                 },
@@ -127,7 +127,7 @@ internal static class Program
                     CenterXMillimeters = 120.0,
                     CenterYMillimeters = 55.25,
                     IsBottom = true,
-                    RotationText = "0.0",
+                    RotationText = "1.6",
                     IsBoardInfo = true,
                     BoardInfoOrder = 3,
                     DisableBottomTransform = true
@@ -157,7 +157,7 @@ internal static class Program
                 sortedLines[2],
                 "second panel fiducial row");
             AssertEqual(
-                "\"PCB_Size1\",\"Board dimensions\",\"PCB_Size\",\"\",\"\",\"120.0000\",\"55.2500\",\"Top\",\"0.0\",\"\",\"\"",
+                "\"PCB_Size1\",\"Board dimensions\",\"PCB_Size\",\"\",\"\",\"120.0000\",\"55.2500\",\"Top\",\"1.6\",\"\",\"\"",
                 sortedLines[3],
                 "board size row");
             AssertEqual(
@@ -165,7 +165,7 @@ internal static class Program
                 sortedLines[4],
                 "board bottom-left row");
             AssertEqual(
-                "\"PCB_Size2\",\"Board dimensions\",\"PCB_Size\",\"\",\"\",\"120.0000\",\"55.2500\",\"Bottom\",\"0.0\",\"\",\"\"",
+                "\"PCB_Size2\",\"Board dimensions\",\"PCB_Size\",\"\",\"\",\"120.0000\",\"55.2500\",\"Bottom\",\"1.6\",\"\",\"\"",
                 sortedLines[5],
                 "bottom board size row");
             AssertEqual(

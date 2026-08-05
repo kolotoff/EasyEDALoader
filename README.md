@@ -133,7 +133,7 @@ following columns:
   followed by `PCB_Size2` and `PCB_BTLC2` for `Bottom`. `PCB_Size1` and
   `PCB_Size2` export `Board dimensions` in the `PartNumber` column, `PCB_Size`
   in the `Footprint` column, board width in `Mid X`, board height in `Mid Y`,
-  and rotation `0.0`. `PCB_BTLC1` and `PCB_BTLC2` export `Board bottom left
+  and the PCB thickness in the `Rotation` column. `PCB_BTLC1` and `PCB_BTLC2` export `Board bottom left
   corner` in the `PartNumber` column, `PCB_BTLC` in the `Footprint` column, the
   board bottom-left X coordinate relative to the PCB coordinate origin in
   `Mid X`, the board bottom-left Y coordinate relative to the PCB coordinate
