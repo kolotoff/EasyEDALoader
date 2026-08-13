@@ -11,6 +11,8 @@ namespace EasyEDA_Loader.TronstolE1Pnp
         private const string SkipDnpComponentsKey = "SkipDnpComponents";
         private const string SkipManualSolderingComponentsKey = "SkipManualSolderingComponents";
         private const string SkipWaveSolderingComponentsKey = "SkipWaveSolderingComponents";
+        private const string SkipTestPointsKey = "SkipTestPoints";
+        private const string SkipSolderBridgeKey = "SkipSolderBridge";
         private const string ExportPanelFiducialsKey = "ExportPanelFiducials";
         private const string ExportBoardDimensionsKey = "ExportBoardDimensions";
         private const string ExportEdgeRailsSizeKey = "ExportEdgeRailsSize";
@@ -22,6 +24,8 @@ namespace EasyEDA_Loader.TronstolE1Pnp
         public bool SkipDnpComponents { get; set; } = true;
         public bool SkipManualSolderingComponents { get; set; } = true;
         public bool SkipWaveSolderingComponents { get; set; } = true;
+        public bool SkipTestPoints { get; set; } = true;
+        public bool SkipSolderBridge { get; set; } = true;
         public bool ExportPanelFiducials { get; set; } = true;
         public bool ExportBoardDimensions { get; set; } = true;
         public bool ExportEdgeRailsSize { get; set; } = true;
@@ -40,6 +44,10 @@ namespace EasyEDA_Loader.TronstolE1Pnp
                 + SkipManualSolderingComponentsKey + "=" + (SkipManualSolderingComponents ? "True" : "False")
                 + "|"
                 + SkipWaveSolderingComponentsKey + "=" + (SkipWaveSolderingComponents ? "True" : "False")
+                + "|"
+                + SkipTestPointsKey + "=" + (SkipTestPoints ? "True" : "False")
+                + "|"
+                + SkipSolderBridgeKey + "=" + (SkipSolderBridge ? "True" : "False")
                 + "|"
                 + ExportPanelFiducialsKey + "=" + (ExportPanelFiducials ? "True" : "False")
                 + "|"
@@ -94,6 +102,16 @@ namespace EasyEDA_Loader.TronstolE1Pnp
                 {
                     SkipWaveSolderingComponents = skipWaveSolderingComponents;
                 }
+                else if (string.Equals(key, SkipTestPointsKey, StringComparison.OrdinalIgnoreCase)
+                    && bool.TryParse(value, out bool skipTestPoints))
+                {
+                    SkipTestPoints = skipTestPoints;
+                }
+                else if (string.Equals(key, SkipSolderBridgeKey, StringComparison.OrdinalIgnoreCase)
+                    && bool.TryParse(value, out bool skipSolderBridge))
+                {
+                    SkipSolderBridge = skipSolderBridge;
+                }
                 else if (string.Equals(key, ExportPanelFiducialsKey, StringComparison.OrdinalIgnoreCase)
                     && bool.TryParse(value, out bool exportPanelFiducials))
                 {
@@ -125,6 +143,8 @@ namespace EasyEDA_Loader.TronstolE1Pnp
             SkipDnpComponents = true;
             SkipManualSolderingComponents = true;
             SkipWaveSolderingComponents = true;
+            SkipTestPoints = true;
+            SkipSolderBridge = true;
             ExportPanelFiducials = true;
             ExportBoardDimensions = true;
             ExportEdgeRailsSize = true;
@@ -165,6 +185,17 @@ namespace EasyEDA_Loader.TronstolE1Pnp
                     && string.Equals(value, "Manual", StringComparison.OrdinalIgnoreCase))
                 || (SkipWaveSolderingComponents
                     && string.Equals(value, "Wave", StringComparison.OrdinalIgnoreCase));
+        }
+
+        public bool ShouldSkipFootprintName(string footprint)
+        {
+            string value = TronstolE1Text.Normalize(footprint);
+            return (SkipTestPoints
+                    && (value.IndexOf("testpoint", StringComparison.OrdinalIgnoreCase) >= 0
+                        || value.IndexOf("test point", StringComparison.OrdinalIgnoreCase) >= 0))
+                || (SkipSolderBridge
+                    && (value.IndexOf("solderbridge", StringComparison.OrdinalIgnoreCase) >= 0
+                        || value.IndexOf("solder bridge", StringComparison.OrdinalIgnoreCase) >= 0));
         }
 
         public string FormatPartNumber(string partNumber, string footprint)

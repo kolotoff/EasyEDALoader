@@ -11,6 +11,8 @@ namespace EasyEDA_Loader.TronstolE1Pnp
         private readonly CheckBox skipDnpComponentsCheckBox;
         private readonly CheckBox skipManualSolderingComponentsCheckBox;
         private readonly CheckBox skipWaveSolderingComponentsCheckBox;
+        private readonly CheckBox skipTestPointsCheckBox;
+        private readonly CheckBox skipSolderBridgeCheckBox;
         private readonly CheckBox exportPanelFiducialsCheckBox;
         private readonly CheckBox exportBoardDimensionsCheckBox;
         private readonly CheckBox exportEdgeRailsSizeCheckBox;
@@ -22,6 +24,8 @@ namespace EasyEDA_Loader.TronstolE1Pnp
         public bool SkipDnpComponents => skipDnpComponentsCheckBox.Checked;
         public bool SkipManualSolderingComponents => skipManualSolderingComponentsCheckBox.Checked;
         public bool SkipWaveSolderingComponents => skipWaveSolderingComponentsCheckBox.Checked;
+        public bool SkipTestPoints => skipTestPointsCheckBox.Checked;
+        public bool SkipSolderBridge => skipSolderBridgeCheckBox.Checked;
         public bool ExportPanelFiducials => exportPanelFiducialsCheckBox.Checked;
         public bool ExportBoardDimensions => exportBoardDimensionsCheckBox.Checked;
         public bool ExportEdgeRailsSize => exportEdgeRailsSizeCheckBox.Checked;
@@ -34,6 +38,8 @@ namespace EasyEDA_Loader.TronstolE1Pnp
             bool skipDnpComponents,
             bool skipManualSolderingComponents,
             bool skipWaveSolderingComponents,
+            bool skipTestPoints,
+            bool skipSolderBridge,
             bool exportPanelFiducials,
             bool exportBoardDimensions,
             bool exportEdgeRailsSize,
@@ -45,7 +51,7 @@ namespace EasyEDA_Loader.TronstolE1Pnp
             MaximizeBox = false;
             MinimizeBox = false;
             ShowInTaskbar = false;
-            ClientSize = new Size(576, 405);
+            ClientSize = new Size(576, 465);
 
             removeBgaSuffixCheckBox = new CheckBox
             {
@@ -95,11 +101,27 @@ namespace EasyEDA_Loader.TronstolE1Pnp
                 Text = "Skip Wave soldering components"
             };
 
+            skipTestPointsCheckBox = new CheckBox
+            {
+                AutoSize = true,
+                Checked = skipTestPoints,
+                Location = new Point(16, 198),
+                Text = "Skip test points"
+            };
+
+            skipSolderBridgeCheckBox = new CheckBox
+            {
+                AutoSize = true,
+                Checked = skipSolderBridge,
+                Location = new Point(16, 228),
+                Text = "Skip solder bridge"
+            };
+
             exportPanelFiducialsCheckBox = new CheckBox
             {
                 AutoSize = true,
                 Checked = exportPanelFiducials,
-                Location = new Point(16, 198),
+                Location = new Point(16, 258),
                 Text = "Export panel fiducials"
             };
 
@@ -107,7 +129,7 @@ namespace EasyEDA_Loader.TronstolE1Pnp
             {
                 AutoSize = true,
                 Checked = exportBoardDimensions,
-                Location = new Point(16, 228),
+                Location = new Point(16, 288),
                 Text = "Export board dimensions"
             };
 
@@ -115,7 +137,7 @@ namespace EasyEDA_Loader.TronstolE1Pnp
             {
                 AutoSize = true,
                 Checked = exportEdgeRailsSize,
-                Location = new Point(16, 258),
+                Location = new Point(16, 318),
                 Text = "Export edge rails size"
             };
 
@@ -123,14 +145,14 @@ namespace EasyEDA_Loader.TronstolE1Pnp
             {
                 AutoSize = true,
                 Checked = removeFootprintFromPartNumber,
-                Location = new Point(16, 288),
+                Location = new Point(16, 348),
                 Text = "Remove footprint name from end of PartNumber"
             };
 
             var okButton = new Button
             {
                 DialogResult = DialogResult.OK,
-                Location = new Point(404, 358),
+                Location = new Point(404, 418),
                 Size = new Size(75, 31),
                 Text = "OK"
             };
@@ -138,7 +160,7 @@ namespace EasyEDA_Loader.TronstolE1Pnp
             var cancelButton = new Button
             {
                 DialogResult = DialogResult.Cancel,
-                Location = new Point(485, 358),
+                Location = new Point(485, 418),
                 Size = new Size(75, 31),
                 Text = "Cancel"
             };
@@ -151,6 +173,8 @@ namespace EasyEDA_Loader.TronstolE1Pnp
             Controls.Add(skipDnpComponentsCheckBox);
             Controls.Add(skipManualSolderingComponentsCheckBox);
             Controls.Add(skipWaveSolderingComponentsCheckBox);
+            Controls.Add(skipTestPointsCheckBox);
+            Controls.Add(skipSolderBridgeCheckBox);
             Controls.Add(exportPanelFiducialsCheckBox);
             Controls.Add(exportBoardDimensionsCheckBox);
             Controls.Add(exportEdgeRailsSizeCheckBox);

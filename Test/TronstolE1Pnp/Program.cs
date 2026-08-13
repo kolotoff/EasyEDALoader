@@ -188,7 +188,7 @@ internal static class Program
             AssertEqual("BGA144", settings.FormatFootprintName("BGA144 BGA"), "default space suffix removal");
             AssertEqual("BGA144_BGA_TOP", settings.FormatFootprintName("BGA144_BGA_TOP"), "non-suffix preservation");
             AssertEqual(
-                "RemoveBgaSuffix=True|RemoveSpaceBgaSuffix=True|SkipNfComponents=True|SkipDnpComponents=True|SkipManualSolderingComponents=True|SkipWaveSolderingComponents=True|ExportPanelFiducials=True|ExportBoardDimensions=True|ExportEdgeRailsSize=True|RemoveFootprintFromPartNumber=True",
+                "RemoveBgaSuffix=True|RemoveSpaceBgaSuffix=True|SkipNfComponents=True|SkipDnpComponents=True|SkipManualSolderingComponents=True|SkipWaveSolderingComponents=True|SkipTestPoints=True|SkipSolderBridge=True|ExportPanelFiducials=True|ExportBoardDimensions=True|ExportEdgeRailsSize=True|RemoveFootprintFromPartNumber=True",
                 settings.ExportToParameters(),
                 "default parameters");
 
@@ -196,7 +196,7 @@ internal static class Program
             AssertEqual("BGA144_BGA", settings.FormatFootprintName("BGA144_BGA"), "disabled suffix removal");
             AssertEqual("BGA144 BGA", settings.FormatFootprintName("BGA144 BGA"), "disabled space suffix removal");
             AssertEqual(
-                "RemoveBgaSuffix=False|RemoveSpaceBgaSuffix=False|SkipNfComponents=True|SkipDnpComponents=True|SkipManualSolderingComponents=True|SkipWaveSolderingComponents=True|ExportPanelFiducials=True|ExportBoardDimensions=True|ExportEdgeRailsSize=True|RemoveFootprintFromPartNumber=True",
+                "RemoveBgaSuffix=False|RemoveSpaceBgaSuffix=False|SkipNfComponents=True|SkipDnpComponents=True|SkipManualSolderingComponents=True|SkipWaveSolderingComponents=True|SkipTestPoints=True|SkipSolderBridge=True|ExportPanelFiducials=True|ExportBoardDimensions=True|ExportEdgeRailsSize=True|RemoveFootprintFromPartNumber=True",
                 settings.ExportToParameters(),
                 "backward-compatible parameters ignore obsolete whitespace setting");
 
@@ -209,6 +209,11 @@ internal static class Program
             AssertEqual("True", settings.ShouldSkipSolderingType("Manual").ToString(), "skip manual soldering");
             AssertEqual("True", settings.ShouldSkipSolderingType(" Wave ").ToString(), "skip Wave soldering");
             AssertEqual("False", settings.ShouldSkipSolderingType("Reflow").ToString(), "preserve reflow soldering");
+            AssertEqual("True", settings.ShouldSkipFootprintName("TestPointSMD1MM").ToString(), "skip testpoint footprint");
+            AssertEqual("True", settings.ShouldSkipFootprintName("SMD Test Point 1mm").ToString(), "skip test point footprint");
+            AssertEqual("True", settings.ShouldSkipFootprintName("SolderBridge_2P").ToString(), "skip solderbridge footprint");
+            AssertEqual("True", settings.ShouldSkipFootprintName("Solder Bridge 2P").ToString(), "skip solder bridge footprint");
+            AssertEqual("False", settings.ShouldSkipFootprintName("R0603").ToString(), "preserve normal footprint");
 
             AssertEqual(
                 "100nF 50V ±10% X7R",
@@ -243,6 +248,8 @@ internal static class Program
             settings.SkipDnpComponents = false;
             settings.SkipManualSolderingComponents = false;
             settings.SkipWaveSolderingComponents = false;
+            settings.SkipTestPoints = false;
+            settings.SkipSolderBridge = false;
             settings.ExportPanelFiducials = false;
             settings.ExportBoardDimensions = false;
             settings.ExportEdgeRailsSize = false;
@@ -250,6 +257,8 @@ internal static class Program
             AssertEqual("False", settings.ShouldSkipComment("DNP ").ToString(), "disabled DNP skip");
             AssertEqual("False", settings.ShouldSkipSolderingType("Manual").ToString(), "disabled manual skip");
             AssertEqual("False", settings.ShouldSkipSolderingType("Wave").ToString(), "disabled Wave skip");
+            AssertEqual("False", settings.ShouldSkipFootprintName("TestPointSMD1MM").ToString(), "disabled test point skip");
+            AssertEqual("False", settings.ShouldSkipFootprintName("SolderBridge_2P").ToString(), "disabled solder bridge skip");
             AssertEqual("False", settings.ExportPanelFiducials.ToString(), "disabled panel fiducial export");
             AssertEqual("False", settings.ExportBoardDimensions.ToString(), "disabled board dimensions export");
             AssertEqual("False", settings.ExportEdgeRailsSize.ToString(), "disabled edge rails size export");

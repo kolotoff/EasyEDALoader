@@ -49,6 +49,8 @@ namespace EasyEDA_Loader.TronstolE1Pnp
                 settings.SkipDnpComponents,
                 settings.SkipManualSolderingComponents,
                 settings.SkipWaveSolderingComponents,
+                settings.SkipTestPoints,
+                settings.SkipSolderBridge,
                 settings.ExportPanelFiducials,
                 settings.ExportBoardDimensions,
                 settings.ExportEdgeRailsSize,
@@ -63,6 +65,8 @@ namespace EasyEDA_Loader.TronstolE1Pnp
                 settings.SkipDnpComponents = form.SkipDnpComponents;
                 settings.SkipManualSolderingComponents = form.SkipManualSolderingComponents;
                 settings.SkipWaveSolderingComponents = form.SkipWaveSolderingComponents;
+                settings.SkipTestPoints = form.SkipTestPoints;
+                settings.SkipSolderBridge = form.SkipSolderBridge;
                 settings.ExportPanelFiducials = form.ExportPanelFiducials;
                 settings.ExportBoardDimensions = form.ExportBoardDimensions;
                 settings.ExportEdgeRailsSize = form.ExportEdgeRailsSize;
@@ -1219,10 +1223,12 @@ namespace EasyEDA_Loader.TronstolE1Pnp
                             component.Internal_GetState_Name(),
                             component.GetState_SourceDesignator());
                         compiledComponents.TryGetValue(designator, out CompiledComponentData compiledComponent);
-                        if (compiledComponent == null
-                            || (!compiledComponent.IsNoBom
+                        string footprint = component.GetState_Pattern() ?? string.Empty;
+                        if (!settings.ShouldSkipFootprintName(footprint)
+                            && (compiledComponent == null
+                                || (!compiledComponent.IsNoBom
                                 && !settings.ShouldSkipComment(compiledComponent.Comment)
-                                && !settings.ShouldSkipSolderingType(compiledComponent.SolderingType)))
+                                && !settings.ShouldSkipSolderingType(compiledComponent.SolderingType))))
                         {
                             yield return ReadPlacement(
                                 component,

@@ -166,6 +166,10 @@ enabled by default:
 - Skip components whose comment is `DNP` (surrounding whitespace is ignored).
 - Skip components whose `SolderingType` parameter is `Manual`.
 - Skip components whose `SolderingType` parameter is `Wave`.
+- Skip components whose footprint name contains `testpoint` or `test point`,
+  case-insensitively.
+- Skip components whose footprint name contains `solderbridge` or
+  `solder bridge`, case-insensitively.
 - Export panel fiducials from board pads named `PanelFiducial<number>`.
 - Export board dimensions and board bottom-left corner rows.
 - Export edge rails size from the Keep-Out Layer.
