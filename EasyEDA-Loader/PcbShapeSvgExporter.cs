@@ -196,8 +196,11 @@ namespace EasyEDA_Loader
             bool includePads,
             string sourceLibraryPath)
         {
+            ExportComponentItem selectedComponent = scope == ShapeExportScope.SelectedComponent
+                ? GetCurrentPcbLibExportComponent(pcbLib)
+                : null;
             IEnumerable<object> components = scope == ShapeExportScope.SelectedComponent
-                ? new[] { GetCurrentPcbLibExportComponent(pcbLib) }.Where(component => component != null)
+                ? new[] { selectedComponent }.Where(component => component != null)
                 : EnumeratePcbLibExportComponents(pcbLib);
 
             IReadOnlyDictionary<string, List<PersistedPadContour>> persistedPadContours = null;
@@ -205,7 +208,9 @@ namespace EasyEDA_Loader
             {
                 try
                 {
-                    persistedPadContours = PcbLibPadContourReader.Read(sourceLibraryPath);
+                    persistedPadContours = PcbLibPadContourReader.Read(
+                        sourceLibraryPath,
+                        selectedComponent == null ? null : new[] { selectedComponent.ExportName });
                 }
                 catch (Exception ex)
                 {
@@ -545,12 +550,15 @@ namespace EasyEDA_Loader
             string componentName = FirstNonEmpty(ReadFootprintName(component), ReadDesignator(component), ObjectIdentity(component));
             HashSet<string> excludedTextValues = BuildComponentTextExclusionSet(component);
             List<object> shapeObjects = EnumerateComponentShapeObjects(component).ToList();
-            HashSet<string> repeatedBoardTextValues = BuildRepeatedBoardTextExclusionSet(shapeObjects);
+            HashSet<string> repeatedBoardTextValues = IsBoardComponent(component)
+                ? BuildRepeatedBoardTextExclusionSet(shapeObjects)
+                : new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             diagnostics?.BeginComponent(exportName, component, originX, originY, rotation, mirrored);
 
             var result = new List<SvgPrimitive>();
             var objectCounts = new Dictionary<int, int>();
             var layerCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            bool detailedStats = diagnostics != null;
             int total = 0;
             int arcCandidates = 0;
             int mechanicalArcCandidates = 0;
@@ -561,15 +569,18 @@ namespace EasyEDA_Loader
                 ThrowIfCancellationRequested(isCancellationRequested);
                 total++;
                 int objectId = GetObjectId(primitive);
-                string layerDescription = DescribePrimitiveLayer(primitive);
-                bool isArcCandidate = HasArcFields(primitive);
+                string layerDescription = detailedStats ? DescribePrimitiveLayer(primitive) : "";
+                bool isArcCandidate = detailedStats && HasArcFields(primitive);
                 if (isArcCandidate)
                     arcCandidates++;
-                IncrementCount(objectCounts, objectId);
-                IncrementCount(layerCounts, layerDescription);
+                if (detailedStats)
+                {
+                    IncrementCount(objectCounts, objectId);
+                    IncrementCount(layerCounts, layerDescription);
+                    IncrementCount(stats.LayerCounts, layerDescription);
+                }
                 stats.TotalPrimitives++;
                 IncrementCount(stats.ObjectCounts, objectId);
-                IncrementCount(stats.LayerCounts, layerDescription);
                 bool placeholderText = IsExcludedTextPrimitive(primitive, objectId, excludedTextValues, repeatedBoardTextValues);
                 bool mechanical2 = !placeholderText && IsMechanical2Primitive(primitive, objectId);
                 string textValue = mechanical2 ? ReadExportTextString(primitive, objectId, excludedTextValues) : "";
@@ -632,7 +643,9 @@ namespace EasyEDA_Loader
             double componentRotation = IsBoardComponent(component) ? GetDouble(component, "GetState_Rotation") : 0.0;
             bool mirrored = IsBoardComponent(component) && GetBool(component, "GetState_FlippedOnLayer");
             var result = new List<SvgPrimitive>();
-            List<LinkedPadRegion> linkedRegions = EnumerateLinkedPadRegions(component).ToList();
+            List<LinkedPadRegion> linkedRegions = persistedContours != null
+                ? new List<LinkedPadRegion>()
+                : EnumerateLinkedPadRegions(component).ToList();
             if (persistedContours != null)
             {
                 foreach (PersistedPadContour contour in persistedContours)
@@ -689,10 +702,16 @@ namespace EasyEDA_Loader
                 out double padX,
                 out double padY);
 
+            int padIndex = SafeIntCall(() => ((IPCB_Primitive)pad).GetState_Index());
+            List<PersistedPadContour> availableContours = contours.Where(candidate => !candidate.Used).ToList();
+            List<PersistedPadContour> indexedContours = padIndex > 0
+                ? availableContours.Where(candidate => candidate.PadIndex == padIndex).ToList()
+                : new List<PersistedPadContour>();
+            bool matchedByIndex = indexedContours.Count > 0;
             PersistedPadContour best = null;
             List<List<SvgPoint>> bestContours = null;
             double bestDistance = double.PositiveInfinity;
-            foreach (PersistedPadContour candidate in contours.Where(candidate => !candidate.Used))
+            foreach (PersistedPadContour candidate in matchedByIndex ? indexedContours : availableContours)
             {
                 List<List<SvgPoint>> documentCoordinates = TransformPersistedContours(
                     candidate,
@@ -728,7 +747,7 @@ namespace EasyEDA_Loader
 
             double width = bestContours[0].Max(point => point.X) - bestContours[0].Min(point => point.X);
             double height = bestContours[0].Max(point => point.Y) - bestContours[0].Min(point => point.Y);
-            if (bestDistance > Math.Max(5.0, Math.Max(width, height) * 4.0))
+            if (!matchedByIndex && bestDistance > Math.Max(0.05, Math.Max(width, height) * 0.75))
                 return null;
 
             best.Used = true;
@@ -796,8 +815,10 @@ namespace EasyEDA_Loader
         {
             var seen = new List<object>();
             int regionObjectId = (int)TObjectId.eRegionObject;
+            bool filteredIteratorReturnedObjects = false;
             foreach (object region in EnumerateGroupObjects(component, regionObjectId))
             {
+                filteredIteratorReturnedObjects = true;
                 if (!AddSeenObject(seen, region) || !TryReadPrimitiveParameterInt(region, "PADINDEX", out int padIndex) || padIndex <= 0)
                     continue;
 
@@ -807,6 +828,9 @@ namespace EasyEDA_Loader
                     Region = region
                 };
             }
+
+            if (filteredIteratorReturnedObjects)
+                yield break;
 
             foreach (object region in EnumerateGroupObjects(component))
             {
@@ -879,10 +903,16 @@ namespace EasyEDA_Loader
                 out double padX,
                 out double padY);
 
+            int padIndex = SafeIntCall(() => ((IPCB_Primitive)pad).GetState_Index());
+            List<LinkedPadRegion> availableRegions = linkedRegions.Where(candidate => !candidate.Used).ToList();
+            List<LinkedPadRegion> indexedRegions = padIndex > 0
+                ? availableRegions.Where(candidate => candidate.PadIndex == padIndex).ToList()
+                : new List<LinkedPadRegion>();
+            bool matchedByIndex = indexedRegions.Count > 0;
             LinkedPadRegion bestRegion = null;
             SvgPrimitive bestPrimitive = null;
             double bestDistance = double.PositiveInfinity;
-            foreach (LinkedPadRegion candidate in linkedRegions.Where(candidate => !candidate.Used))
+            foreach (LinkedPadRegion candidate in matchedByIndex ? indexedRegions : availableRegions)
             {
                 SvgPrimitive regionPrimitive = TryCreateBestPadRegionPrimitive(
                     candidate.Region,
@@ -904,7 +934,7 @@ namespace EasyEDA_Loader
                 return null;
 
             double extent = Math.Max(bestPrimitive.Right - bestPrimitive.Left, bestPrimitive.Top - bestPrimitive.Bottom);
-            if (bestDistance > Math.Max(5.0, extent * 4.0))
+            if (!matchedByIndex && bestDistance > Math.Max(0.05, extent * 0.75))
                 return null;
 
             bestRegion.Used = true;
@@ -915,6 +945,17 @@ namespace EasyEDA_Loader
         {
             var seen = new List<object>();
             int padObjectId = (int)TObjectId.ePadObject;
+            bool filteredIteratorReturnedObjects = false;
+            foreach (object primitive in EnumerateGroupObjects(component, padObjectId))
+            {
+                filteredIteratorReturnedObjects = true;
+                if (AddSeenObject(seen, primitive))
+                    yield return primitive;
+            }
+
+            if (filteredIteratorReturnedObjects)
+                yield break;
+
             int emptyRun = 0;
             for (int index = 0; index < MaxPrimitiveAtObjectsPerType && emptyRun < MaxPrimitiveAtEmptyRun; index++)
             {
@@ -929,12 +970,6 @@ namespace EasyEDA_Loader
                 }
 
                 emptyRun = 0;
-                if (AddSeenObject(seen, primitive))
-                    yield return primitive;
-            }
-
-            foreach (object primitive in EnumerateGroupObjects(component, padObjectId))
-            {
                 if (AddSeenObject(seen, primitive))
                     yield return primitive;
             }
@@ -1539,6 +1574,17 @@ namespace EasyEDA_Loader
         private static IEnumerable<object> EnumerateComponentShapeObjects(object component)
         {
             var seen = new List<object>();
+            bool filteredIteratorReturnedObjects = false;
+            foreach (object primitive in EnumerateGroupObjectsFiltered(component, ShapeObjectIds))
+            {
+                filteredIteratorReturnedObjects = true;
+                if (AddSeenObject(seen, primitive))
+                    yield return primitive;
+            }
+
+            if (filteredIteratorReturnedObjects)
+                yield break;
+
             foreach (object primitive in EnumerateGroupObjectsByObjectId(component))
             {
                 if (AddSeenObject(seen, primitive))
@@ -3500,6 +3546,30 @@ namespace EasyEDA_Loader
                 return comValue;
 
             return null;
+        }
+
+        private static IEnumerable<object> EnumerateGroupObjectsFiltered(object group, params int[] objectIds)
+        {
+            object iterator = Invoke(group, "GroupIterator_Create") ?? Invoke(group, "Internal_GroupIterator_Create");
+            if (iterator == null)
+                yield break;
+
+            try
+            {
+                Invoke(iterator, "AddFilter_ObjectSet", CreateObjectSet(objectIds));
+                object primitive = Invoke(iterator, "FirstPCBObject") ?? Invoke(iterator, "Internal_FirstPCBObject");
+                int count = 0;
+                while (primitive != null)
+                {
+                    GuardIteratorObject(ref count, MaxGroupIteratorObjects, "filtered component primitive");
+                    yield return primitive;
+                    primitive = Invoke(iterator, "NextPCBObject") ?? Invoke(iterator, "Internal_NextPCBObject");
+                }
+            }
+            finally
+            {
+                Invoke(group, "GroupIterator_Destroy", iterator);
+            }
         }
 
         private static bool HasCallable(object target, string methodName)

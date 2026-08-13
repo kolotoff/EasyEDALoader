@@ -35,11 +35,38 @@ namespace EasyEDA_Loader
         private const int MaxBlockSize = 64 * 1024 * 1024;
         private const int MaxVertexCount = 100000;
 
-        public static IReadOnlyDictionary<string, List<PersistedPadContour>> Read(string libraryPath)
+        public static IReadOnlyDictionary<string, List<PersistedPadContour>> Read(
+            string libraryPath,
+            IEnumerable<string> requestedFootprintNames = null)
         {
             var result = new Dictionary<string, List<PersistedPadContour>>(StringComparer.OrdinalIgnoreCase);
             if (string.IsNullOrWhiteSpace(libraryPath) || !File.Exists(libraryPath))
                 return result;
+
+            var requestedNames = new HashSet<string>(
+                requestedFootprintNames?.Where(name => !string.IsNullOrWhiteSpace(name)) ?? Enumerable.Empty<string>(),
+                StringComparer.OrdinalIgnoreCase);
+            if (requestedNames.Count > 0)
+            {
+                var parsedNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                foreach (byte[] data in StructuredStorageReader.ReadNamedChildDataStreams(libraryPath, requestedNames))
+                {
+                    try
+                    {
+                        string parsedName = ReadFootprint(data, result);
+                        if (!string.IsNullOrWhiteSpace(parsedName))
+                            parsedNames.Add(parsedName);
+                    }
+                    catch
+                    {
+                    }
+                }
+
+                if (requestedNames.All(parsedNames.Contains))
+                    return result;
+
+                result.Clear();
+            }
 
             foreach (byte[] data in StructuredStorageReader.ReadChildDataStreams(libraryPath))
             {
@@ -56,14 +83,14 @@ namespace EasyEDA_Loader
             return result;
         }
 
-        private static void ReadFootprint(byte[] data, Dictionary<string, List<PersistedPadContour>> result)
+        private static string ReadFootprint(byte[] data, Dictionary<string, List<PersistedPadContour>> result)
         {
             using (var stream = new MemoryStream(data, writable: false))
             using (var reader = new BinaryReader(stream, Encoding.Latin1, leaveOpen: false))
             {
                 string footprintName = ReadPascalStringBlock(reader);
                 if (string.IsNullOrWhiteSpace(footprintName))
-                    return;
+                    return "";
 
                 var contours = new List<PersistedPadContour>();
                 while (reader.BaseStream.Position < reader.BaseStream.Length)
@@ -91,8 +118,8 @@ namespace EasyEDA_Loader
                     }
                 }
 
-                if (contours.Count > 0)
-                    result[footprintName] = contours;
+                result[footprintName] = contours;
+                return footprintName;
             }
         }
 
@@ -206,12 +233,33 @@ namespace EasyEDA_Loader
             private const int StgtyStorage = 1;
             private const int StgtyStream = 2;
 
+            public static IEnumerable<byte[]> ReadNamedChildDataStreams(string path, IEnumerable<string> footprintNames)
+            {
+                IStorage root = OpenRoot(path);
+                var result = new List<byte[]>();
+                try
+                {
+                    var storageNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    foreach (string footprintName in footprintNames ?? Enumerable.Empty<string>())
+                    {
+                        foreach (string storageName in StorageNameCandidates(footprintName))
+                        {
+                            if (storageNames.Add(storageName) && TryReadDataStream(root, storageName, out byte[] data))
+                                result.Add(data);
+                        }
+                    }
+                }
+                finally
+                {
+                    ReleaseComObject(root);
+                }
+
+                return result;
+            }
+
             public static IEnumerable<byte[]> ReadChildDataStreams(string path)
             {
-                int hr = StgOpenStorage(path, null, StgmRead | StgmShareDenyNone | StgmTransacted, IntPtr.Zero, 0, out IStorage root);
-                if (hr < 0)
-                    Marshal.ThrowExceptionForHR(hr);
-
+                IStorage root = OpenRoot(path);
                 var result = new List<byte[]>();
                 try
                 {
@@ -224,41 +272,8 @@ namespace EasyEDA_Loader
                             if (entries[0].type != StgtyStorage || string.Equals(entries[0].pwcsName, "Library", StringComparison.OrdinalIgnoreCase))
                                 continue;
 
-                            IStorage storage = null;
-                            try
-                            {
-                                root.OpenStorage(entries[0].pwcsName, null, StgmRead | StgmShareExclusive, IntPtr.Zero, 0, out storage);
-                                storage.OpenStream("Data", IntPtr.Zero, StgmRead | StgmShareExclusive, 0, out IStream stream);
-                                try
-                                {
-                                    stream.Stat(out STATSTG stat, 1);
-                                    if (stat.type != StgtyStream || stat.cbSize <= 0 || stat.cbSize > int.MaxValue)
-                                        continue;
-                                    var data = new byte[(int)stat.cbSize];
-                                    IntPtr bytesRead = Marshal.AllocCoTaskMem(sizeof(int));
-                                    try
-                                    {
-                                        stream.Read(data, data.Length, bytesRead);
-                                        if (Marshal.ReadInt32(bytesRead) == data.Length)
-                                            result.Add(data);
-                                    }
-                                    finally
-                                    {
-                                        Marshal.FreeCoTaskMem(bytesRead);
-                                    }
-                                }
-                                finally
-                                {
-                                    ReleaseComObject(stream);
-                                }
-                            }
-                            catch (COMException)
-                            {
-                            }
-                            finally
-                            {
-                                ReleaseComObject(storage);
-                            }
+                            if (TryReadDataStream(root, entries[0].pwcsName, out byte[] data))
+                                result.Add(data);
                         }
                     }
                     finally
@@ -272,6 +287,65 @@ namespace EasyEDA_Loader
                 }
 
                 return result;
+            }
+
+            private static IStorage OpenRoot(string path)
+            {
+                int hr = StgOpenStorage(path, null, StgmRead | StgmShareDenyNone | StgmTransacted, IntPtr.Zero, 0, out IStorage root);
+                if (hr < 0)
+                    Marshal.ThrowExceptionForHR(hr);
+                return root;
+            }
+
+            private static IEnumerable<string> StorageNameCandidates(string footprintName)
+            {
+                if (string.IsNullOrWhiteSpace(footprintName))
+                    yield break;
+
+                string normalized = footprintName.Replace('/', '_').Replace('\\', '_');
+                yield return normalized.Length <= 31 ? normalized : normalized.Substring(0, 31);
+                if (!string.Equals(normalized, footprintName, StringComparison.Ordinal))
+                    yield return footprintName.Length <= 31 ? footprintName : footprintName.Substring(0, 31);
+            }
+
+            private static bool TryReadDataStream(IStorage root, string storageName, out byte[] data)
+            {
+                data = null;
+                IStorage storage = null;
+                IStream stream = null;
+                try
+                {
+                    root.OpenStorage(storageName, null, StgmRead | StgmShareExclusive, IntPtr.Zero, 0, out storage);
+                    storage.OpenStream("Data", IntPtr.Zero, StgmRead | StgmShareExclusive, 0, out stream);
+                    stream.Stat(out STATSTG stat, 1);
+                    if (stat.type != StgtyStream || stat.cbSize <= 0 || stat.cbSize > int.MaxValue)
+                        return false;
+
+                    var bytes = new byte[(int)stat.cbSize];
+                    IntPtr bytesRead = Marshal.AllocCoTaskMem(sizeof(int));
+                    try
+                    {
+                        stream.Read(bytes, bytes.Length, bytesRead);
+                        if (Marshal.ReadInt32(bytesRead) != bytes.Length)
+                            return false;
+                    }
+                    finally
+                    {
+                        Marshal.FreeCoTaskMem(bytesRead);
+                    }
+
+                    data = bytes;
+                    return true;
+                }
+                catch (COMException)
+                {
+                    return false;
+                }
+                finally
+                {
+                    ReleaseComObject(stream);
+                    ReleaseComObject(storage);
+                }
             }
 
             private static void ReleaseComObject(object value)

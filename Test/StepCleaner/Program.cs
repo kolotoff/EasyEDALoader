@@ -10236,6 +10236,7 @@ namespace StepCleaner.Tests
             string footprintData = File.ReadAllText(Path.Combine(repoRoot, "EasyEDA-Loader", "FootprintData.cs"));
             string footprint3dModel = File.ReadAllText(Path.Combine(repoRoot, "EasyEDA-Loader", "FootprintShapes", "EeFootprint3dModel.cs"));
             string shapeExporter = File.ReadAllText(Path.Combine(repoRoot, "EasyEDA-Loader", "PcbShapeSvgExporter.cs"));
+            string padContourReader = File.ReadAllText(Path.Combine(repoRoot, "EasyEDA-Loader", "PcbLibPadContourReader.cs"));
             string shapeExportSettings = File.ReadAllText(Path.Combine(repoRoot, "EasyEDA-Loader", "ShapeExportSettings.cs"));
             string shapeExportProgress = File.ReadAllText(Path.Combine(repoRoot, "EasyEDA-Loader", "ShapeExportProgressForm.cs"));
             string shapeExportErrors = File.ReadAllText(Path.Combine(repoRoot, "EasyEDA-Loader", "ShapeExportErrorForm.cs"));
@@ -10386,6 +10387,15 @@ namespace StepCleaner.Tests
             AssertContains(shapeExporter, "pcbPrimitive.Export_ToParameters(ref parameters);", "pad export must read region PADINDEX linkage from Altium primitive parameters", failures);
             AssertContains(shapeExporter, "TryReadPrimitiveParameterInt(region, \"PADINDEX\"", "pad export must limit linked-region lookup to PADINDEX regions", failures);
             AssertContains(shapeExporter, "TryTakeLinkedPadRegion(", "pad export must prefer linked shape-based footprint regions", failures);
+            AssertContains(shapeExporter, "EnumerateGroupObjectsFiltered(component, ShapeObjectIds)", "shape export should collect supported primitives with one filtered component iterator", failures);
+            AssertContains(shapeExporter, "if (filteredIteratorReturnedObjects)", "shape and pad export should skip redundant fallback scans after a filtered iterator succeeds", failures);
+            AssertContains(shapeExporter, "selectedComponent == null ? null : new[] { selectedComponent.ExportName }", "selected pad export should request only the active footprint's persisted contour stream", failures);
+            AssertContains(shapeExporter, "candidate.PadIndex == padIndex", "custom pad contours must match Altium's stable pad index before geometric fallback", failures);
+            AssertContains(shapeExporter, "if (!matchedByIndex && bestDistance > Math.Max(0.05", "geometric custom-pad matching must reject contours belonging to another nearby pad", failures);
+            AssertContains(padContourReader, "ReadNamedChildDataStreams(libraryPath, requestedNames)", "selected pad export should directly read named PcbLib storage streams", failures);
+            AssertContains(padContourReader, "if (requestedNames.All(parsedNames.Contains))", "targeted PcbLib reads should retain a full-library fallback when direct storage lookup fails", failures);
+            AssertContains(padContourReader, "result[footprintName] = contours;", "persisted pad reads should record footprints without custom contours to avoid redundant region scans", failures);
+            AssertContains(shapeExporter, "List<LinkedPadRegion> linkedRegions = persistedContours != null", "pad export should skip linked-region enumeration after persisted footprint data was parsed", failures);
             int customPadRegionIndex = shapeExporter.IndexOf("Internal_GetState_ExtractedPrimitiveOnLayer(layer)", StringComparison.Ordinal);
             int generatedPadRegionIndex = shapeExporter.IndexOf("Internal_GetState_RegionShapeOnLayer(layer)", StringComparison.Ordinal);
             if (customPadRegionIndex < 0 || generatedPadRegionIndex < 0 || customPadRegionIndex >= generatedPadRegionIndex)
