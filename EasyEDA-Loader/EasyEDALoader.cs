@@ -62,6 +62,10 @@ namespace EasyEDA_Loader
             RegisterCommand("EasyEDA-Loader:EasyEDAExportShapeAll", new CommandProc(ExportShapeAll));
             RegisterCommand("EasyEDAExportShapeSelected", new CommandProc(ExportShapeSelected));
             RegisterCommand("EasyEDA-Loader:EasyEDAExportShapeSelected", new CommandProc(ExportShapeSelected));
+            RegisterCommand("EasyEDAExportShapeAllWithPads", new CommandProc(ExportShapeAllWithPads));
+            RegisterCommand("EasyEDA-Loader:EasyEDAExportShapeAllWithPads", new CommandProc(ExportShapeAllWithPads));
+            RegisterCommand("EasyEDAExportShapeSelectedWithPads", new CommandProc(ExportShapeSelectedWithPads));
+            RegisterCommand("EasyEDA-Loader:EasyEDAExportShapeSelectedWithPads", new CommandProc(ExportShapeSelectedWithPads));
             RegisterCommand("EasyEDAExportShapeSelectedLibraries", new CommandProc(ExportShapeSelectedLibraries));
             RegisterCommand("EasyEDA-Loader:EasyEDAExportShapeSelectedLibraries", new CommandProc(ExportShapeSelectedLibraries));
             RegisterCommand("EasyEDAOpenSymbolLibrary", new CommandProc(OpenSymbolLibrary));
@@ -488,6 +492,20 @@ namespace EasyEDA_Loader
             ExportShape(argContext, ShapeExportScope.SelectedComponent);
         }
 
+        private void ExportShapeAllWithPads(
+          IServerDocumentView argContext,
+          ref string argParameters)
+        {
+            ExportShape(argContext, ShapeExportScope.AllComponents, includePads: true);
+        }
+
+        private void ExportShapeSelectedWithPads(
+          IServerDocumentView argContext,
+          ref string argParameters)
+        {
+            ExportShape(argContext, ShapeExportScope.SelectedComponent, includePads: true);
+        }
+
         private void OpenSymbolLibrary(
           IServerDocumentView argContext,
           ref string argParameters)
@@ -586,11 +604,11 @@ namespace EasyEDA_Loader
             ExportSelectedShapeLibraries(libraryFiles, targetFolder);
         }
 
-        private void ExportShape(IServerDocumentView argContext, ShapeExportScope scope)
+        private void ExportShape(IServerDocumentView argContext, ShapeExportScope scope, bool includePads = false)
         {
             bool diagnosticsEnabled = ShapeExportSettings.LoadDiagnosticsEnabled();
             if (diagnosticsEnabled)
-                Trace("ExportShape entered. Scope=" + scope);
+                Trace("ExportShape entered. Scope=" + scope + ", IncludePads=" + includePads);
             string folder = SelectShapeExportFolder();
             if (string.IsNullOrWhiteSpace(folder))
             {
@@ -613,7 +631,8 @@ namespace EasyEDA_Loader
 
                 try
                 {
-                    result = PcbShapeSvgExporter.Export(scope, folder, argContext, progressForm.Report, diagnosticsEnabled, () => progressForm.IsCancellationRequested);
+                    string sourceLibraryPath = includePads ? GetCurrentDocument()?.GetFileName() : null;
+                    result = PcbShapeSvgExporter.Export(scope, folder, argContext, progressForm.Report, diagnosticsEnabled, () => progressForm.IsCancellationRequested, includePads, sourceLibraryPath);
                 }
                 catch (OperationCanceledException)
                 {
@@ -698,7 +717,8 @@ namespace EasyEDA_Loader
                             reportLibraryProgress,
                             diagnosticsEnabled,
                             () => progressForm.IsCancellationRequested,
-                            usedNames);
+                            usedNames,
+                            libraryPath);
 
                         if (diagnosticsEnabled && result.Warnings.Count > 0)
                             Trace(libraryName + " shape export warnings: " + string.Join(" | ", result.Warnings));

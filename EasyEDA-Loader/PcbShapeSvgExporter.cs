@@ -88,6 +88,8 @@ namespace EasyEDA_Loader
         private const int MaxPrimitiveAtEmptyRun = 100;
         private const int MaxPolygonSegments = 10000;
         private const int MaxContourPoints = 10000;
+        private const string PadFillColor = "#2F80ED";
+        private const string PadFillOpacity = "0.45";
 
         private sealed class ExportComponentItem
         {
@@ -99,6 +101,19 @@ namespace EasyEDA_Loader
 
             public object Component { get; }
             public string ExportName { get; }
+        }
+
+        private sealed class SvgExportLayers
+        {
+            public List<SvgPrimitive> ShapePrimitives { get; } = new List<SvgPrimitive>();
+            public List<SvgPrimitive> PadPrimitives { get; } = new List<SvgPrimitive>();
+        }
+
+        private sealed class LinkedPadRegion
+        {
+            public int PadIndex { get; set; }
+            public object Region { get; set; }
+            public bool Used { get; set; }
         }
 
         private static readonly int[] ShapeObjectIds =
@@ -117,7 +132,9 @@ namespace EasyEDA_Loader
             IServerDocumentView commandView = null,
             Action<ShapeExportProgress> progress = null,
             bool diagnosticsEnabled = false,
-            Func<bool> isCancellationRequested = null)
+            Func<bool> isCancellationRequested = null,
+            bool includePads = false,
+            string sourceLibraryPath = null)
         {
             if (string.IsNullOrWhiteSpace(folder))
                 throw new ArgumentException("Export folder is required.", nameof(folder));
@@ -127,11 +144,15 @@ namespace EasyEDA_Loader
 
             IPCB_Library pcbLib = AltiumApi.GlobalVars.PCBServer.GetCurrentPCBLibrary();
             if (pcbLib != null)
-                return ExportPcbLibrary(pcbLib, scope, folder, progress, diagnosticsEnabled, isCancellationRequested, null);
+                return ExportPcbLibrary(pcbLib, scope, folder, progress, diagnosticsEnabled, isCancellationRequested, null, includePads, sourceLibraryPath);
 
             IPCB_Board board = EEPCB.GetCurrentPcbBoard(commandView);
             if (board != null)
+            {
+                if (includePads)
+                    throw new InvalidOperationException("Pad-group shape export is available only in the PCB library editor.");
                 return ExportPcbBoard(board, scope, folder, progress, diagnosticsEnabled, isCancellationRequested);
+            }
 
             throw new InvalidOperationException("Open a PCB document or PCB footprint library before exporting shapes.");
         }
@@ -142,7 +163,8 @@ namespace EasyEDA_Loader
             Action<ShapeExportProgress> progress = null,
             bool diagnosticsEnabled = false,
             Func<bool> isCancellationRequested = null,
-            HashSet<string> usedNames = null)
+            HashSet<string> usedNames = null,
+            string sourceLibraryPath = null)
         {
             if (pcbLib == null)
                 throw new ArgumentNullException(nameof(pcbLib));
@@ -158,7 +180,9 @@ namespace EasyEDA_Loader
                 progress,
                 diagnosticsEnabled,
                 isCancellationRequested,
-                usedNames);
+                usedNames,
+                includePads: false,
+                sourceLibraryPath);
         }
 
         private static ShapeExportResult ExportPcbLibrary(
@@ -168,13 +192,28 @@ namespace EasyEDA_Loader
             Action<ShapeExportProgress> progress,
             bool diagnosticsEnabled,
             Func<bool> isCancellationRequested,
-            HashSet<string> usedNames)
+            HashSet<string> usedNames,
+            bool includePads,
+            string sourceLibraryPath)
         {
             IEnumerable<object> components = scope == ShapeExportScope.SelectedComponent
                 ? new[] { GetCurrentPcbLibExportComponent(pcbLib) }.Where(component => component != null)
                 : EnumeratePcbLibExportComponents(pcbLib);
 
-            return ExportComponents(components, folder, "Footprint", preferFootprintName: true, progress, diagnosticsEnabled, isCancellationRequested, usedNames);
+            IReadOnlyDictionary<string, List<PersistedPadContour>> persistedPadContours = null;
+            if (includePads && !string.IsNullOrWhiteSpace(sourceLibraryPath))
+            {
+                try
+                {
+                    persistedPadContours = PcbLibPadContourReader.Read(sourceLibraryPath);
+                }
+                catch (Exception ex)
+                {
+                    EasyEDALoaderModule.Trace("Could not read persisted custom pad contours from " + sourceLibraryPath + ": " + ex);
+                }
+            }
+
+            return ExportComponents(components, folder, "Footprint", preferFootprintName: true, progress, diagnosticsEnabled, isCancellationRequested, usedNames, includePads, persistedPadContours);
         }
 
         private static ShapeExportResult ExportPcbBoard(IPCB_Board board, ShapeExportScope scope, string folder, Action<ShapeExportProgress> progress, bool diagnosticsEnabled, Func<bool> isCancellationRequested)
@@ -204,7 +243,9 @@ namespace EasyEDA_Loader
             Action<ShapeExportProgress> progress,
             bool diagnosticsEnabled,
             Func<bool> isCancellationRequested,
-            HashSet<string> usedNames = null)
+            HashSet<string> usedNames = null,
+            bool includePads = false,
+            IReadOnlyDictionary<string, List<PersistedPadContour>> persistedPadContours = null)
         {
             var result = new ShapeExportResult();
             HashSet<string> outputNames = usedNames ?? new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -255,9 +296,16 @@ namespace EasyEDA_Loader
                             Percent = exportComponents.Count == 0 ? 100.0 : index * 100.0 / exportComponents.Count
                         });
 
-                        List<SvgPrimitive> primitives = CaptureMechanicalShapePrimitives(component, diagnostics, componentName, out ShapeCaptureStats captureStats, isCancellationRequested);
+                        var layers = new SvgExportLayers();
+                        layers.ShapePrimitives.AddRange(CaptureMechanicalShapePrimitives(component, diagnostics, componentName, out ShapeCaptureStats captureStats, isCancellationRequested));
+                        if (includePads)
+                        {
+                            List<PersistedPadContour> componentPadContours = null;
+                            persistedPadContours?.TryGetValue(componentName, out componentPadContours);
+                            layers.PadPrimitives.AddRange(CapturePadPrimitives(component, diagnostics, componentName, isCancellationRequested, componentPadContours));
+                        }
                         result.CaptureStats.Add(captureStats);
-                        if (primitives.Count == 0)
+                        if (layers.ShapePrimitives.Count == 0)
                         {
                             string footprintName = FirstNonEmpty(ReadFootprintName(exportComponent), componentName);
                             result.MissingMechanical2Footprints.Add(footprintName);
@@ -273,9 +321,9 @@ namespace EasyEDA_Loader
 
                         string fileName = UniqueFileName(SanitizeFileName(componentName), outputNames) + ".svg";
                         string filePath = Path.Combine(folder, fileName);
-                        File.WriteAllText(filePath, BuildSvg(primitives), Utf8NoBom);
+                        File.WriteAllText(filePath, BuildSvg(layers.ShapePrimitives, layers.PadPrimitives, includePads), Utf8NoBom);
                         result.FileCount++;
-                        result.PrimitiveCount += primitives.Count;
+                        result.PrimitiveCount += layers.ShapePrimitives.Count + layers.PadPrimitives.Count;
                         progress?.Invoke(new ShapeExportProgress
                         {
                             Message = "Exported " + componentName,
@@ -569,6 +617,923 @@ namespace EasyEDA_Loader
                 TracePrimitiveCapture(componentName, total, objectCounts, layerCounts, result.Count, arcCandidates, mechanicalArcCandidates, createdArcs, failedArcs);
 
             return result;
+        }
+
+        private static List<SvgPrimitive> CapturePadPrimitives(
+            object component,
+            ShapeExportDiagnostics diagnostics,
+            string componentName,
+            Func<bool> isCancellationRequested,
+            List<PersistedPadContour> persistedContours)
+        {
+            ThrowIfCancellationRequested(isCancellationRequested);
+            int originX = GetInt(component, "GetState_XLocation");
+            int originY = GetInt(component, "GetState_YLocation");
+            double componentRotation = IsBoardComponent(component) ? GetDouble(component, "GetState_Rotation") : 0.0;
+            bool mirrored = IsBoardComponent(component) && GetBool(component, "GetState_FlippedOnLayer");
+            var result = new List<SvgPrimitive>();
+            List<LinkedPadRegion> linkedRegions = EnumerateLinkedPadRegions(component).ToList();
+            if (persistedContours != null)
+            {
+                foreach (PersistedPadContour contour in persistedContours)
+                    contour.Used = false;
+            }
+
+            foreach (object primitive in EnumerateComponentPadObjects(component))
+            {
+                ThrowIfCancellationRequested(isCancellationRequested);
+                diagnostics?.RecordPad(componentName, primitive);
+                SvgPrimitive padPrimitive = TryTakePersistedPadContour(
+                    primitive,
+                    persistedContours,
+                    originX,
+                    originY,
+                    componentRotation,
+                    mirrored)
+                    ?? TryTakeLinkedPadRegion(
+                    primitive,
+                    linkedRegions,
+                    originX,
+                    originY,
+                    componentRotation,
+                    mirrored)
+                    ?? TryCreatePadPrimitive(primitive, originX, originY, componentRotation, mirrored);
+                if (padPrimitive is SvgPathPrimitive padPath)
+                {
+                    padPath.UseGroupStyle = true;
+                    result.Add(padPath);
+                }
+            }
+
+            return result;
+        }
+
+        private static SvgPrimitive TryTakePersistedPadContour(
+            object primitive,
+            List<PersistedPadContour> contours,
+            int originX,
+            int originY,
+            double componentRotation,
+            bool mirrored)
+        {
+            if (!(primitive is IPCB_Pad pad) || contours == null || contours.Count == 0)
+                return null;
+
+            TransformPoint(
+                pad.GetState_XLocation(),
+                pad.GetState_YLocation(),
+                originX,
+                originY,
+                componentRotation,
+                mirrored,
+                out double padX,
+                out double padY);
+
+            PersistedPadContour best = null;
+            List<List<SvgPoint>> bestContours = null;
+            double bestDistance = double.PositiveInfinity;
+            foreach (PersistedPadContour candidate in contours.Where(candidate => !candidate.Used))
+            {
+                List<List<SvgPoint>> documentCoordinates = TransformPersistedContours(
+                    candidate,
+                    originX,
+                    originY,
+                    componentRotation,
+                    mirrored,
+                    localCoordinates: false);
+                List<List<SvgPoint>> localCoordinates = TransformPersistedContours(
+                    candidate,
+                    originX,
+                    originY,
+                    componentRotation,
+                    mirrored,
+                    localCoordinates: true);
+                double documentDistance = PersistedContourCenterDistance(documentCoordinates, padX, padY);
+                double localDistance = PersistedContourCenterDistance(localCoordinates, padX, padY);
+                List<List<SvgPoint>> converted = localDistance < documentDistance ? localCoordinates : documentCoordinates;
+                if (converted[0].Count < 3)
+                    continue;
+
+                double distance = Math.Min(documentDistance, localDistance);
+                if (distance >= bestDistance)
+                    continue;
+
+                best = candidate;
+                bestContours = converted;
+                bestDistance = distance;
+            }
+
+            if (best == null || bestContours == null)
+                return null;
+
+            double width = bestContours[0].Max(point => point.X) - bestContours[0].Min(point => point.X);
+            double height = bestContours[0].Max(point => point.Y) - bestContours[0].Min(point => point.Y);
+            if (bestDistance > Math.Max(5.0, Math.Max(width, height) * 4.0))
+                return null;
+
+            best.Used = true;
+            var path = new SvgPathPrimitive
+            {
+                Fill = PadFillColor,
+                StrokeWidth = 0,
+                Data = BuildPolygonPath(bestContours),
+                UseGroupStyle = true,
+                EvenOddFill = bestContours.Count > 1
+            };
+            foreach (SvgPoint point in bestContours.SelectMany(contour => contour))
+                path.AddBounds(point.X, point.Y);
+            return path;
+        }
+
+        private static List<List<SvgPoint>> TransformPersistedContours(
+            PersistedPadContour contour,
+            int originX,
+            int originY,
+            double componentRotation,
+            bool mirrored,
+            bool localCoordinates)
+        {
+            var result = new List<List<SvgPoint>>
+            {
+                TransformPersistedContour(contour.Outline, originX, originY, componentRotation, mirrored, localCoordinates)
+            };
+            result.AddRange(contour.Holes.Select(hole => TransformPersistedContour(hole, originX, originY, componentRotation, mirrored, localCoordinates)));
+            return result;
+        }
+
+        private static double PersistedContourCenterDistance(List<List<SvgPoint>> contours, double padX, double padY)
+        {
+            if (contours == null || contours.Count == 0 || contours[0].Count == 0)
+                return double.PositiveInfinity;
+
+            double left = contours[0].Min(point => point.X);
+            double right = contours[0].Max(point => point.X);
+            double bottom = contours[0].Min(point => point.Y);
+            double top = contours[0].Max(point => point.Y);
+            return Math.Sqrt(Math.Pow((left + right) / 2.0 - padX, 2) + Math.Pow((bottom + top) / 2.0 - padY, 2));
+        }
+
+        private static List<SvgPoint> TransformPersistedContour(
+            IEnumerable<PersistedPadPoint> points,
+            int originX,
+            int originY,
+            double componentRotation,
+            bool mirrored,
+            bool localCoordinates)
+        {
+            var result = new List<SvgPoint>();
+            foreach (PersistedPadPoint point in points)
+            {
+                double xCoord = localCoordinates ? point.X + originX : point.X;
+                double yCoord = localCoordinates ? point.Y + originY : point.Y;
+                TransformPoint(xCoord, yCoord, originX, originY, componentRotation, mirrored, out double x, out double y);
+                result.Add(new SvgPoint(x, y));
+            }
+            return result;
+        }
+
+        private static IEnumerable<LinkedPadRegion> EnumerateLinkedPadRegions(object component)
+        {
+            var seen = new List<object>();
+            int regionObjectId = (int)TObjectId.eRegionObject;
+            foreach (object region in EnumerateGroupObjects(component, regionObjectId))
+            {
+                if (!AddSeenObject(seen, region) || !TryReadPrimitiveParameterInt(region, "PADINDEX", out int padIndex) || padIndex <= 0)
+                    continue;
+
+                yield return new LinkedPadRegion
+                {
+                    PadIndex = padIndex,
+                    Region = region
+                };
+            }
+
+            foreach (object region in EnumerateGroupObjects(component))
+            {
+                if (GetObjectId(region) != regionObjectId ||
+                    !AddSeenObject(seen, region) ||
+                    !TryReadPrimitiveParameterInt(region, "PADINDEX", out int padIndex) ||
+                    padIndex <= 0)
+                {
+                    continue;
+                }
+
+                yield return new LinkedPadRegion
+                {
+                    PadIndex = padIndex,
+                    Region = region
+                };
+            }
+        }
+
+        private static bool TryReadPrimitiveParameterInt(object primitive, string name, out int value)
+        {
+            value = 0;
+            string parameters = "";
+            try
+            {
+                if (primitive is IPCB_Primitive pcbPrimitive)
+                    pcbPrimitive.Export_ToParameters(ref parameters);
+            }
+            catch
+            {
+            }
+
+            if (string.IsNullOrWhiteSpace(parameters))
+            {
+                parameters = FirstNonEmpty(
+                    Convert.ToString(Invoke(primitive, "GetState_DetailString")),
+                    Convert.ToString(Invoke(primitive, "GetState_DescriptorString")));
+            }
+
+            foreach (string field in (parameters ?? "").Split('|'))
+            {
+                int equals = field.IndexOf('=');
+                if (equals <= 0 || !string.Equals(field.Substring(0, equals).Trim(), name, StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                return int.TryParse(field.Substring(equals + 1).Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out value);
+            }
+
+            return false;
+        }
+
+        private static SvgPrimitive TryTakeLinkedPadRegion(
+            object primitive,
+            List<LinkedPadRegion> linkedRegions,
+            int originX,
+            int originY,
+            double componentRotation,
+            bool mirrored)
+        {
+            if (!(primitive is IPCB_Pad pad) || linkedRegions == null || linkedRegions.Count == 0)
+                return null;
+
+            TransformPoint(
+                pad.GetState_XLocation(),
+                pad.GetState_YLocation(),
+                originX,
+                originY,
+                componentRotation,
+                mirrored,
+                out double padX,
+                out double padY);
+
+            LinkedPadRegion bestRegion = null;
+            SvgPrimitive bestPrimitive = null;
+            double bestDistance = double.PositiveInfinity;
+            foreach (LinkedPadRegion candidate in linkedRegions.Where(candidate => !candidate.Used))
+            {
+                SvgPrimitive regionPrimitive = TryCreateBestPadRegionPrimitive(
+                    candidate.Region,
+                    pad,
+                    originX,
+                    originY,
+                    componentRotation,
+                    mirrored);
+                double distance = RegionCenterDistance(regionPrimitive, padX, padY);
+                if (distance >= bestDistance)
+                    continue;
+
+                bestRegion = candidate;
+                bestPrimitive = regionPrimitive;
+                bestDistance = distance;
+            }
+
+            if (bestRegion == null || bestPrimitive == null)
+                return null;
+
+            double extent = Math.Max(bestPrimitive.Right - bestPrimitive.Left, bestPrimitive.Top - bestPrimitive.Bottom);
+            if (bestDistance > Math.Max(5.0, extent * 4.0))
+                return null;
+
+            bestRegion.Used = true;
+            return bestPrimitive;
+        }
+
+        private static IEnumerable<object> EnumerateComponentPadObjects(object component)
+        {
+            var seen = new List<object>();
+            int padObjectId = (int)TObjectId.ePadObject;
+            int emptyRun = 0;
+            for (int index = 0; index < MaxPrimitiveAtObjectsPerType && emptyRun < MaxPrimitiveAtEmptyRun; index++)
+            {
+                object primitive = Invoke(component, "Internal_GetPrimitiveAt", index, padObjectId);
+                if (primitive == null && index == 0)
+                    primitive = Invoke(component, "Internal_GetPrimitiveAt", 1, padObjectId);
+
+                if (primitive == null)
+                {
+                    emptyRun++;
+                    continue;
+                }
+
+                emptyRun = 0;
+                if (AddSeenObject(seen, primitive))
+                    yield return primitive;
+            }
+
+            foreach (object primitive in EnumerateGroupObjects(component, padObjectId))
+            {
+                if (AddSeenObject(seen, primitive))
+                    yield return primitive;
+            }
+
+            foreach (object primitive in EnumerateGroupObjects(component))
+            {
+                if (GetObjectId(primitive) == padObjectId && AddSeenObject(seen, primitive))
+                    yield return primitive;
+            }
+        }
+
+        private static SvgPrimitive TryCreatePadPrimitive(object primitive, int originX, int originY, double componentRotation, bool mirrored)
+        {
+            if (!(primitive is IPCB_Pad pad))
+                return null;
+
+            IV7_Layer layer = SelectPadGeometryLayer(pad);
+            if (layer == null)
+                return TryCreateBoundsPrimitive(primitive, originX, originY, componentRotation, mirrored);
+
+            object padPolygon = CreatePadGeometricPolygon(pad, layer);
+            SvgPrimitive contourMakerPrimitive = TryCreateBestPadPolygonPrimitive(
+                padPolygon,
+                pad,
+                originX,
+                originY,
+                componentRotation,
+                mirrored);
+            if (contourMakerPrimitive != null)
+                return contourMakerPrimitive;
+
+            if (pad is IPCB_CustomPadShape padShape)
+            {
+                object extractedPrimitive = SafeObjectCall(() => padShape.Internal_GetState_ExtractedPrimitiveOnLayer(layer));
+                SvgPrimitive extractedRegion = TryCreateBestPadRegionPrimitive(
+                    extractedPrimitive,
+                    pad,
+                    originX,
+                    originY,
+                    componentRotation,
+                    mirrored);
+                if (extractedRegion != null)
+                    return extractedRegion;
+
+                object region = SafeObjectCall(() => padShape.Internal_GetState_RegionShapeOnLayer(layer));
+                SvgPrimitive regionPrimitive = TryCreateBestPadRegionPrimitive(
+                    region,
+                    pad,
+                    originX,
+                    originY,
+                    componentRotation,
+                    mirrored);
+                if (regionPrimitive != null)
+                    return regionPrimitive;
+            }
+
+            if (!TryGetPadDimensions(pad, layer, out int widthCoord, out int heightCoord))
+                return TryCreateBoundsPrimitive(primitive, originX, originY, componentRotation, mirrored);
+
+            int centerXCoord = pad.GetState_XLocation();
+            int centerYCoord = pad.GetState_YLocation();
+            int layerNumber = PadLayerNumber(layer);
+            if (layerNumber != 0)
+            {
+                centerXCoord += SafeIntCall(() => pad.GetState_XPadOffsetOnLayer(layerNumber));
+                centerYCoord += SafeIntCall(() => pad.GetState_YPadOffsetOnLayer(layerNumber));
+            }
+
+            TransformPoint(centerXCoord, centerYCoord, originX, originY, componentRotation, mirrored, out double centerX, out double centerY);
+            double width = AltiumApi.CoordToMm(widthCoord);
+            double height = AltiumApi.CoordToMm(heightCoord);
+            double padRotation = pad.GetState_Rotation() - componentRotation;
+            if (mirrored)
+                padRotation = -padRotation;
+
+            int shape = ResolvePadContourShape(pad, layer);
+            List<SvgPoint> contour = CreatePadContour(pad, layer, shape, centerX, centerY, width, height, padRotation);
+            if (contour.Count < 3)
+                return null;
+
+            var path = new SvgPathPrimitive
+            {
+                Fill = PadFillColor,
+                StrokeWidth = 0,
+                Data = BuildPolygonPath(new[] { contour }),
+                UseGroupStyle = true
+            };
+            foreach (SvgPoint point in contour)
+                path.AddBounds(point.X, point.Y);
+            return path;
+        }
+
+        private static object CreatePadGeometricPolygon(IPCB_Pad pad, IV7_Layer layer)
+        {
+            if (pad == null || layer == null)
+                return null;
+
+            try
+            {
+                object rawMaker = AltiumApi.GlobalVars.PCBServer.Internal_PCBContourMaker();
+                if (!(rawMaker is IPCB_ContourMaker contourMaker))
+                    return null;
+
+                contourMaker.SetState_ArcResolution(64);
+                return contourMaker.Internal_MakeContour(pad, 0, PadLayerNumber(layer));
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private static SvgPrimitive TryCreateBestPadPolygonPrimitive(
+            object polygon,
+            IPCB_Pad pad,
+            int originX,
+            int originY,
+            double componentRotation,
+            bool mirrored)
+        {
+            if (polygon == null || pad == null)
+                return null;
+
+            SvgPrimitive documentPolygon = TryCreateGeometricPolygonPrimitive(
+                polygon,
+                originX,
+                originY,
+                componentRotation,
+                mirrored);
+            SvgPrimitive localPolygon = TryCreateGeometricPolygonPrimitive(
+                polygon,
+                originX,
+                originY,
+                componentRotation,
+                mirrored,
+                (x, y) => TransformPadRegionPoint(pad, x, y, originX, originY, componentRotation, mirrored));
+
+            TransformPoint(
+                pad.GetState_XLocation(),
+                pad.GetState_YLocation(),
+                originX,
+                originY,
+                componentRotation,
+                mirrored,
+                out double padX,
+                out double padY);
+            double documentDistance = RegionCenterDistance(documentPolygon, padX, padY);
+            double localDistance = RegionCenterDistance(localPolygon, padX, padY);
+            SvgPrimitive result = documentDistance <= localDistance ? documentPolygon : localPolygon;
+            double distance = Math.Min(documentDistance, localDistance);
+            if (result == null)
+                return null;
+
+            double extent = Math.Max(result.Right - result.Left, result.Top - result.Bottom);
+            return distance <= Math.Max(5.0, extent * 4.0) ? result : null;
+        }
+
+        private static SvgPrimitive TryCreateBestPadRegionPrimitive(
+            object region,
+            IPCB_Pad pad,
+            int originX,
+            int originY,
+            double componentRotation,
+            bool mirrored)
+        {
+            if (region == null || pad == null)
+                return null;
+
+            SvgPrimitive documentRegion = TryCreateRegionPrimitive(
+                region,
+                originX,
+                originY,
+                componentRotation,
+                mirrored);
+            SvgPrimitive localRegion = TryCreateRegionPrimitive(
+                region,
+                originX,
+                originY,
+                componentRotation,
+                mirrored,
+                (x, y) => TransformPadRegionPoint(pad, x, y, originX, originY, componentRotation, mirrored));
+
+            TransformPoint(
+                pad.GetState_XLocation(),
+                pad.GetState_YLocation(),
+                originX,
+                originY,
+                componentRotation,
+                mirrored,
+                out double padX,
+                out double padY);
+            double documentDistance = RegionCenterDistance(documentRegion, padX, padY);
+            double localDistance = RegionCenterDistance(localRegion, padX, padY);
+            bool useLocalCoordinates = localDistance < documentDistance;
+            SvgPrimitive result = useLocalCoordinates ? localRegion : documentRegion;
+            double distance = Math.Min(documentDistance, localDistance);
+            if (result == null)
+                return null;
+
+            double extent = Math.Max(result.Right - result.Left, result.Top - result.Bottom);
+            double maximumDistance = Math.Max(5.0, extent * 4.0);
+            if (distance > maximumDistance)
+                return null;
+
+            if (useLocalCoordinates)
+            {
+                SvgPrimitive shapedRegion = TryCreateShapedPadPrimitiveFromLocalRegionBounds(
+                    region,
+                    pad,
+                    originX,
+                    originY,
+                    componentRotation,
+                    mirrored);
+                if (shapedRegion != null)
+                    return shapedRegion;
+            }
+
+            return result;
+        }
+
+        private static SvgPrimitive TryCreateShapedPadPrimitiveFromLocalRegionBounds(
+            object region,
+            IPCB_Pad pad,
+            int originX,
+            int originY,
+            double componentRotation,
+            bool mirrored)
+        {
+            if (!TryGetRegionContourBounds(region, out int left, out int bottom, out int right, out int top, out int pointCount) ||
+                pointCount > 8 ||
+                right <= left ||
+                top <= bottom)
+            {
+                return null;
+            }
+
+            IV7_Layer layer = SelectPadGeometryLayer(pad);
+            if (layer == null)
+                return null;
+
+            int shape = ResolvePadContourShape(pad, layer);
+            if (shape == (int)TShape.eRectangular || shape == (int)TShape.eRotatedRectShape || shape == (int)TShape.eNoShape || shape == (int)TShape.eCustomShape)
+                return null;
+
+            int localCenterX = left + (right - left) / 2;
+            int localCenterY = bottom + (top - bottom) / 2;
+            SvgPoint center = TransformPadRegionPoint(
+                pad,
+                localCenterX,
+                localCenterY,
+                originX,
+                originY,
+                componentRotation,
+                mirrored);
+            double width = AltiumApi.CoordToMm(right - left);
+            double height = AltiumApi.CoordToMm(top - bottom);
+            double padRotation = pad.GetState_Rotation() - componentRotation;
+            if (mirrored)
+                padRotation = -padRotation;
+
+            List<SvgPoint> contour = CreatePadContour(pad, layer, shape, center.X, center.Y, width, height, padRotation);
+            if (contour.Count < 3)
+                return null;
+
+            var path = new SvgPathPrimitive
+            {
+                Fill = PadFillColor,
+                StrokeWidth = 0,
+                Data = BuildPolygonPath(new[] { contour }),
+                UseGroupStyle = true
+            };
+            foreach (SvgPoint point in contour)
+                path.AddBounds(point.X, point.Y);
+            return path;
+        }
+
+        private static int ResolvePadContourShape(IPCB_Pad pad, IV7_Layer layer)
+        {
+            int shape = SafeIntCall(() => pad.Internal_GetState_ShapeOnLayer(layer));
+            if (shape == (int)TShape.eCustomShape && pad is IPCB_CustomPadShape customPadShape)
+            {
+                if (pad is IPCB_Pad4 pad4)
+                {
+                    if (SafeBoolCall(() => pad4.HasCustomRoundedRectangle()))
+                        return (int)TShape.eRoundRectShape;
+                    if (SafeBoolCall(() => pad4.HasCustomChamferedRectangle()))
+                        return (int)TShape.eOctagonal;
+                }
+
+                if (pad is IPCB_Pad2 pad2 && SafeIntCall(() => pad2.GetState_CRPercentageOnLayer(layer)) > 0)
+                    return (int)TShape.eRoundRectShape;
+
+                int shapeKind = SafeIntCall(() => customPadShape.Internal_GetProperty_CustomShapeKind(layer));
+                if (shapeKind == (int)TShapeSubKind.eNoKind)
+                {
+                    object shapeInfo = SafeObjectCall(() => customPadShape.Internal_GetState_CustomShapeInfo(layer));
+                    shapeKind = GetInt(shapeInfo, "Internal_GetState_ShapeKind");
+                }
+
+                if (shapeKind == (int)TShapeSubKind.eRoundedFinger)
+                    return (int)TShape.eRounded;
+                else if (shapeKind == (int)TShapeSubKind.eRoundedRectangle)
+                    return (int)TShape.eRoundRectShape;
+                else if (shapeKind == (int)TShapeSubKind.eOctagonalFinger || shapeKind == (int)TShapeSubKind.eChamferedRectangle)
+                    return (int)TShape.eOctagonal;
+            }
+
+            if (shape != (int)TShape.eCustomShape && shape != (int)TShape.eNoShape)
+                return shape;
+
+            int baseShape = 0;
+            try
+            {
+                var v7Layer = new V7_Layer(layer);
+                baseShape = v7Layer.IsTopLayer()
+                    ? pad.Internal_GetState_TopShape()
+                    : v7Layer.IsBottomLayer()
+                        ? pad.Internal_GetState_BotShape()
+                        : pad.Internal_GetState_MidShape();
+            }
+            catch
+            {
+            }
+
+            return baseShape != (int)TShape.eNoShape && baseShape != (int)TShape.eCustomShape
+                ? baseShape
+                : shape;
+        }
+
+        private static bool SafeBoolCall(Func<bool> getter)
+        {
+            try
+            {
+                return getter != null && getter();
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static bool TryGetRegionContourBounds(
+            object region,
+            out int left,
+            out int bottom,
+            out int right,
+            out int top,
+            out int pointCount)
+        {
+            left = int.MaxValue;
+            bottom = int.MaxValue;
+            right = int.MinValue;
+            top = int.MinValue;
+            pointCount = 0;
+            object polygon = Invoke(region, "Internal_GetGeometricPolygon");
+            object contour = null;
+            int contourCount = GetInt(polygon, "GetState_Count");
+            if (contourCount > 0)
+                contour = Invoke(polygon, "Internal_GetState_Contour", 0) ?? Invoke(polygon, "Internal_GetState_Contour", 1);
+            contour ??= Invoke(region, "Internal_GetMainContour");
+            if (contour == null)
+                return false;
+
+            int count = ClampApiCount(GetInt(contour, "GetState_Count"), MaxContourPoints, "pad region contour point");
+            for (int index = 0; index < count; index++)
+                AddRegionBoundsPoint(contour, index, ref left, ref bottom, ref right, ref top, ref pointCount);
+            if (pointCount == 0 && count > 0)
+            {
+                for (int index = 1; index <= count; index++)
+                    AddRegionBoundsPoint(contour, index, ref left, ref bottom, ref right, ref top, ref pointCount);
+            }
+
+            return pointCount >= 3;
+        }
+
+        private static void AddRegionBoundsPoint(
+            object contour,
+            int index,
+            ref int left,
+            ref int bottom,
+            ref int right,
+            ref int top,
+            ref int pointCount)
+        {
+            object rawX = Invoke(contour, "GetState_PointX", index);
+            object rawY = Invoke(contour, "GetState_PointY", index);
+            if (!TryConvertToInt(rawX, out int x) || !TryConvertToInt(rawY, out int y))
+                return;
+
+            left = Math.Min(left, x);
+            bottom = Math.Min(bottom, y);
+            right = Math.Max(right, x);
+            top = Math.Max(top, y);
+            pointCount++;
+        }
+
+        private static double RegionCenterDistance(SvgPrimitive region, double x, double y)
+        {
+            if (region == null ||
+                !double.IsFinite(region.Left) ||
+                !double.IsFinite(region.Right) ||
+                !double.IsFinite(region.Bottom) ||
+                !double.IsFinite(region.Top))
+            {
+                return double.PositiveInfinity;
+            }
+
+            double dx = (region.Left + region.Right) / 2.0 - x;
+            double dy = (region.Bottom + region.Top) / 2.0 - y;
+            return Math.Sqrt(dx * dx + dy * dy);
+        }
+
+        private static SvgPoint TransformPadRegionPoint(
+            IPCB_Pad pad,
+            int localXCoord,
+            int localYCoord,
+            int originX,
+            int originY,
+            double componentRotation,
+            bool mirrored)
+        {
+            double radians = pad.GetState_Rotation() * Math.PI / 180.0;
+            double cos = Math.Cos(radians);
+            double sin = Math.Sin(radians);
+            int documentX = pad.GetState_XLocation() + (int)Math.Round(localXCoord * cos - localYCoord * sin);
+            int documentY = pad.GetState_YLocation() + (int)Math.Round(localXCoord * sin + localYCoord * cos);
+            TransformPoint(documentX, documentY, originX, originY, componentRotation, mirrored, out double x, out double y);
+            return new SvgPoint(x, y);
+        }
+
+        private static IV7_Layer SelectPadGeometryLayer(IPCB_Pad pad)
+        {
+            var candidates = new List<IV7_Layer>();
+            try
+            {
+                if (pad is IPCB_Primitive primitive)
+                    candidates.Add(primitive.Internal_GetState_V7Layer());
+            }
+            catch
+            {
+            }
+
+            candidates.Add(new V7_Layer(TLayerConstant.eTopLayer));
+            candidates.Add(new V7_Layer(TLayerConstant.eBottomLayer));
+            candidates.Add(new V7_Layer(TLayerConstant.eMultiLayer));
+            return candidates.FirstOrDefault(layer => layer != null && TryGetPadDimensions(pad, layer, out _, out _));
+        }
+
+        private static bool TryGetPadDimensions(IPCB_Pad pad, IV7_Layer layer, out int width, out int height)
+        {
+            width = 0;
+            height = 0;
+            if (pad == null || layer == null)
+                return false;
+
+            try
+            {
+                width = pad.GetState_XSizeOnLayer(layer);
+                height = pad.GetState_YSizeOnLayer(layer);
+                return width > 0 && height > 0;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static int PadLayerNumber(IV7_Layer layer)
+        {
+            try
+            {
+                return (int)new V7_Layer(layer).SafeV6Layer();
+            }
+            catch
+            {
+                return 0;
+            }
+        }
+
+        private static int SafeIntCall(Func<int> getter)
+        {
+            try
+            {
+                return getter == null ? 0 : getter();
+            }
+            catch
+            {
+                return 0;
+            }
+        }
+
+        private static List<SvgPoint> CreatePadContour(
+            IPCB_Pad pad,
+            IV7_Layer layer,
+            int shape,
+            double centerX,
+            double centerY,
+            double width,
+            double height,
+            double rotation)
+        {
+            double halfWidth = width / 2.0;
+            double halfHeight = height / 2.0;
+            if (shape == (int)TShape.eOctagonal)
+                return CreateOctagonalPadContour(centerX, centerY, halfWidth, halfHeight, rotation);
+
+            double radius = 0.0;
+            if (shape == (int)TShape.eRounded || shape == (int)TShape.eCircleShape || shape == (int)TShape.eArcShape)
+            {
+                radius = Math.Min(halfWidth, halfHeight);
+            }
+            else if (shape == (int)TShape.eRoundRectShape || shape == (int)TShape.eRoundedRectangular)
+            {
+                int radiusCoord = pad is IPCB_Pad2 pad2
+                    ? SafeIntCall(() => pad2.GetState_CornerRadiusOnLayer(layer))
+                    : 0;
+                int radiusPercentage = pad is IPCB_Pad2 percentagePad
+                    ? SafeIntCall(() => percentagePad.GetState_CRPercentageOnLayer(layer))
+                    : 0;
+                radius = radiusCoord > 0
+                    ? AltiumApi.CoordToMm(radiusCoord)
+                    : radiusPercentage > 0
+                        ? Math.Min(halfWidth, halfHeight) * Math.Min(radiusPercentage, 100) / 100.0
+                        : Math.Min(halfWidth, halfHeight) * 0.25;
+            }
+
+            return CreateRoundedPadContour(centerX, centerY, halfWidth, halfHeight, radius, rotation);
+        }
+
+        private static List<SvgPoint> CreateOctagonalPadContour(double centerX, double centerY, double halfWidth, double halfHeight, double rotation)
+        {
+            double chamfer = Math.Min(halfWidth, halfHeight) * 0.5857864376;
+            var offsets = new[]
+            {
+                new SvgPoint(-halfWidth + chamfer, -halfHeight),
+                new SvgPoint(halfWidth - chamfer, -halfHeight),
+                new SvgPoint(halfWidth, -halfHeight + chamfer),
+                new SvgPoint(halfWidth, halfHeight - chamfer),
+                new SvgPoint(halfWidth - chamfer, halfHeight),
+                new SvgPoint(-halfWidth + chamfer, halfHeight),
+                new SvgPoint(-halfWidth, halfHeight - chamfer),
+                new SvgPoint(-halfWidth, -halfHeight + chamfer)
+            };
+            return offsets.Select(offset => RotatePadPoint(centerX, centerY, offset.X, offset.Y, rotation)).ToList();
+        }
+
+        private static List<SvgPoint> CreateRoundedPadContour(double centerX, double centerY, double halfWidth, double halfHeight, double radius, double rotation)
+        {
+            radius = Math.Max(0.0, Math.Min(radius, Math.Min(halfWidth, halfHeight)));
+            if (radius <= 0.000001)
+            {
+                return new List<SvgPoint>
+                {
+                    RotatePadPoint(centerX, centerY, -halfWidth, -halfHeight, rotation),
+                    RotatePadPoint(centerX, centerY, halfWidth, -halfHeight, rotation),
+                    RotatePadPoint(centerX, centerY, halfWidth, halfHeight, rotation),
+                    RotatePadPoint(centerX, centerY, -halfWidth, halfHeight, rotation)
+                };
+            }
+
+            var result = new List<SvgPoint>();
+            AddPadCorner(result, centerX, centerY, halfWidth - radius, halfHeight - radius, radius, -90.0, 0.0, rotation);
+            AddPadCorner(result, centerX, centerY, halfWidth - radius, halfHeight - radius, radius, 0.0, 90.0, rotation);
+            AddPadCorner(result, centerX, centerY, halfWidth - radius, halfHeight - radius, radius, 90.0, 180.0, rotation);
+            AddPadCorner(result, centerX, centerY, halfWidth - radius, halfHeight - radius, radius, 180.0, 270.0, rotation);
+            return result;
+        }
+
+        private static void AddPadCorner(
+            List<SvgPoint> result,
+            double centerX,
+            double centerY,
+            double cornerX,
+            double cornerY,
+            double radius,
+            double startAngle,
+            double endAngle,
+            double rotation)
+        {
+            double signX = Math.Cos((startAngle + endAngle) * Math.PI / 360.0) >= 0 ? 1.0 : -1.0;
+            double signY = Math.Sin((startAngle + endAngle) * Math.PI / 360.0) >= 0 ? 1.0 : -1.0;
+            double arcCenterX = cornerX * signX;
+            double arcCenterY = cornerY * signY;
+            const int segments = 8;
+            for (int index = 0; index <= segments; index++)
+            {
+                double angle = (startAngle + (endAngle - startAngle) * index / segments) * Math.PI / 180.0;
+                double x = arcCenterX + Math.Cos(angle) * radius;
+                double y = arcCenterY + Math.Sin(angle) * radius;
+                result.Add(RotatePadPoint(centerX, centerY, x, y, rotation));
+            }
+        }
+
+        private static SvgPoint RotatePadPoint(double centerX, double centerY, double x, double y, double rotation)
+        {
+            double radians = rotation * Math.PI / 180.0;
+            double cos = Math.Cos(radians);
+            double sin = Math.Sin(radians);
+            return new SvgPoint(centerX + x * cos - y * sin, centerY + x * sin + y * cos);
         }
 
         private static IEnumerable<object> EnumerateComponentShapeObjects(object component)
@@ -947,7 +1912,13 @@ namespace EasyEDA_Loader
             return circle;
         }
 
-        private static SvgPrimitive TryCreateRegionPrimitive(object primitive, int originX, int originY, double rotation, bool mirrored)
+        private static SvgPrimitive TryCreateRegionPrimitive(
+            object primitive,
+            int originX,
+            int originY,
+            double rotation,
+            bool mirrored,
+            Func<int, int, SvgPoint> pointTransform = null)
         {
             var contours = new List<List<SvgPoint>>();
             object polygon = Invoke(primitive, "Internal_GetGeometricPolygon");
@@ -955,18 +1926,20 @@ namespace EasyEDA_Loader
             {
                 int contourCount = GetInt(polygon, "GetState_Count");
                 for (int contourIndex = 0; contourIndex < contourCount; contourIndex++)
-                    AddContour(contours, Invoke(polygon, "Internal_GetState_Contour", contourIndex), originX, originY, rotation, mirrored);
+                    AddContour(contours, Invoke(polygon, "Internal_GetState_Contour", contourIndex), originX, originY, rotation, mirrored, pointTransform);
                 if (contours.Count == 0 && contourCount > 0)
                 {
                     for (int contourIndex = 1; contourIndex <= contourCount; contourIndex++)
-                        AddContour(contours, Invoke(polygon, "Internal_GetState_Contour", contourIndex), originX, originY, rotation, mirrored);
+                        AddContour(contours, Invoke(polygon, "Internal_GetState_Contour", contourIndex), originX, originY, rotation, mirrored, pointTransform);
                 }
             }
 
             if (contours.Count == 0)
-                AddContour(contours, Invoke(primitive, "Internal_GetMainContour"), originX, originY, rotation, mirrored);
+                AddContour(contours, Invoke(primitive, "Internal_GetMainContour"), originX, originY, rotation, mirrored, pointTransform);
             if (contours.Count == 0)
-                return TryCreateBoundsPrimitive(primitive, originX, originY, rotation, mirrored);
+                return pointTransform == null
+                    ? TryCreateBoundsPrimitive(primitive, originX, originY, rotation, mirrored)
+                    : null;
 
             var path = new SvgPathPrimitive
             {
@@ -980,7 +1953,67 @@ namespace EasyEDA_Loader
             return path;
         }
 
-        private static void AddContour(List<List<SvgPoint>> contours, object contour, int originX, int originY, double rotation, bool mirrored)
+        private static SvgPrimitive TryCreateGeometricPolygonPrimitive(
+            object polygon,
+            int originX,
+            int originY,
+            double rotation,
+            bool mirrored,
+            Func<int, int, SvgPoint> pointTransform = null)
+        {
+            if (polygon == null)
+                return null;
+
+            var contours = new List<List<SvgPoint>>();
+            int contourCount = ClampApiCount(GetInt(polygon, "GetState_Count"), MaxContourPoints, "pad polygon contour");
+            for (int contourIndex = 0; contourIndex < contourCount; contourIndex++)
+                AddContour(contours, Invoke(polygon, "Internal_GetState_Contour", contourIndex), originX, originY, rotation, mirrored, pointTransform);
+            if (contours.Count == 0 && contourCount > 0)
+            {
+                for (int contourIndex = 1; contourIndex <= contourCount; contourIndex++)
+                    AddContour(contours, Invoke(polygon, "Internal_GetState_Contour", contourIndex), originX, originY, rotation, mirrored, pointTransform);
+            }
+
+            if (contours.Count == 0)
+                return null;
+
+            var path = new SvgPathPrimitive
+            {
+                Fill = PadFillColor,
+                StrokeWidth = 0,
+                Data = BuildPolygonPath(contours),
+                UseGroupStyle = true
+            };
+            foreach (SvgPoint point in contours.SelectMany(contour => contour))
+                path.AddBounds(point.X, point.Y);
+            return path;
+        }
+
+        private static int GetGeometricPolygonPointCount(object polygon)
+        {
+            if (polygon == null)
+                return 0;
+
+            int result = 0;
+            int contourCount = ClampApiCount(GetInt(polygon, "GetState_Count"), MaxContourPoints, "pad polygon contour");
+            for (int contourIndex = 0; contourIndex < contourCount; contourIndex++)
+            {
+                object contour = Invoke(polygon, "Internal_GetState_Contour", contourIndex)
+                    ?? Invoke(polygon, "Internal_GetState_Contour", contourIndex + 1);
+                result += ClampApiCount(GetInt(contour, "GetState_Count"), MaxContourPoints, "pad polygon point");
+            }
+
+            return result;
+        }
+
+        private static void AddContour(
+            List<List<SvgPoint>> contours,
+            object contour,
+            int originX,
+            int originY,
+            double rotation,
+            bool mirrored,
+            Func<int, int, SvgPoint> pointTransform = null)
         {
             if (contour == null)
                 return;
@@ -988,23 +2021,37 @@ namespace EasyEDA_Loader
             int pointCount = ClampApiCount(GetInt(contour, "GetState_Count"), MaxContourPoints, "region contour point");
             var points = new List<SvgPoint>();
             for (int pointIndex = 0; pointIndex < pointCount; pointIndex++)
-                AddContourPoint(points, contour, pointIndex, originX, originY, rotation, mirrored);
+                AddContourPoint(points, contour, pointIndex, originX, originY, rotation, mirrored, pointTransform);
             if (points.Count == 0 && pointCount > 0)
             {
                 for (int pointIndex = 1; pointIndex <= pointCount; pointIndex++)
-                    AddContourPoint(points, contour, pointIndex, originX, originY, rotation, mirrored);
+                    AddContourPoint(points, contour, pointIndex, originX, originY, rotation, mirrored, pointTransform);
             }
 
             if (points.Count >= 2)
                 contours.Add(points);
         }
 
-        private static void AddContourPoint(List<SvgPoint> points, object contour, int pointIndex, int originX, int originY, double rotation, bool mirrored)
+        private static void AddContourPoint(
+            List<SvgPoint> points,
+            object contour,
+            int pointIndex,
+            int originX,
+            int originY,
+            double rotation,
+            bool mirrored,
+            Func<int, int, SvgPoint> pointTransform = null)
         {
             object rawX = Invoke(contour, "GetState_PointX", pointIndex);
             object rawY = Invoke(contour, "GetState_PointY", pointIndex);
             if (!TryConvertToInt(rawX, out int x) || !TryConvertToInt(rawY, out int y))
                 return;
+
+            if (pointTransform != null)
+            {
+                points.Add(pointTransform(x, y));
+                return;
+            }
 
             TransformPoint(x, y, originX, originY, rotation, mirrored, out double localX, out double localY);
             points.Add(new SvgPoint(localX, localY));
@@ -1188,8 +2235,14 @@ namespace EasyEDA_Loader
             return textPrimitive;
         }
 
-        private static string BuildSvg(IReadOnlyList<SvgPrimitive> primitives)
+        private static string BuildSvg(
+            IReadOnlyList<SvgPrimitive> shapePrimitives,
+            IReadOnlyList<SvgPrimitive> padPrimitives,
+            bool includePads)
         {
+            var primitives = shapePrimitives
+                .Concat(includePads ? padPrimitives : Array.Empty<SvgPrimitive>())
+                .ToList();
             double left = primitives.Min(primitive => primitive.Left);
             double right = primitives.Max(primitive => primitive.Right);
             double bottom = primitives.Min(primitive => primitive.Bottom);
@@ -1227,17 +2280,33 @@ namespace EasyEDA_Loader
                 writer.WriteAttributeString("width", Format(width) + "mm");
                 writer.WriteAttributeString("height", Format(height) + "mm");
                 writer.WriteAttributeString("viewBox", Format(left) + " " + Format(-top) + " " + Format(width) + " " + Format(height));
-                writer.WriteStartElement("g");
-                writer.WriteAttributeString("id", "Shape");
-                writer.WriteAttributeString("transform", "scale(1,-1)");
-                foreach (SvgPrimitive primitive in primitives)
-                    primitive.Write(writer);
-                writer.WriteEndElement();
+                if (includePads)
+                    WriteSvgGroup(writer, "Pads", padPrimitives, PadFillColor, PadFillOpacity);
+                WriteSvgGroup(writer, "Shape", shapePrimitives);
                 writer.WriteEndElement();
                 writer.WriteEndDocument();
             }
 
             return sb.ToString();
+        }
+
+        private static void WriteSvgGroup(
+            XmlWriter writer,
+            string id,
+            IEnumerable<SvgPrimitive> primitives,
+            string fill = null,
+            string fillOpacity = null)
+        {
+            writer.WriteStartElement("g");
+            writer.WriteAttributeString("id", id);
+            writer.WriteAttributeString("transform", "scale(1,-1)");
+            if (!string.IsNullOrWhiteSpace(fill))
+                writer.WriteAttributeString("fill", fill);
+            if (!string.IsNullOrWhiteSpace(fillOpacity))
+                writer.WriteAttributeString("fill-opacity", fillOpacity);
+            foreach (SvgPrimitive primitive in primitives)
+                primitive.Write(writer);
+            writer.WriteEndElement();
         }
 
         private sealed class Utf8StringWriter : StringWriter
@@ -1313,8 +2382,14 @@ namespace EasyEDA_Loader
 
         private static void TransformPoint(int x, int y, int originX, int originY, double rotationDeg, bool mirrored, out double localX, out double localY)
         {
-            double dx = AltiumApi.CoordToMm(x - originX);
-            double dy = AltiumApi.CoordToMm(y - originY);
+            TransformPoint((double)x, (double)y, originX, originY, rotationDeg, mirrored, out localX, out localY);
+        }
+
+        private static void TransformPoint(double x, double y, int originX, int originY, double rotationDeg, bool mirrored, out double localX, out double localY)
+        {
+            double millimetersPerCoord = AltiumApi.CoordToMm(1000000) / 1000000.0;
+            double dx = (x - originX) * millimetersPerCoord;
+            double dy = (y - originY) * millimetersPerCoord;
             double radians = -rotationDeg * Math.PI / 180.0;
             double cos = Math.Cos(radians);
             double sin = Math.Sin(radians);
@@ -1991,6 +3066,56 @@ namespace EasyEDA_Loader
                 _text.AppendLine("  originMm: x=" + Format(AltiumApi.CoordToMm(originX)) + ", y=" + Format(AltiumApi.CoordToMm(originY)));
                 _text.AppendLine("  rotation: " + Format(rotation));
                 _text.AppendLine("  mirrored: " + mirrored.ToString(CultureInfo.InvariantCulture));
+            }
+
+            public void RecordPad(string componentName, object primitive)
+            {
+                if (!(primitive is IPCB_Pad pad))
+                    return;
+
+                IV7_Layer layer = SelectPadGeometryLayer(pad);
+                int layerNumber = layer == null ? 0 : PadLayerNumber(layer);
+                int shapeOnLayer = layer == null ? 0 : SafeIntCall(() => pad.Internal_GetState_ShapeOnLayer(layer));
+                int resolvedShape = layer == null ? 0 : ResolvePadContourShape(pad, layer);
+                int customKind = 0;
+                bool customRoundedRectangle = pad is IPCB_Pad4 pad4 && SafeBoolCall(() => pad4.HasCustomRoundedRectangle());
+                bool customChamferedRectangle = pad is IPCB_Pad4 chamferPad && SafeBoolCall(() => chamferPad.HasCustomChamferedRectangle());
+                int cornerRadiusPercentage = layer != null && pad is IPCB_Pad2 radiusPad
+                    ? SafeIntCall(() => radiusPad.GetState_CRPercentageOnLayer(layer))
+                    : 0;
+                int contourMakerPoints = 0;
+                int extractedPoints = 0;
+                int regionPoints = 0;
+                if (layer != null)
+                    contourMakerPoints = GetGeometricPolygonPointCount(CreatePadGeometricPolygon(pad, layer));
+                if (layer != null && pad is IPCB_CustomPadShape customPadShape)
+                {
+                    customKind = SafeIntCall(() => customPadShape.Internal_GetProperty_CustomShapeKind(layer));
+                    object extracted = SafeObjectCall(() => customPadShape.Internal_GetState_ExtractedPrimitiveOnLayer(layer));
+                    TryGetRegionContourBounds(extracted, out _, out _, out _, out _, out extractedPoints);
+                    object region = SafeObjectCall(() => customPadShape.Internal_GetState_RegionShapeOnLayer(layer));
+                    TryGetRegionContourBounds(region, out _, out _, out _, out _, out regionPoints);
+                }
+
+                _text.AppendLine("  Pad: component=" + componentName
+                    + ", index=" + SafeIntCall(() => (int)((IPCB_Primitive)pad).GetState_Index()).ToString(CultureInfo.InvariantCulture)
+                    + ", name=" + SafeCall(() => pad.GetState_Name())
+                    + ", layer=" + layerNumber.ToString(CultureInfo.InvariantCulture)
+                    + ", x=" + pad.GetState_XLocation().ToString(CultureInfo.InvariantCulture)
+                    + ", y=" + pad.GetState_YLocation().ToString(CultureInfo.InvariantCulture)
+                    + ", rotation=" + Format(pad.GetState_Rotation())
+                    + ", shapeOnLayer=" + shapeOnLayer.ToString(CultureInfo.InvariantCulture)
+                    + ", topShape=" + SafeIntCall(() => pad.Internal_GetState_TopShape()).ToString(CultureInfo.InvariantCulture)
+                    + ", midShape=" + SafeIntCall(() => pad.Internal_GetState_MidShape()).ToString(CultureInfo.InvariantCulture)
+                    + ", bottomShape=" + SafeIntCall(() => pad.Internal_GetState_BotShape()).ToString(CultureInfo.InvariantCulture)
+                    + ", customKind=" + customKind.ToString(CultureInfo.InvariantCulture)
+                    + ", customRoundedRectangle=" + customRoundedRectangle.ToString(CultureInfo.InvariantCulture)
+                    + ", customChamferedRectangle=" + customChamferedRectangle.ToString(CultureInfo.InvariantCulture)
+                    + ", cornerRadiusPercentage=" + cornerRadiusPercentage.ToString(CultureInfo.InvariantCulture)
+                    + ", resolvedShape=" + resolvedShape.ToString(CultureInfo.InvariantCulture)
+                    + ", contourMakerPoints=" + contourMakerPoints.ToString(CultureInfo.InvariantCulture)
+                    + ", extractedPoints=" + extractedPoints.ToString(CultureInfo.InvariantCulture)
+                    + ", regionPoints=" + regionPoints.ToString(CultureInfo.InvariantCulture));
             }
 
             public void RecordPrimitive(
@@ -3312,6 +4437,8 @@ namespace EasyEDA_Loader
         {
             public string Data { get; set; }
             public string Fill { get; set; } = "none";
+            public bool UseGroupStyle { get; set; }
+            public bool EvenOddFill { get; set; }
 
             public void AddBounds(double x, double y)
             {
@@ -3325,13 +4452,18 @@ namespace EasyEDA_Loader
             {
                 writer.WriteStartElement("path");
                 writer.WriteAttributeString("d", Data);
-                writer.WriteAttributeString("fill", Fill);
-                writer.WriteAttributeString("stroke", Fill == "none" ? "#111111" : "none");
-                if (Fill == "none")
+                if (EvenOddFill)
+                    writer.WriteAttributeString("fill-rule", "evenodd");
+                if (!UseGroupStyle)
                 {
-                    writer.WriteAttributeString("stroke-width", Format(StrokeWidth));
-                    writer.WriteAttributeString("stroke-linecap", "round");
-                    writer.WriteAttributeString("stroke-linejoin", "round");
+                    writer.WriteAttributeString("fill", Fill);
+                    writer.WriteAttributeString("stroke", Fill == "none" ? "#111111" : "none");
+                    if (Fill == "none")
+                    {
+                        writer.WriteAttributeString("stroke-width", Format(StrokeWidth));
+                        writer.WriteAttributeString("stroke-linecap", "round");
+                        writer.WriteAttributeString("stroke-linejoin", "round");
+                    }
                 }
                 writer.WriteEndElement();
             }

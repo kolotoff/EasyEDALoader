@@ -10268,6 +10268,8 @@ namespace StepCleaner.Tests
             AssertContains(ins, "Command  Name = 'EasyEDASwitchToSelectedPrimitiveLayer'", "PCB selected-primitive layer switch command must be declared in the INS file", failures);
             AssertContains(ins, "Command  Name = 'EasyEDACreateCustomPadFromSelected'", "PcbLib custom-pad command must be declared in the INS file", failures);
             AssertContains(ins, "Command  Name = 'EasyEDADuplicateLayout'", "PCB layout duplicator command must be declared in the INS file", failures);
+            AssertContains(ins, "Command  Name = 'EasyEDAExportShapeAllWithPads'", "PcbLib all-components-with-pads export command must be declared in the INS file", failures);
+            AssertContains(ins, "Command  Name = 'EasyEDAExportShapeSelectedWithPads'", "PcbLib selected-component-with-pads export command must be declared in the INS file", failures);
             AssertContains(ins, "Command  Name = 'EasyEDAExportShapeSelectedLibraries'", "selected-library shape export command must be declared in the INS file", failures);
             AssertContains(ins, "Command  Name = 'EasyEDAOpenSymbolLibrary'", "schematic symbol-library navigation command must be declared in the INS file", failures);
             AssertContains(ins, "Command  Name = 'EasyEDAOpenFootprintLibrary'", "PCB footprint-library navigation command must be declared in the INS file", failures);
@@ -10288,7 +10290,16 @@ namespace StepCleaner.Tests
             AssertDoesNotContain(rcs, "PLID='PLEasyEDALoader:EasyEDADuplicateLayout'", "Duplicate layout must remain hidden from Tools > EasyEDA while the experimental workflow is disabled", failures);
             AssertContains(rcs, "Caption='All from selected &libraries'", "Export shape menu should expose selected-library export", failures);
             AssertContains(rcs, "Link MNPCB_EasyEDAExportShape30 PLID='PLEasyEDALoader:EasyEDAExportShapeSelectedLibraries'", "PCB editor Export shape menu should include selected-library export", failures);
-            AssertContains(rcs, "Link MNPCBLib_EasyEDAExportShape30 PLID='PLEasyEDALoader:EasyEDAExportShapeSelectedLibraries'", "PcbLib editor Export shape menu should include selected-library export", failures);
+            AssertContains(rcs, "Link MNPCBLib_EasyEDAExportShape30 PLID='PLEasyEDALoader:EasyEDAExportShapeAllWithPads'", "PcbLib editor Export shape menu should include all-components-with-pads export", failures);
+            AssertContains(rcs, "Link MNPCBLib_EasyEDAExportShape40 PLID='PLEasyEDALoader:EasyEDAExportShapeSelectedWithPads'", "PcbLib editor Export shape menu should include selected-component-with-pads export", failures);
+            AssertContains(rcs, "Link MNPCBLib_EasyEDAExportShape50 PLID='PLEasyEDALoader:EasyEDAExportShapeSelectedLibraries'", "PcbLib editor Export shape menu should include selected-library export after pad exports", failures);
+            int pcbMenuStart = rcs.IndexOf("Insertion MNPCB_EasyEDALoader", StringComparison.Ordinal);
+            int pcbLibMenuStart = rcs.IndexOf("Insertion MNPCBLib_EasyEDALoader", StringComparison.Ordinal);
+            string pcbMenu = pcbMenuStart >= 0 && pcbLibMenuStart > pcbMenuStart
+                ? rcs.Substring(pcbMenuStart, pcbLibMenuStart - pcbMenuStart)
+                : string.Empty;
+            AssertDoesNotContain(pcbMenu, "EasyEDAExportShapeAllWithPads", "PCB editor Export shape menu must not expose the PcbLib-only all-components-with-pads command", failures);
+            AssertDoesNotContain(pcbMenu, "EasyEDAExportShapeSelectedWithPads", "PCB editor Export shape menu must not expose the PcbLib-only selected-component-with-pads command", failures);
             AssertContains(rcs, "PLID='PLEasyEDALoader:EasyEDAOpenSymbolLibrary'", "schematic editor menu should expose Open symbol library", failures);
             AssertContains(rcs, "PLID='PLEasyEDALoader:EasyEDAOpenFootprintLibrary'", "PCB editor menu should expose Open footprint library", failures);
             AssertContains(rcs, "PLEasyEDALoader:EasyEDASwitchTopSignalLayer Command='EasyEDA-Loader:EasyEDASwitchTopSignalLayer' Caption='&Top' Shortcut1='Ctrl+Plus'", "Top layer command should default to Ctrl+Plus", failures);
@@ -10307,6 +10318,10 @@ namespace StepCleaner.Tests
             AssertContains(module, "RegisterCommand(\"EasyEDACreateCustomPadFromSelected\"", "module must register the Create Custom Pad from Selected command", failures);
             AssertContains(module, "RegisterCommand(\"EasyEDADuplicateLayout\"", "module must register the Duplicate layout command", failures);
             AssertContains(module, "RegisterCommand(\"EasyEDA-Loader:EasyEDADuplicateLayout\"", "module must register the namespaced Duplicate layout command", failures);
+            AssertContains(module, "RegisterCommand(\"EasyEDAExportShapeAllWithPads\"", "module must register all-components-with-pads shape export", failures);
+            AssertContains(module, "RegisterCommand(\"EasyEDA-Loader:EasyEDAExportShapeAllWithPads\"", "module must register namespaced all-components-with-pads shape export", failures);
+            AssertContains(module, "RegisterCommand(\"EasyEDAExportShapeSelectedWithPads\"", "module must register selected-component-with-pads shape export", failures);
+            AssertContains(module, "RegisterCommand(\"EasyEDA-Loader:EasyEDAExportShapeSelectedWithPads\"", "module must register namespaced selected-component-with-pads shape export", failures);
             AssertContains(module, "RegisterCommand(\"EasyEDAExportShapeSelectedLibraries\"", "module must register selected-library shape export", failures);
             AssertContains(module, "RegisterCommand(\"EasyEDA-Loader:EasyEDAExportShapeSelectedLibraries\"", "module must register namespaced selected-library shape export", failures);
             AssertContains(module, "RegisterCommand(\"EasyEDAOpenSymbolLibrary\"", "module must register schematic symbol-library navigation", failures);
@@ -10361,7 +10376,45 @@ namespace StepCleaner.Tests
             AssertContains(shapeExporter, "return distanceToTop < distanceToBottom ? 90.0 : -90.0;", "shape exporter must account for Altium's end-anchored stroke-text bounds when recovering vertical direction", failures);
             AssertContains(shapeExporter, "characterCount < 2", "shape exporter must not infer rotation from single-character text bounds", failures);
             AssertContains(shapeExporter, "GetBool(primitive, \"GetState_Multiline\")", "shape exporter must not apply single-line rotation inference to multiline text", failures);
-            AssertContains(shapeExporter, "writer.WriteAttributeString(\"id\", \"Shape\");", "shape exporter must identify the Mechanical 2 SVG group as Shape", failures);
+            AssertContains(module, "ShapeExportScope.AllComponents, includePads: true", "all-components-with-pads command must enable pad export", failures);
+            AssertContains(module, "ShapeExportScope.SelectedComponent, includePads: true", "selected-component-with-pads command must enable pad export", failures);
+            AssertContains(shapeExporter, "Internal_GetState_ExtractedPrimitiveOnLayer(layer)", "pad export should use Altium's extracted shape-based primitive when available", failures);
+            AssertContains(shapeExporter, "Internal_PCBContourMaker()", "pad export must ask Altium's contour maker for rendered pad geometry", failures);
+            AssertContains(shapeExporter, "contourMaker.Internal_MakeContour(pad, 0, PadLayerNumber(layer))", "pad export must generate the exact contour on the selected copper layer", failures);
+            AssertContains(shapeExporter, "TryCreateGeometricPolygonPrimitive(", "pad export must convert contour-maker polygons directly to SVG paths", failures);
+            AssertContains(shapeExporter, "Internal_GetState_RegionShapeOnLayer(layer)", "pad export should retain Altium's generated pad region as a fallback", failures);
+            AssertContains(shapeExporter, "pcbPrimitive.Export_ToParameters(ref parameters);", "pad export must read region PADINDEX linkage from Altium primitive parameters", failures);
+            AssertContains(shapeExporter, "TryReadPrimitiveParameterInt(region, \"PADINDEX\"", "pad export must limit linked-region lookup to PADINDEX regions", failures);
+            AssertContains(shapeExporter, "TryTakeLinkedPadRegion(", "pad export must prefer linked shape-based footprint regions", failures);
+            int customPadRegionIndex = shapeExporter.IndexOf("Internal_GetState_ExtractedPrimitiveOnLayer(layer)", StringComparison.Ordinal);
+            int generatedPadRegionIndex = shapeExporter.IndexOf("Internal_GetState_RegionShapeOnLayer(layer)", StringComparison.Ordinal);
+            if (customPadRegionIndex < 0 || generatedPadRegionIndex < 0 || customPadRegionIndex >= generatedPadRegionIndex)
+                failures.Add("pad export must prefer extracted shape-based primitives over generated rectangular envelopes");
+            AssertContains(shapeExporter, "RegionCenterDistance(documentRegion, padX, padY)", "pad region export must compare document-coordinate geometry with the pad anchor", failures);
+            AssertContains(shapeExporter, "RegionCenterDistance(localRegion, padX, padY)", "pad region export must compare pad-local geometry with the pad anchor", failures);
+            AssertContains(shapeExporter, "double maximumDistance = Math.Max(5.0, extent * 4.0);", "pad region export must reject distant SDK sentinel geometry", failures);
+            AssertContains(shapeExporter, "TryCreateShapedPadPrimitiveFromLocalRegionBounds(", "four-point pad envelopes must be reconstructed using the pad shape", failures);
+            AssertContains(shapeExporter, "pointCount > 8", "detailed custom pad contours must not be replaced by envelope reconstruction", failures);
+            AssertContains(shapeExporter, "TShapeSubKind.eRoundedFinger", "rounded-finger custom pads must be reconstructed as rounded contours", failures);
+            AssertContains(shapeExporter, "TShapeSubKind.eRoundedRectangle", "custom rounded rectangles must preserve rounded geometry", failures);
+            AssertContains(shapeExporter, "customPadShape.Internal_GetProperty_CustomShapeKind(layer)", "pad reconstruction must read the explicit custom shape subtype", failures);
+            AssertContains(shapeExporter, "pad4.HasCustomRoundedRectangle()", "custom rounded pads must use Altium's Pad4 shape flag when shape enums remain Custom", failures);
+            AssertContains(shapeExporter, "pad2.GetState_CRPercentageOnLayer(layer)", "custom rounded pads must preserve Altium's per-layer corner radius percentage", failures);
+            AssertContains(shapeExporter, "pad.Internal_GetState_TopShape()", "pad reconstruction must retain the base top-layer shape when ShapeOnLayer reports Custom", failures);
+            AssertContains(shapeExporter, "pad.Internal_GetState_BotShape()", "pad reconstruction must retain the base bottom-layer shape when ShapeOnLayer reports Custom", failures);
+            AssertContains(shapeExporter, "TransformPadRegionPoint(pad, x, y", "generated pad regions must be transformed from pad-local coordinates", failures);
+            AssertContains(shapeExporter, "pad.GetState_Rotation() * Math.PI / 180.0", "generated pad regions must preserve pad rotation", failures);
+            AssertContains(shapeExporter, "pad.GetState_XLocation() +", "generated pad regions must preserve pad X location", failures);
+            AssertContains(shapeExporter, "pad.GetState_YLocation() +", "generated pad regions must preserve pad Y location", failures);
+            AssertContains(shapeExporter, "(int)TObjectId.ePadObject", "pad export must enumerate footprint pad primitives", failures);
+            AssertContains(shapeExporter, "private const string PadFillColor = \"#2F80ED\";", "pad SVG group must use a blue fill", failures);
+            AssertContains(shapeExporter, "private const string PadFillOpacity = \"0.45\";", "pad SVG group must be semi-transparent", failures);
+            AssertContains(shapeExporter, "WriteSvgGroup(writer, \"Pads\", padPrimitives, PadFillColor, PadFillOpacity);", "with-pads export must identify the pad SVG group as Pads", failures);
+            AssertContains(shapeExporter, "WriteSvgGroup(writer, \"Shape\", shapePrimitives);", "shape exporter must identify the Mechanical 2 SVG group as Shape", failures);
+            int padsSvgGroupIndex = shapeExporter.IndexOf("WriteSvgGroup(writer, \"Pads\"", StringComparison.Ordinal);
+            int shapeSvgGroupIndex = shapeExporter.IndexOf("WriteSvgGroup(writer, \"Shape\"", StringComparison.Ordinal);
+            if (padsSvgGroupIndex < 0 || shapeSvgGroupIndex < 0 || padsSvgGroupIndex >= shapeSvgGroupIndex)
+                failures.Add("pad SVG group must be written before Shape so pads render behind the Mechanical 2 shape");
             AssertContains(module, "foreach (string error in result.Errors)", "selected-library export must collect footprint errors and continue with later libraries", failures);
             int selectedLibrariesHandlerStart = module.IndexOf("private void ExportSelectedShapeLibraries", StringComparison.Ordinal);
             int selectedLibrariesHandlerEnd = module.IndexOf("private static void ShowShapeExportErrors", selectedLibrariesHandlerStart, StringComparison.Ordinal);
