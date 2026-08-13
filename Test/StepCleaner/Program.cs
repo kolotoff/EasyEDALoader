@@ -10361,6 +10361,7 @@ namespace StepCleaner.Tests
             AssertContains(shapeExporter, "return distanceToTop < distanceToBottom ? 90.0 : -90.0;", "shape exporter must account for Altium's end-anchored stroke-text bounds when recovering vertical direction", failures);
             AssertContains(shapeExporter, "characterCount < 2", "shape exporter must not infer rotation from single-character text bounds", failures);
             AssertContains(shapeExporter, "GetBool(primitive, \"GetState_Multiline\")", "shape exporter must not apply single-line rotation inference to multiline text", failures);
+            AssertContains(shapeExporter, "writer.WriteAttributeString(\"id\", \"Shape\");", "shape exporter must identify the Mechanical 2 SVG group as Shape", failures);
             AssertContains(module, "foreach (string error in result.Errors)", "selected-library export must collect footprint errors and continue with later libraries", failures);
             int selectedLibrariesHandlerStart = module.IndexOf("private void ExportSelectedShapeLibraries", StringComparison.Ordinal);
             int selectedLibrariesHandlerEnd = module.IndexOf("private static void ShowShapeExportErrors", selectedLibrariesHandlerStart, StringComparison.Ordinal);

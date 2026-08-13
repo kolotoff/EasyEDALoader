@@ -1228,6 +1228,7 @@ namespace EasyEDA_Loader
                 writer.WriteAttributeString("height", Format(height) + "mm");
                 writer.WriteAttributeString("viewBox", Format(left) + " " + Format(-top) + " " + Format(width) + " " + Format(height));
                 writer.WriteStartElement("g");
+                writer.WriteAttributeString("id", "Shape");
                 writer.WriteAttributeString("transform", "scale(1,-1)");
                 foreach (SvgPrimitive primitive in primitives)
                     primitive.Write(writer);
