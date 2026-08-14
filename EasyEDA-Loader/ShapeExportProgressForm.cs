@@ -4,7 +4,7 @@ using System.Windows.Forms;
 
 namespace EasyEDA_Loader
 {
-    internal sealed class ShapeExportProgressForm : Form
+    public sealed class ShapeExportProgressForm : Form
     {
         private readonly ProgressBar progressBar;
         private readonly Label statusLabel;
@@ -97,6 +97,14 @@ namespace EasyEDA_Loader
             BringToFront();
             Activate();
             Refresh();
+            Application.DoEvents();
+        }
+
+        public void Pump()
+        {
+            if (IsDisposed)
+                return;
+
             Application.DoEvents();
         }
     }

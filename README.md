@@ -182,6 +182,16 @@ enabled by default:
   consists only of that footprint name. For example,
   `100nF 50V ±10% X7R C0603` becomes `100nF 50V ±10% X7R`.
 
+## EasyEDA Shape SVG output
+
+The extension adds an `EasyEDA Shape SVG` output to the OutJob `Export Outputs`
+section. Set the OutJob output path to the folder where the per-footprint SVG
+files should be written, then run the output. It exports the same Mechanical 2
+shape geometry as `Tools -> EasyEDA -> Export shape -> All components with Pads`.
+
+The output properties include `Export component pads`, enabled by default. When
+enabled, each SVG also contains the component pad groups.
+
 # Runtime Dependencies
 
 ## Experimental local AI layout duplication

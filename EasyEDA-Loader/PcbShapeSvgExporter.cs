@@ -23,6 +23,7 @@ namespace EasyEDA_Loader
         public int ComponentCount { get; set; }
         public int FileCount { get; set; }
         public int PrimitiveCount { get; set; }
+        public List<string> OutputFiles { get; } = new List<string>();
         public string DiagnosticsPath { get; set; }
         public List<string> Warnings { get; } = new List<string>();
         public List<string> Errors { get; } = new List<string>();
@@ -70,7 +71,7 @@ namespace EasyEDA_Loader
         }
     }
 
-    internal sealed class ShapeExportProgress
+    public sealed class ShapeExportProgress
     {
         public string Message { get; set; }
         public string Detail { get; set; }
@@ -179,6 +180,58 @@ namespace EasyEDA_Loader
                 usedNames,
                 includePads: false,
                 sourceLibraryPath);
+        }
+
+        internal static ShapeExportResult ExportBoard(
+            IPCB_Board board,
+            string folder,
+            bool includePads,
+            Action<ShapeExportProgress> progress = null,
+            Func<bool> isCancellationRequested = null)
+        {
+            if (board == null)
+                throw new ArgumentNullException(nameof(board));
+            if (string.IsNullOrWhiteSpace(folder))
+                throw new ArgumentException("Export folder is required.", nameof(folder));
+
+            Directory.CreateDirectory(folder);
+            ThrowIfCancellationRequested(isCancellationRequested);
+            return ExportPcbBoard(
+                board,
+                ShapeExportScope.AllComponents,
+                folder,
+                progress,
+                diagnosticsEnabled: false,
+                isCancellationRequested: isCancellationRequested,
+                includePads: includePads);
+        }
+
+        internal static IReadOnlyList<string> PredictBoardOutputFiles(IPCB_Board board, string folder)
+        {
+            if (board == null)
+                throw new ArgumentNullException(nameof(board));
+            if (string.IsNullOrWhiteSpace(folder))
+                throw new ArgumentException("Export folder is required.", nameof(folder));
+
+            IEnumerable<object> components = UniqueBoardComponentsByFootprint(EnumerateBoardComponents(board));
+            var outputFiles = new List<string>();
+            var usedNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            int componentCount = 0;
+            foreach (object component in components)
+            {
+                if (component == null)
+                    continue;
+
+                componentCount++;
+                string componentName = ReadComponentExportName(
+                    component,
+                    preferFootprintName: true,
+                    fallback: "Component" + componentCount.ToString(CultureInfo.InvariantCulture));
+                string fileName = UniqueFileName(SanitizeFileName(componentName), usedNames) + ".svg";
+                outputFiles.Add(Path.Combine(folder, fileName));
+            }
+
+            return outputFiles;
         }
 
         private static ShapeExportResult ExportPcbLibrary(
@@ -418,6 +471,7 @@ namespace EasyEDA_Loader
                         string fileName = UniqueFileName(SanitizeFileName(componentName), outputNames) + ".svg";
                         string filePath = Path.Combine(folder, fileName);
                         File.WriteAllText(filePath, BuildSvg(layers.ShapePrimitives, layers.PadPrimitives, includePads), Utf8NoBom);
+                        result.OutputFiles.Add(filePath);
                         result.FileCount++;
                         result.PrimitiveCount += layers.ShapePrimitives.Count + layers.PadPrimitives.Count;
                         progress?.Invoke(new ShapeExportProgress

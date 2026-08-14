@@ -1,0 +1,24 @@
+[OutputGenerator]
+Name                   = SVG Shapes
+Module                 = EasyEDAShapeSvg.Outputer.dll
+ServerName             = EasyEDA-Loader
+ClassName              = EasyEDA_Loader.EasyEDAShapeSvg.PluginFactory
+Description            = Generates EasyEDA component shape SVG files
+DocumentKind           = PCB
+DefaultFolderName      = EasyEDA Shape SVG Output
+CanGenerateNetlist     = False
+CanGenerateReport      = False
+CanGenerateOutputFiles = True
+CanGenerateMetaPages   = False
+CanPreferencesForm     = False
+CanPropertiesForm      = True
+CanGenerateFromProject = True
+CanGenerateFromDocument= True
+
+[Output1]
+Name            = SVG Shapes
+Caption         = Export EasyEDA Shape SVG
+Description     = Exports Mechanical 2 component shapes and optional pads as SVG files
+Category        = Export
+RequiresCompile = True
+SupportsVariants= False

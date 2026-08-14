@@ -506,10 +506,12 @@ function Assert-AltiumClosed {
 $repoRoot = $PSScriptRoot
 $projectPath = Join-Path $repoRoot "EasyEDA-Loader\EasyEDA-Loader.csproj"
 $tronstolProjectPath = Join-Path $repoRoot "TronstolE1Pnp\TronstolE1Pnp.csproj"
+$shapeSvgProjectPath = Join-Path $repoRoot "EasyEDAShapeSvg\EasyEDAShapeSvg.csproj"
 $helperProjectPath = Join-Path $repoRoot "StepOcctHlr\StepOcctHlr.csproj"
 $f3dHelperProjectPath = Join-Path $repoRoot "StepF3DRender\StepF3DRender.csproj"
 $sourceDir = Split-Path -Parent $projectPath
 $tronstolSourceDir = Split-Path -Parent $tronstolProjectPath
+$shapeSvgSourceDir = Split-Path -Parent $shapeSvgProjectPath
 $helperSourceDir = Split-Path -Parent $helperProjectPath
 $f3dHelperSourceDir = Split-Path -Parent $f3dHelperProjectPath
 $altiumInstallation = Resolve-AltiumInstallation -ConfiguredProfile $AltiumProfile -ConfiguredExe $AltiumExe -ProcessName $AltiumProcessName
@@ -524,6 +526,10 @@ if (-not (Test-Path -LiteralPath $projectPath)) {
 
 if (-not (Test-Path -LiteralPath $tronstolProjectPath)) {
     throw "Tronstol E1 PNP output project file was not found: $tronstolProjectPath"
+}
+
+if (-not (Test-Path -LiteralPath $shapeSvgProjectPath)) {
+    throw "EasyEDA Shape SVG output project file was not found: $shapeSvgProjectPath"
 }
 
 if (-not (Test-Path -LiteralPath $helperProjectPath)) {
@@ -557,6 +563,12 @@ Write-Step "Building Tronstol E1 PNP output generator ($Configuration)"
 dotnet build $tronstolProjectPath -c $Configuration --nologo
 if ($LASTEXITCODE -ne 0) {
     throw "dotnet build failed for Tronstol E1 PNP output generator with exit code $LASTEXITCODE."
+}
+
+Write-Step "Building EasyEDA Shape SVG output generator ($Configuration)"
+dotnet build $shapeSvgProjectPath -c $Configuration --nologo
+if ($LASTEXITCODE -ne 0) {
+    throw "dotnet build failed for EasyEDA Shape SVG output generator with exit code $LASTEXITCODE."
 }
 
 Write-Step "Building OCCT HLR helper ($Configuration)"
@@ -595,6 +607,18 @@ $tronstolBuildDir = Join-Path $tronstolSourceDir "bin\$Configuration\$tronstolTa
 $builtTronstolDll = Join-Path $tronstolBuildDir "TronstolE1Pnp.Outputer.dll"
 if (-not (Test-Path -LiteralPath $builtTronstolDll)) {
     throw "Built Tronstol E1 PNP output DLL was not found: $builtTronstolDll"
+}
+
+[xml]$shapeSvgProjectXml = Get-Content -LiteralPath $shapeSvgProjectPath
+$shapeSvgTargetFramework = @($shapeSvgProjectXml.Project.PropertyGroup.TargetFramework | Where-Object { $_ } | Select-Object -First 1)[0]
+if ([string]::IsNullOrWhiteSpace($shapeSvgTargetFramework)) {
+    $shapeSvgTargetFramework = "net8.0-windows"
+}
+
+$shapeSvgBuildDir = Join-Path $shapeSvgSourceDir "bin\$Configuration\$shapeSvgTargetFramework"
+$builtShapeSvgDll = Join-Path $shapeSvgBuildDir "EasyEDAShapeSvg.Outputer.dll"
+if (-not (Test-Path -LiteralPath $builtShapeSvgDll)) {
+    throw "Built EasyEDA Shape SVG output DLL was not found: $builtShapeSvgDll"
 }
 
 [xml]$helperProjectXml = Get-Content -LiteralPath $helperProjectPath
@@ -646,6 +670,8 @@ Copy-Item -LiteralPath (Join-Path $sourceDir "EasyEDA-Loader.ins") -Destination 
 Copy-Item -LiteralPath (Join-Path $sourceDir "EasyEDA-Loader.rcs") -Destination $installDir -Force
 Copy-Item -Path (Join-Path $tronstolBuildDir "TronstolE1Pnp.Outputer.*") -Destination $installDir -Force
 Copy-Item -LiteralPath (Join-Path $tronstolSourceDir "TronstolE1Pnp.OUT") -Destination $installDir -Force
+Copy-Item -Path (Join-Path $shapeSvgBuildDir "EasyEDAShapeSvg.Outputer.*") -Destination $installDir -Force
+Copy-Item -LiteralPath (Join-Path $shapeSvgSourceDir "EasyEDAShapeSvg.OUT") -Destination $installDir -Force
 
 $helperInstallDir = Join-Path $installDir "StepOcctHlr"
 New-Item -ItemType Directory -Path $helperInstallDir -Force | Out-Null
@@ -671,11 +697,19 @@ if (-not [string]::IsNullOrWhiteSpace($f3dNativeRuntimeSourceDir)) {
 $installedDll = Join-Path $installDir "EasyEDA-Loader.dll"
 $installedTronstolDll = Join-Path $installDir "TronstolE1Pnp.Outputer.dll"
 $installedTronstolConfig = Join-Path $installDir "TronstolE1Pnp.OUT"
+$installedShapeSvgDll = Join-Path $installDir "EasyEDAShapeSvg.Outputer.dll"
+$installedShapeSvgConfig = Join-Path $installDir "EasyEDAShapeSvg.OUT"
 if (-not (Test-Path -LiteralPath $installedTronstolDll)) {
     throw "Installed Tronstol E1 PNP output DLL was not found: $installedTronstolDll"
 }
 if (-not (Test-Path -LiteralPath $installedTronstolConfig)) {
     throw "Installed Tronstol E1 PNP output registration was not found: $installedTronstolConfig"
+}
+if (-not (Test-Path -LiteralPath $installedShapeSvgDll)) {
+    throw "Installed EasyEDA Shape SVG output DLL was not found: $installedShapeSvgDll"
+}
+if (-not (Test-Path -LiteralPath $installedShapeSvgConfig)) {
+    throw "Installed EasyEDA Shape SVG output registration was not found: $installedShapeSvgConfig"
 }
 
 $installedHelperExe = Join-Path $helperInstallDir "StepOcctHlr.exe"
