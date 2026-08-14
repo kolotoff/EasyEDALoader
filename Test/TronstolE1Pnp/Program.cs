@@ -206,6 +206,17 @@ internal static class Program
             AssertEqual("True", settings.ShouldSkipComment("NF").ToString(), "skip NF");
             AssertEqual("True", settings.ShouldSkipComment("DNP ").ToString(), "skip DNP with trailing space");
             AssertEqual("False", settings.ShouldSkipComment("DNPX").ToString(), "preserve non-DNP comment");
+            AssertEqual("True", settings.ShouldSkipPartNumber("NF").ToString(), "skip exact NF PartNumber");
+            AssertEqual("True", settings.ShouldSkipPartNumber(" DNP ").ToString(), "skip exact DNP PartNumber");
+            AssertEqual("False", settings.ShouldSkipPartNumber("NF ±10% X5R").ToString(), "preserve NF PartNumber prefix");
+            AssertEqual("False", settings.ShouldSkipPartNumber("DNP 10k").ToString(), "preserve DNP PartNumber prefix");
+            AssertEqual("False", settings.ShouldSkipPartNumber("CNF100").ToString(), "preserve non-token NF text");
+            AssertEqual("False", settings.ShouldSkipPartNumber("NFA18SL227V1A45").ToString(), "preserve NF prefix inside part code");
+            AssertEqual("False", settings.ShouldSkipPartNumber("DNP12345").ToString(), "preserve DNP prefix inside part code");
+            AssertEqual("True", settings.ShouldSkipAssemblyMarkerPartNumber("NF ±10% X5R").ToString(), "skip NF assembly marker PartNumber");
+            AssertEqual("True", settings.ShouldSkipAssemblyMarkerPartNumber("DNP 10k").ToString(), "skip DNP assembly marker PartNumber");
+            AssertEqual("False", settings.ShouldSkipAssemblyMarkerPartNumber("NFA18SL227V1A45").ToString(), "preserve NF prefix inside part code marker");
+            AssertEqual("False", settings.ShouldSkipAssemblyMarkerPartNumber("DNP12345").ToString(), "preserve DNP prefix inside part code marker");
             AssertEqual("True", settings.ShouldSkipSolderingType("Manual").ToString(), "skip manual soldering");
             AssertEqual("True", settings.ShouldSkipSolderingType(" Wave ").ToString(), "skip Wave soldering");
             AssertEqual("False", settings.ShouldSkipSolderingType("Reflow").ToString(), "preserve reflow soldering");
@@ -255,6 +266,10 @@ internal static class Program
             settings.ExportEdgeRailsSize = false;
             AssertEqual("False", settings.ShouldSkipComment("NF").ToString(), "disabled NF skip");
             AssertEqual("False", settings.ShouldSkipComment("DNP ").ToString(), "disabled DNP skip");
+            AssertEqual("False", settings.ShouldSkipPartNumber("NF").ToString(), "disabled NF PartNumber skip");
+            AssertEqual("False", settings.ShouldSkipPartNumber("DNP").ToString(), "disabled DNP PartNumber skip");
+            AssertEqual("False", settings.ShouldSkipAssemblyMarkerPartNumber("NF ±10% X5R").ToString(), "disabled NF assembly marker PartNumber skip");
+            AssertEqual("False", settings.ShouldSkipAssemblyMarkerPartNumber("DNP 10k").ToString(), "disabled DNP assembly marker PartNumber skip");
             AssertEqual("False", settings.ShouldSkipSolderingType("Manual").ToString(), "disabled manual skip");
             AssertEqual("False", settings.ShouldSkipSolderingType("Wave").ToString(), "disabled Wave skip");
             AssertEqual("False", settings.ShouldSkipFootprintName("TestPointSMD1MM").ToString(), "disabled test point skip");

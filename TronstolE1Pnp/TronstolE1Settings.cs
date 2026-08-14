@@ -178,6 +178,26 @@ namespace EasyEDA_Loader.TronstolE1Pnp
                 || (SkipDnpComponents && string.Equals(value, "DNP", StringComparison.OrdinalIgnoreCase));
         }
 
+        public bool ShouldSkipPartNumber(string partNumber)
+        {
+            string value = TronstolE1Text.Normalize(partNumber);
+            return (SkipNfComponents && string.Equals(value, "NF", StringComparison.OrdinalIgnoreCase))
+                || (SkipDnpComponents && string.Equals(value, "DNP", StringComparison.OrdinalIgnoreCase));
+        }
+
+        public bool ShouldSkipAssemblyMarkerPartNumber(string partNumber)
+        {
+            string value = TronstolE1Text.Normalize(partNumber);
+            return (SkipNfComponents && HasLeadingToken(value, "NF"))
+                || (SkipDnpComponents && HasLeadingToken(value, "DNP"));
+        }
+
+        private static bool HasLeadingToken(string value, string token)
+        {
+            return string.Equals(value, token, StringComparison.OrdinalIgnoreCase)
+                || value.StartsWith(token + " ", StringComparison.OrdinalIgnoreCase);
+        }
+
         public bool ShouldSkipSolderingType(string solderingType)
         {
             string value = TronstolE1Text.Normalize(solderingType);

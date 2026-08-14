@@ -156,14 +156,19 @@ following columns:
   cleanup. Components inside each group are sorted by designator using natural
   order (`R2` before `R10`), and the groups are ordered by the first designator
   in each group.
+- A second CSV is generated next to the main output for skipped components. It
+  uses the same columns and the same file name with ` Skipped` appended before
+  `.csv`, for example `SwarmRK_v1.6S Tronstol E1 PNP Skipped.csv`.
 
 The output's configuration dialog provides the following options. They are all
 enabled by default:
 
 - Remove a trailing `_BGA` from footprint names.
 - Remove a trailing ` BGA` from footprint names.
-- Skip components whose comment is `NF`.
-- Skip components whose comment is `DNP` (surrounding whitespace is ignored).
+- Skip components whose comment is exactly `NF`, whose `PartNumber` is exactly
+  `NF`, or whose exported assembly `PartNumber` begins with `NF `.
+- Skip components whose comment is exactly `DNP`, whose `PartNumber` is exactly
+  `DNP`, or whose exported assembly `PartNumber` begins with `DNP `.
 - Skip components whose `SolderingType` parameter is `Manual`.
 - Skip components whose `SolderingType` parameter is `Wave`.
 - Skip components whose footprint name contains `testpoint` or `test point`,

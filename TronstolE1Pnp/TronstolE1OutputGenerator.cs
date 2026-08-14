@@ -78,6 +78,7 @@ namespace EasyEDA_Loader.TronstolE1Pnp
         protected override bool InternalRunGenerator()
         {
             string outputFile = ResolveOutputFilePath();
+            string skippedOutputFile = ResolveSkippedOutputFilePath(outputFile);
             try
             {
                 IPCB_Board board = LoadBoard(DocumentPath);
@@ -88,15 +89,30 @@ namespace EasyEDA_Loader.TronstolE1Pnp
                 if (!string.IsNullOrWhiteSpace(directory))
                     Directory.CreateDirectory(directory);
 
+                var skippedPlacements = new List<TronstolE1Placement>();
+                var outputPlacements = new List<TronstolE1Placement>(
+                    ReadOutputPlacements(board, skippedPlacements));
+
                 Notify_BeginGeneratingOutputFile(outputFile);
                 try
                 {
                     using (var writer = new StreamWriter(outputFile, false, new UTF8Encoding(false)))
-                        TronstolE1Csv.Write(writer, ReadOutputPlacements(board));
+                        TronstolE1Csv.Write(writer, outputPlacements);
                 }
                 finally
                 {
                     Notify_FinishGeneratingOutputFile(outputFile);
+                }
+
+                Notify_BeginGeneratingOutputFile(skippedOutputFile);
+                try
+                {
+                    using (var writer = new StreamWriter(skippedOutputFile, false, new UTF8Encoding(false)))
+                        TronstolE1Csv.Write(writer, skippedPlacements);
+                }
+                finally
+                {
+                    Notify_FinishGeneratingOutputFile(skippedOutputFile);
                 }
 
                 return true;
@@ -139,7 +155,20 @@ namespace EasyEDA_Loader.TronstolE1Pnp
                 : documentDirectory;
         }
 
-        private IEnumerable<TronstolE1Placement> ReadOutputPlacements(IPCB_Board board)
+        private static string ResolveSkippedOutputFilePath(string outputFile)
+        {
+            string directory = Path.GetDirectoryName(outputFile);
+            string name = Path.GetFileNameWithoutExtension(outputFile);
+            string extension = Path.GetExtension(outputFile);
+            if (string.IsNullOrEmpty(extension))
+                extension = ".csv";
+
+            return Path.Combine(directory ?? string.Empty, name + " Skipped" + extension);
+        }
+
+        private IEnumerable<TronstolE1Placement> ReadOutputPlacements(
+            IPCB_Board board,
+            IList<TronstolE1Placement> skippedPlacements)
         {
             BoardCoordinateOrigin origin = ReadBoardCoordinateOrigin(board);
             BoardCoordinateBounds bounds = ReadBoardCoordinateBounds(board, origin);
@@ -160,7 +189,11 @@ namespace EasyEDA_Loader.TronstolE1Pnp
             if (settings.ExportEdgeRailsSize)
                 yield return ReadEdgeRailsSize(board, origin, bounds);
 
-            foreach (TronstolE1Placement placement in ReadPlacements(board, origin, bounds))
+            foreach (TronstolE1Placement placement in ReadPlacements(
+                board,
+                origin,
+                bounds,
+                skippedPlacements))
                 yield return placement;
         }
 
@@ -1203,7 +1236,8 @@ namespace EasyEDA_Loader.TronstolE1Pnp
         private IEnumerable<TronstolE1Placement> ReadPlacements(
             IPCB_Board board,
             BoardCoordinateOrigin origin,
-            BoardCoordinateBounds bounds)
+            BoardCoordinateBounds bounds,
+            IList<TronstolE1Placement> skippedPlacements)
         {
             Dictionary<string, CompiledComponentData> compiledComponents = ReadCompiledComponents(board);
             IPCB_BoardIterator iterator = null;
@@ -1224,19 +1258,30 @@ namespace EasyEDA_Loader.TronstolE1Pnp
                             component.GetState_SourceDesignator());
                         compiledComponents.TryGetValue(designator, out CompiledComponentData compiledComponent);
                         string footprint = component.GetState_Pattern() ?? string.Empty;
-                        if (!settings.ShouldSkipFootprintName(footprint)
-                            && (compiledComponent == null
-                                || (!compiledComponent.IsNoBom
-                                && !settings.ShouldSkipComment(compiledComponent.Comment)
-                                && !settings.ShouldSkipSolderingType(compiledComponent.SolderingType))))
+                        string pcbComment = ReadPcbComponentComment(component);
+                        TronstolE1Placement placement = ReadPlacement(
+                            component,
+                            designator,
+                            compiledComponent,
+                            settings,
+                            origin,
+                            bounds);
+                        bool skip = settings.ShouldSkipFootprintName(footprint)
+                            || settings.ShouldSkipComment(pcbComment)
+                            || settings.ShouldSkipAssemblyMarkerPartNumber(placement.OriginalPartNumber)
+                            || settings.ShouldSkipAssemblyMarkerPartNumber(placement.PartNumber)
+                            || (compiledComponent != null
+                                && (compiledComponent.IsNoBom
+                                    || settings.ShouldSkipComment(compiledComponent.Comment)
+                                    || settings.ShouldSkipPartNumber(compiledComponent.PartNumber)
+                                    || settings.ShouldSkipSolderingType(compiledComponent.SolderingType)));
+                        if (skip)
                         {
-                            yield return ReadPlacement(
-                                component,
-                                designator,
-                                compiledComponent,
-                                settings,
-                                origin,
-                                bounds);
+                            skippedPlacements?.Add(placement);
+                        }
+                        else
+                        {
+                            yield return placement;
                         }
                     }
                     current = iterator.Internal_NextPCBObject();
@@ -1407,24 +1452,27 @@ namespace EasyEDA_Loader.TronstolE1Pnp
                 if (component == null || string.IsNullOrWhiteSpace(component.GetDesignator()))
                     continue;
 
+                IPCB_ParameterList parameters = component.Internal_GetParameters() as IPCB_ParameterList;
                 string partNumber = ReadParameterValue(
-                    component.Internal_GetParameters() as IPCB_ParameterList,
+                    parameters,
                     "PartNumber");
-                string comment = TronstolE1Text.Normalize(component.GetComment());
+                string comment = FirstNonEmpty(
+                    ReadParameterValue(parameters, "Comment"),
+                    component.GetComment());
                 string manufacturer = ReadParameterValue(
-                    component.Internal_GetParameters() as IPCB_ParameterList,
+                    parameters,
                     "Manufacturer");
                 string carrier = ReadParameterValue(
-                    component.Internal_GetParameters() as IPCB_ParameterList,
+                    parameters,
                     "Carrier");
                 string reelPitch = ReadParameterValue(
-                    component.Internal_GetParameters() as IPCB_ParameterList,
+                    parameters,
                     "ReelPitch");
                 string componentDescription = ReadComponentDescription(
                     component,
-                    component.Internal_GetParameters() as IPCB_ParameterList);
+                    parameters);
                 string solderingType = ReadParameterValue(
-                    component.Internal_GetParameters() as IPCB_ParameterList,
+                    parameters,
                     "SolderingType");
                 int componentKind = component.Internal_GetKind();
                 result[TronstolE1Text.Normalize(component.GetDesignator())] = new CompiledComponentData
@@ -1483,6 +1531,18 @@ namespace EasyEDA_Loader.TronstolE1Pnp
             return FirstNonEmpty(
                 TryGetStringMember(component, "GetState_SourceDescription"),
                 TryGetStringMember(component, "GetState_FootprintDescription"));
+        }
+
+        private static string ReadPcbComponentComment(IPCB_Component component)
+        {
+            if (component == null)
+                return string.Empty;
+
+            return FirstNonEmpty(
+                component.GetState_SourceLibReference(),
+                ReadText(TryInvokeResult(component, "Internal_GetState_Comment"), string.Empty),
+                ReadText(TryInvokeResult(component, "GetState_Comment"), string.Empty),
+                TryGetStringMember(component, "GetState_CommentString"));
         }
 
         private static string ResolveDescription(
