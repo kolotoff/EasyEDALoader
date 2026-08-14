@@ -1538,11 +1538,7 @@ namespace EasyEDA_Loader.TronstolE1Pnp
             if (component == null)
                 return string.Empty;
 
-            return FirstNonEmpty(
-                component.GetState_SourceLibReference(),
-                ReadText(TryInvokeResult(component, "Internal_GetState_Comment"), string.Empty),
-                ReadText(TryInvokeResult(component, "GetState_Comment"), string.Empty),
-                TryGetStringMember(component, "GetState_CommentString"));
+            return component.GetState_SourceLibReference();
         }
 
         private static string ResolveDescription(
