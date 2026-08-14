@@ -300,6 +300,25 @@ internal static class Program
                 "A B C",
                 TronstolE1Text.Normalize(" A\tB\r\nC  "),
                 "generic text normalization");
+            AssertEqual(
+                "10K; Resistor",
+                TronstolE1Description.Resolve("RC0603FR-0711KL", "10K", "Resistor"),
+                "prepend comment before description when PartNumber and Description do not contain it");
+            AssertEqual(
+                "Resistor",
+                TronstolE1Description.Resolve("10K ±1% R0603", "10K", "Resistor"),
+                "do not prepend comment when PartNumber contains it");
+            AssertEqual(
+                "Ceramic capacitor 100nF 50V X7R",
+                TronstolE1Description.Resolve(
+                    "CL10B104KB8NNNC",
+                    "100nF 50V ±10% X7R",
+                    "Ceramic capacitor 100nF 50V X7R"),
+                "do not prepend comment when description contains most comment parts");
+            AssertEqual(
+                "NF",
+                TronstolE1Description.Resolve("", "NF", ""),
+                "use comment when description is empty");
 
             Console.WriteLine("Tronstol E1 CSV tests passed.");
             return 0;

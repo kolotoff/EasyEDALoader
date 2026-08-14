@@ -1263,6 +1263,7 @@ namespace EasyEDA_Loader.TronstolE1Pnp
                             component,
                             designator,
                             compiledComponent,
+                            pcbComment,
                             settings,
                             origin,
                             bounds);
@@ -1298,6 +1299,7 @@ namespace EasyEDA_Loader.TronstolE1Pnp
             IPCB_Component component,
             string designator,
             CompiledComponentData compiledComponent,
+            string pcbComment,
             TronstolE1Settings settings,
             BoardCoordinateOrigin origin,
             BoardCoordinateBounds bounds)
@@ -1316,7 +1318,7 @@ namespace EasyEDA_Loader.TronstolE1Pnp
                 Manufacturer = compiledComponent?.Manufacturer,
                 Description = ResolveDescription(
                     partNumber,
-                    compiledComponent?.Comment,
+                    FirstNonEmpty(pcbComment, compiledComponent?.Comment),
                     componentDescription),
                 Footprint = settings.FormatFootprintName(footprint),
                 Carrier = compiledComponent?.Carrier,
@@ -1538,7 +1540,14 @@ namespace EasyEDA_Loader.TronstolE1Pnp
             if (component == null)
                 return string.Empty;
 
-            return component.GetState_SourceLibReference();
+            try
+            {
+                return ReadText(component.Internal_GetState_Comment(), string.Empty);
+            }
+            catch
+            {
+                return string.Empty;
+            }
         }
 
         private static string ResolveDescription(
@@ -1546,17 +1555,7 @@ namespace EasyEDA_Loader.TronstolE1Pnp
             string comment,
             string componentDescription)
         {
-            partNumber = TronstolE1Text.Normalize(partNumber);
-            comment = TronstolE1Text.Normalize(comment);
-            componentDescription = TronstolE1Text.Normalize(componentDescription);
-
-            if (!string.IsNullOrEmpty(comment)
-                && partNumber.IndexOf(comment, StringComparison.OrdinalIgnoreCase) < 0)
-            {
-                return comment;
-            }
-
-            return componentDescription;
+            return TronstolE1Description.Resolve(partNumber, comment, componentDescription);
         }
 
         private static string TryGetStringMember(object target, params string[] memberNames)
