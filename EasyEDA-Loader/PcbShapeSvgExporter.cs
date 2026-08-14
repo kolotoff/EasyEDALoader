@@ -241,6 +241,7 @@ namespace EasyEDA_Loader
                 components = UniqueBoardComponentsByFootprint(components);
 
             List<object> componentList = components.Where(component => component != null).ToList();
+            IReadOnlyCollection<int> flippedMechanical2LayerNumbers = ResolveFlippedMechanical2LayerNumbers(board);
             IReadOnlyDictionary<string, List<PersistedPadContour>> persistedPadContours = includePads
                 ? ReadBoardPersistedPadContours(board, componentList, progress, isCancellationRequested)
                 : null;
@@ -253,7 +254,8 @@ namespace EasyEDA_Loader
                 diagnosticsEnabled,
                 isCancellationRequested,
                 includePads: includePads,
-                persistedPadContours: persistedPadContours);
+                persistedPadContours: persistedPadContours,
+                flippedMechanical2LayerNumbers: flippedMechanical2LayerNumbers);
         }
 
         private static IReadOnlyDictionary<string, List<PersistedPadContour>> ReadBoardPersistedPadContours(
@@ -331,7 +333,8 @@ namespace EasyEDA_Loader
             Func<bool> isCancellationRequested,
             HashSet<string> usedNames = null,
             bool includePads = false,
-            IReadOnlyDictionary<string, List<PersistedPadContour>> persistedPadContours = null)
+            IReadOnlyDictionary<string, List<PersistedPadContour>> persistedPadContours = null,
+            IReadOnlyCollection<int> flippedMechanical2LayerNumbers = null)
         {
             var result = new ShapeExportResult();
             HashSet<string> outputNames = usedNames ?? new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -383,12 +386,19 @@ namespace EasyEDA_Loader
                         });
 
                         var layers = new SvgExportLayers();
-                        layers.ShapePrimitives.AddRange(CaptureMechanicalShapePrimitives(component, diagnostics, componentName, out ShapeCaptureStats captureStats, isCancellationRequested));
+                        layers.ShapePrimitives.AddRange(CaptureMechanicalShapePrimitives(
+                            component,
+                            diagnostics,
+                            componentName,
+                            out ShapeCaptureStats captureStats,
+                            out bool componentMirrored,
+                            isCancellationRequested,
+                            flippedMechanical2LayerNumbers));
                         if (includePads)
                         {
                             List<PersistedPadContour> componentPadContours = null;
                             persistedPadContours?.TryGetValue(componentName, out componentPadContours);
-                            layers.PadPrimitives.AddRange(CapturePadPrimitives(component, diagnostics, componentName, isCancellationRequested, componentPadContours));
+                            layers.PadPrimitives.AddRange(CapturePadPrimitives(component, diagnostics, componentName, isCancellationRequested, componentPadContours, componentMirrored));
                         }
                         result.CaptureStats.Add(captureStats);
                         if (layers.ShapePrimitives.Count == 0)
@@ -554,7 +564,8 @@ namespace EasyEDA_Loader
 
         private static IEnumerable<object> UniqueBoardComponentsByFootprint(IEnumerable<object> components)
         {
-            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var order = new List<string>();
+            var representatives = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
             foreach (object component in components.Where(component => component != null))
             {
                 string pattern = ReadFootprintName(component);
@@ -562,9 +573,18 @@ namespace EasyEDA_Loader
                     continue;
 
                 string key = "footprint:" + pattern.Trim();
-                if (seen.Add(key))
-                    yield return component;
+                if (!representatives.TryGetValue(key, out object existing))
+                {
+                    order.Add(key);
+                    representatives[key] = component;
+                }
+                else if (IsFlippedBoardComponent(existing) && !IsFlippedBoardComponent(component))
+                {
+                    representatives[key] = component;
+                }
             }
+
+            return order.Select(key => representatives[key]);
         }
 
         private static IEnumerable<object> EnumerateBoardComponents(IPCB_Board board)
@@ -620,19 +640,31 @@ namespace EasyEDA_Loader
             }
         }
 
-        private static List<SvgPrimitive> CaptureMechanicalShapePrimitives(object component, ShapeExportDiagnostics diagnostics, string exportName, out ShapeCaptureStats stats, Func<bool> isCancellationRequested)
+        private static List<SvgPrimitive> CaptureMechanicalShapePrimitives(
+            object component,
+            ShapeExportDiagnostics diagnostics,
+            string exportName,
+            out ShapeCaptureStats stats,
+            out bool componentMirrored,
+            Func<bool> isCancellationRequested,
+            IReadOnlyCollection<int> flippedMechanical2LayerNumbers = null)
         {
             ThrowIfCancellationRequested(isCancellationRequested);
             stats = new ShapeCaptureStats();
             int originX = GetInt(component, "GetState_XLocation");
             int originY = GetInt(component, "GetState_YLocation");
             double rotation = IsBoardComponent(component) ? GetDouble(component, "GetState_Rotation") : 0.0;
-            bool mirrored = IsBoardComponent(component) && GetBool(component, "GetState_FlippedOnLayer");
             string componentName = FirstNonEmpty(ReadFootprintName(component), ReadDesignator(component), ObjectIdentity(component));
             HashSet<string> excludedTextValues = BuildComponentTextExclusionSet(component);
             List<object> shapeObjects = EnumerateComponentShapeObjects(component).ToList();
+            bool mirrored = IsFlippedBoardComponent(component)
+                || (IsBoardComponent(component)
+                    && flippedMechanical2LayerNumbers != null
+                    && shapeObjects.Any(primitive => IsAlternateMechanicalLayerPrimitive(primitive, flippedMechanical2LayerNumbers)));
+            componentMirrored = mirrored;
+            IReadOnlyCollection<int> alternateMechanical2LayerNumbers = mirrored ? flippedMechanical2LayerNumbers : null;
             HashSet<string> repeatedBoardTextValues = IsBoardComponent(component)
-                ? BuildRepeatedBoardTextExclusionSet(shapeObjects)
+                ? BuildRepeatedBoardTextExclusionSet(shapeObjects, alternateMechanical2LayerNumbers)
                 : new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             diagnostics?.BeginComponent(exportName, component, originX, originY, rotation, mirrored);
 
@@ -663,7 +695,7 @@ namespace EasyEDA_Loader
                 stats.TotalPrimitives++;
                 IncrementCount(stats.ObjectCounts, objectId);
                 bool placeholderText = IsExcludedTextPrimitive(primitive, objectId, excludedTextValues, repeatedBoardTextValues);
-                bool mechanical2 = !placeholderText && IsMechanical2Primitive(primitive, objectId);
+                bool mechanical2 = !placeholderText && IsMechanical2Primitive(primitive, objectId, alternateMechanical2LayerNumbers);
                 string textValue = mechanical2 ? ReadExportTextString(primitive, objectId, excludedTextValues) : "";
                 bool textPrimitive = !string.IsNullOrWhiteSpace(textValue);
                 SvgPrimitive svgPrimitive = null;
@@ -716,13 +748,14 @@ namespace EasyEDA_Loader
             ShapeExportDiagnostics diagnostics,
             string componentName,
             Func<bool> isCancellationRequested,
-            List<PersistedPadContour> persistedContours)
+            List<PersistedPadContour> persistedContours,
+            bool componentMirrored)
         {
             ThrowIfCancellationRequested(isCancellationRequested);
             int originX = GetInt(component, "GetState_XLocation");
             int originY = GetInt(component, "GetState_YLocation");
             double componentRotation = IsBoardComponent(component) ? GetDouble(component, "GetState_Rotation") : 0.0;
-            bool mirrored = IsBoardComponent(component) && GetBool(component, "GetState_FlippedOnLayer");
+            bool mirrored = IsBoardComponent(component) ? componentMirrored : false;
             var result = new List<SvgPrimitive>();
             List<LinkedPadRegion> linkedRegions = persistedContours != null
                 ? new List<LinkedPadRegion>()
@@ -1846,8 +1879,8 @@ namespace EasyEDA_Loader
             double endAngle = NormalizeAngle(GetDouble(primitive, "GetState_EndAngle") - rotation);
             if (mirrored)
             {
-                startAngle = NormalizeAngle(180.0 - startAngle);
-                endAngle = NormalizeAngle(180.0 - endAngle);
+                startAngle = NormalizeAngle(-startAngle);
+                endAngle = NormalizeAngle(-endAngle);
             }
 
             double sweep = NormalizeSweep(endAngle - startAngle);
@@ -2009,8 +2042,8 @@ namespace EasyEDA_Loader
             double endAngle = NormalizeAngle(GetDouble(segment, "GetAngle2") - rotation);
             if (mirrored)
             {
-                startAngle = NormalizeAngle(180.0 - startAngle);
-                endAngle = NormalizeAngle(180.0 - endAngle);
+                startAngle = NormalizeAngle(-startAngle);
+                endAngle = NormalizeAngle(-endAngle);
             }
 
             ArcPoint(centerX, centerY, radius, startAngle, out double startX, out double startY);
@@ -2552,8 +2585,8 @@ namespace EasyEDA_Loader
             double sin = Math.Sin(radians);
             double rotatedX = (dx * cos) - (dy * sin);
             double rotatedY = (dx * sin) + (dy * cos);
-            localX = mirrored ? -rotatedX : rotatedX;
-            localY = rotatedY;
+            localX = rotatedX;
+            localY = mirrored ? -rotatedY : rotatedY;
         }
 
         private static IEnumerable<object> EnumeratePcbLibExportComponents(IPCB_Library pcbLib)
@@ -2708,13 +2741,48 @@ namespace EasyEDA_Loader
                 result.Add(value);
         }
 
-        private static bool IsMechanical2Primitive(object primitive, int objectId)
+        private static IReadOnlyCollection<int> ResolveFlippedMechanical2LayerNumbers(IPCB_Board board)
+        {
+            if (board == null)
+                return null;
+
+            try
+            {
+                IPCB_MechanicalLayerPairs pairs = board.GetState_MechanicalPairs();
+                if (pairs == null)
+                    return null;
+
+                IV7_Layer pairedLayer = new V7_Layer(TLayerConstant.eMechanical2);
+                if (!pairs.FlipLayerV7(ref pairedLayer))
+                    return null;
+
+                var layer = new V7_Layer(pairedLayer);
+                return new HashSet<int>
+                {
+                    layer.Number(),
+                    (int)layer.SafeV6Layer(),
+                    (int)layer.GetN(),
+                    (int)layer.GetID(),
+                    (int)layer.GetOrd()
+                };
+            }
+            catch (Exception ex)
+            {
+                EasyEDALoaderModule.Trace("Could not resolve the paired Mechanical 2 layer: " + ex.Message);
+                return null;
+            }
+        }
+
+        private static bool IsMechanical2Primitive(object primitive, int objectId, IReadOnlyCollection<int> alternateLayerNumbers = null)
         {
             if (primitive == null)
                 return false;
 
             if (!IsSupportedShapePrimitive(primitive, objectId))
                 return false;
+
+            if (alternateLayerNumbers != null && IsAlternateMechanicalLayerPrimitive(primitive, alternateLayerNumbers))
+                return true;
 
             if (!TryGetPrimitiveLayerNumber(primitive, out int layerNumber))
                 return false;
@@ -2730,6 +2798,18 @@ namespace EasyEDA_Loader
 
             return layerNumber == (int)TLayerConstant.eMechanical2
                 || layerNumber == 2;
+        }
+
+        private static bool IsAlternateMechanicalLayerPrimitive(object primitive, IReadOnlyCollection<int> alternateLayerNumbers)
+        {
+            if (primitive == null || alternateLayerNumbers == null || alternateLayerNumbers.Count == 0)
+                return false;
+
+            if (TryGetRawLayerNumber(primitive, out int rawLayerNumber))
+                return alternateLayerNumbers.Contains(rawLayerNumber);
+
+            return TryGetPrimitiveLayerNumber(primitive, out int layerNumber)
+                && alternateLayerNumbers.Contains(layerNumber);
         }
 
         private static bool IsSupportedShapePrimitive(object primitive, int objectId)
@@ -2822,13 +2902,13 @@ namespace EasyEDA_Loader
             return values;
         }
 
-        private static HashSet<string> BuildRepeatedBoardTextExclusionSet(IEnumerable<object> primitives)
+        private static HashSet<string> BuildRepeatedBoardTextExclusionSet(IEnumerable<object> primitives, IReadOnlyCollection<int> alternateMechanical2LayerNumbers)
         {
             var counts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
             foreach (object primitive in primitives ?? Enumerable.Empty<object>())
             {
                 int objectId = GetObjectId(primitive);
-                if (!IsMechanical2Primitive(primitive, objectId))
+                if (!IsMechanical2Primitive(primitive, objectId, alternateMechanical2LayerNumbers))
                     continue;
 
                 string value = "";
@@ -2924,6 +3004,30 @@ namespace EasyEDA_Loader
         private static bool IsBoardComponent(object primitive)
         {
             return primitive is IPCB_Component || GetObjectId(primitive) == (int)TObjectId.eComponentObject;
+        }
+
+        private static bool IsFlippedBoardComponent(object component)
+        {
+            if (!IsBoardComponent(component))
+                return false;
+
+            if (GetBool(component, "GetState_FlippedOnLayer"))
+                return true;
+
+            if (!TryGetRawLayerNumber(component, out int rawLayerNumber))
+                return false;
+
+            try
+            {
+                var bottomLayer = new V7_Layer(TLayerConstant.eBottomLayer);
+                return rawLayerNumber == (int)bottomLayer.SafeV6Layer()
+                    || rawLayerNumber == (int)bottomLayer.GetID()
+                    || rawLayerNumber == (int)bottomLayer.GetN();
+            }
+            catch
+            {
+                return false;
+            }
         }
 
         private static string ReadDesignator(object component)
@@ -3125,8 +3229,7 @@ namespace EasyEDA_Loader
                 }
             }
 
-            object raw = Invoke(primitive, "GetState_Layer") ?? Invoke(primitive, "Internal_GetState_Layer");
-            if (TryConvertToInt(raw, out layer))
+            if (TryGetRawLayerNumber(primitive, out layer))
                 return true;
 
             try
@@ -3154,6 +3257,12 @@ namespace EasyEDA_Loader
             }
 
             return false;
+        }
+
+        private static bool TryGetRawLayerNumber(object primitive, out int layer)
+        {
+            object raw = Invoke(primitive, "GetState_Layer") ?? Invoke(primitive, "Internal_GetState_Layer");
+            return TryConvertToInt(raw, out layer);
         }
 
         private static string DescribePrimitiveLayer(object primitive)
@@ -3462,8 +3571,8 @@ namespace EasyEDA_Loader
                     double endAngle = NormalizeAngle(GetDouble(primitive, "GetState_EndAngle") - rotation);
                     if (mirrored)
                     {
-                        startAngle = NormalizeAngle(180.0 - startAngle);
-                        endAngle = NormalizeAngle(180.0 - endAngle);
+                        startAngle = NormalizeAngle(-startAngle);
+                        endAngle = NormalizeAngle(-endAngle);
                     }
                     _text.AppendLine("    arcLocalMm: centerX=" + Format(centerX)
                         + ", centerY=" + Format(centerY)
