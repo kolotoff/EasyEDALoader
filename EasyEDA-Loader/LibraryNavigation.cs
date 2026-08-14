@@ -176,6 +176,26 @@ namespace EasyEDA_Loader
                 $"Open footprint library completed. Library='{libraryPath}' Footprint='{footprintName}'.");
         }
 
+        internal static string TryResolvePcbLibraryPath(IPCB_Board board, IPCB_Component component)
+        {
+            if (board == null || component == null)
+                return "";
+
+            try
+            {
+                return ResolveLibraryPath(
+                    ".PcbLib",
+                    board.GetState_FileName(),
+                    component.GetState_SourceFootprintLibrary());
+            }
+            catch (Exception ex)
+            {
+                EasyEDALoaderModule.Trace(
+                    $"Could not resolve source PCB library for footprint '{component.GetState_Pattern()}': {ex.Message}");
+                return "";
+            }
+        }
+
         private static bool TryOpenPcbLibraryWithNativeCommand(string footprintName)
         {
             try

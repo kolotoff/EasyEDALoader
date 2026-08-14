@@ -4,7 +4,14 @@ The PCB and PCB footprint library menus include `EasyEDA -> Export shape` with:
 
 - `All components`
 - `Selected component`
+- `All components with Pads`
 - `All from selected libraries`
+
+`All components with Pads` exports the same unique footprint set as `All
+components` and adds a semi-transparent blue `Pads` group behind the `Shape`
+group. In the PCB editor, component placement, rotation, and board-origin
+offsets are removed so each SVG remains relative to the original component
+origin.
 
 `All from selected libraries` first selects one or more `.PcbLib` files, then
 selects the shared SVG target folder. Libraries opened by the command are

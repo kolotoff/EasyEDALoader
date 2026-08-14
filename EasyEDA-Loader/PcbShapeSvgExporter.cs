@@ -148,11 +148,7 @@ namespace EasyEDA_Loader
 
             IPCB_Board board = EEPCB.GetCurrentPcbBoard(commandView);
             if (board != null)
-            {
-                if (includePads)
-                    throw new InvalidOperationException("Pad-group shape export is available only in the PCB library editor.");
-                return ExportPcbBoard(board, scope, folder, progress, diagnosticsEnabled, isCancellationRequested);
-            }
+                return ExportPcbBoard(board, scope, folder, progress, diagnosticsEnabled, isCancellationRequested, includePads);
 
             throw new InvalidOperationException("Open a PCB document or PCB footprint library before exporting shapes.");
         }
@@ -221,7 +217,14 @@ namespace EasyEDA_Loader
             return ExportComponents(components, folder, "Footprint", preferFootprintName: true, progress, diagnosticsEnabled, isCancellationRequested, usedNames, includePads, persistedPadContours);
         }
 
-        private static ShapeExportResult ExportPcbBoard(IPCB_Board board, ShapeExportScope scope, string folder, Action<ShapeExportProgress> progress, bool diagnosticsEnabled, Func<bool> isCancellationRequested)
+        private static ShapeExportResult ExportPcbBoard(
+            IPCB_Board board,
+            ShapeExportScope scope,
+            string folder,
+            Action<ShapeExportProgress> progress,
+            bool diagnosticsEnabled,
+            Func<bool> isCancellationRequested,
+            bool includePads)
         {
             ThrowIfCancellationRequested(isCancellationRequested);
             progress?.Invoke(new ShapeExportProgress
@@ -237,7 +240,85 @@ namespace EasyEDA_Loader
             if (scope == ShapeExportScope.AllComponents)
                 components = UniqueBoardComponentsByFootprint(components);
 
-            return ExportComponents(components, folder, "Component", preferFootprintName: true, progress, diagnosticsEnabled, isCancellationRequested);
+            List<object> componentList = components.Where(component => component != null).ToList();
+            IReadOnlyDictionary<string, List<PersistedPadContour>> persistedPadContours = includePads
+                ? ReadBoardPersistedPadContours(board, componentList, progress, isCancellationRequested)
+                : null;
+            return ExportComponents(
+                componentList,
+                folder,
+                "Component",
+                preferFootprintName: true,
+                progress,
+                diagnosticsEnabled,
+                isCancellationRequested,
+                includePads: includePads,
+                persistedPadContours: persistedPadContours);
+        }
+
+        private static IReadOnlyDictionary<string, List<PersistedPadContour>> ReadBoardPersistedPadContours(
+            IPCB_Board board,
+            IEnumerable<object> components,
+            Action<ShapeExportProgress> progress,
+            Func<bool> isCancellationRequested)
+        {
+            var requestsByLibrary = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
+            var resolvedReferences = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            foreach (object componentObject in components ?? Enumerable.Empty<object>())
+            {
+                ThrowIfCancellationRequested(isCancellationRequested);
+                object component = UnwrapExportComponent(componentObject);
+                if (!(component is IPCB_Component pcbComponent))
+                    continue;
+
+                string footprintName = ReadFootprintName(componentObject);
+                string libraryReference = SafeCall(() => pcbComponent.GetState_SourceFootprintLibrary());
+                if (string.IsNullOrWhiteSpace(footprintName) || string.IsNullOrWhiteSpace(libraryReference))
+                    continue;
+
+                if (!resolvedReferences.TryGetValue(libraryReference, out string libraryPath))
+                {
+                    libraryPath = LibraryNavigation.TryResolvePcbLibraryPath(board, pcbComponent);
+                    resolvedReferences[libraryReference] = libraryPath;
+                }
+
+                if (string.IsNullOrWhiteSpace(libraryPath))
+                    continue;
+                if (!requestsByLibrary.TryGetValue(libraryPath, out HashSet<string> footprintNames))
+                {
+                    footprintNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    requestsByLibrary[libraryPath] = footprintNames;
+                }
+                footprintNames.Add(footprintName);
+            }
+
+            var result = new Dictionary<string, List<PersistedPadContour>>(StringComparer.OrdinalIgnoreCase);
+            foreach (KeyValuePair<string, HashSet<string>> request in requestsByLibrary)
+            {
+                ThrowIfCancellationRequested(isCancellationRequested);
+                progress?.Invoke(new ShapeExportProgress
+                {
+                    Message = "Reading pad contours...",
+                    Detail = Path.GetFileName(request.Key)
+                });
+
+                try
+                {
+                    IReadOnlyDictionary<string, List<PersistedPadContour>> libraryContours =
+                        PcbLibPadContourReader.Read(request.Key, request.Value);
+                    foreach (KeyValuePair<string, List<PersistedPadContour>> footprint in libraryContours)
+                    {
+                        if (request.Value.Contains(footprint.Key) && !result.ContainsKey(footprint.Key))
+                            result[footprint.Key] = footprint.Value;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    EasyEDALoaderModule.Trace("Could not read persisted PCB pad contours from " + request.Key + ": " + ex);
+                }
+            }
+
+            return result;
         }
 
         private static ShapeExportResult ExportComponents(
@@ -727,13 +808,25 @@ namespace EasyEDA_Loader
                     componentRotation,
                     mirrored,
                     localCoordinates: true);
+                List<List<SvgPoint>> storedCoordinates = TransformPersistedStoredContours(candidate);
                 double documentDistance = PersistedContourCenterDistance(documentCoordinates, padX, padY);
                 double localDistance = PersistedContourCenterDistance(localCoordinates, padX, padY);
-                List<List<SvgPoint>> converted = localDistance < documentDistance ? localCoordinates : documentCoordinates;
+                double storedDistance = PersistedContourCenterDistance(storedCoordinates, padX, padY);
+                List<List<SvgPoint>> converted = documentCoordinates;
+                double distance = documentDistance;
+                if (localDistance < distance)
+                {
+                    converted = localCoordinates;
+                    distance = localDistance;
+                }
+                if (storedDistance < distance)
+                {
+                    converted = storedCoordinates;
+                    distance = storedDistance;
+                }
                 if (converted[0].Count < 3)
                     continue;
 
-                double distance = Math.Min(documentDistance, localDistance);
                 if (distance >= bestDistance)
                     continue;
 
@@ -778,6 +871,24 @@ namespace EasyEDA_Loader
             };
             result.AddRange(contour.Holes.Select(hole => TransformPersistedContour(hole, originX, originY, componentRotation, mirrored, localCoordinates)));
             return result;
+        }
+
+        private static List<List<SvgPoint>> TransformPersistedStoredContours(PersistedPadContour contour)
+        {
+            var result = new List<List<SvgPoint>>
+            {
+                TransformPersistedStoredContour(contour.Outline)
+            };
+            result.AddRange(contour.Holes.Select(TransformPersistedStoredContour));
+            return result;
+        }
+
+        private static List<SvgPoint> TransformPersistedStoredContour(IEnumerable<PersistedPadPoint> points)
+        {
+            double millimetersPerCoord = AltiumApi.CoordToMm(1000000) / 1000000.0;
+            return (points ?? Enumerable.Empty<PersistedPadPoint>())
+                .Select(point => new SvgPoint(point.X * millimetersPerCoord, point.Y * millimetersPerCoord))
+                .ToList();
         }
 
         private static double PersistedContourCenterDistance(List<List<SvgPoint>> contours, double padX, double padY)

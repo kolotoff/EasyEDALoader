@@ -10290,7 +10290,8 @@ namespace StepCleaner.Tests
             AssertContains(rcs, "PL PLEasyEDALoader:EasyEDADuplicateLayout Command='EasyEDA-Loader:EasyEDADuplicateLayout' Caption='Duplicate layout'", "Duplicate layout command should have a PCB menu resource entry", failures);
             AssertDoesNotContain(rcs, "PLID='PLEasyEDALoader:EasyEDADuplicateLayout'", "Duplicate layout must remain hidden from Tools > EasyEDA while the experimental workflow is disabled", failures);
             AssertContains(rcs, "Caption='All from selected &libraries'", "Export shape menu should expose selected-library export", failures);
-            AssertContains(rcs, "Link MNPCB_EasyEDAExportShape30 PLID='PLEasyEDALoader:EasyEDAExportShapeSelectedLibraries'", "PCB editor Export shape menu should include selected-library export", failures);
+            AssertContains(rcs, "Link MNPCB_EasyEDAExportShape30 PLID='PLEasyEDALoader:EasyEDAExportShapeAllWithPads'", "PCB editor Export shape menu should include all-components-with-pads export", failures);
+            AssertContains(rcs, "Link MNPCB_EasyEDAExportShape40 PLID='PLEasyEDALoader:EasyEDAExportShapeSelectedLibraries'", "PCB editor Export shape menu should include selected-library export after pad export", failures);
             AssertContains(rcs, "Link MNPCBLib_EasyEDAExportShape30 PLID='PLEasyEDALoader:EasyEDAExportShapeAllWithPads'", "PcbLib editor Export shape menu should include all-components-with-pads export", failures);
             AssertContains(rcs, "Link MNPCBLib_EasyEDAExportShape40 PLID='PLEasyEDALoader:EasyEDAExportShapeSelectedWithPads'", "PcbLib editor Export shape menu should include selected-component-with-pads export", failures);
             AssertContains(rcs, "Link MNPCBLib_EasyEDAExportShape50 PLID='PLEasyEDALoader:EasyEDAExportShapeSelectedLibraries'", "PcbLib editor Export shape menu should include selected-library export after pad exports", failures);
@@ -10299,7 +10300,7 @@ namespace StepCleaner.Tests
             string pcbMenu = pcbMenuStart >= 0 && pcbLibMenuStart > pcbMenuStart
                 ? rcs.Substring(pcbMenuStart, pcbLibMenuStart - pcbMenuStart)
                 : string.Empty;
-            AssertDoesNotContain(pcbMenu, "EasyEDAExportShapeAllWithPads", "PCB editor Export shape menu must not expose the PcbLib-only all-components-with-pads command", failures);
+            AssertContains(pcbMenu, "EasyEDAExportShapeAllWithPads", "PCB editor Export shape menu must expose all-components-with-pads export", failures);
             AssertDoesNotContain(pcbMenu, "EasyEDAExportShapeSelectedWithPads", "PCB editor Export shape menu must not expose the PcbLib-only selected-component-with-pads command", failures);
             AssertContains(rcs, "PLID='PLEasyEDALoader:EasyEDAOpenSymbolLibrary'", "schematic editor menu should expose Open symbol library", failures);
             AssertContains(rcs, "PLID='PLEasyEDALoader:EasyEDAOpenFootprintLibrary'", "PCB editor menu should expose Open footprint library", failures);
@@ -10339,6 +10340,7 @@ namespace StepCleaner.Tests
             AssertContains(libraryNavigation, "workspace?.DM_Preferences()", "library navigation must read Altium workspace library preferences", failures);
             AssertContains(libraryNavigation, "preferences?.GetDefaultLibraryPath()", "library navigation must expand relative installed-library paths from Altium's configured root", failures);
             AssertContains(libraryNavigation, "component.GetState_SourceFootprintLibrary()", "footprint-library navigation must read the selected PCB component source library", failures);
+            AssertContains(libraryNavigation, "internal static string TryResolvePcbLibraryPath", "PCB pad export must be able to resolve each component's source PcbLib", failures);
             AssertContains(libraryNavigation, "DXP.Utils.RunCommand(\"PCB:GotoLibraryComponent\"", "footprint-library navigation must use Altium's resolver for installed and integrated libraries", failures);
             AssertContains(libraryNavigation, "DXP.Utils.RunCommand(\"Sch:FirstComponentLibraryEditor\"", "symbol-library navigation must synchronize the SCH Library panel through native editor commands", failures);
             AssertContains(libraryNavigation, "DXP.Utils.RunCommand(\"Sch:NextComponentLibraryEditor\"", "symbol-library navigation must advance natively to the referenced symbol", failures);
@@ -10379,6 +10381,10 @@ namespace StepCleaner.Tests
             AssertContains(shapeExporter, "GetBool(primitive, \"GetState_Multiline\")", "shape exporter must not apply single-line rotation inference to multiline text", failures);
             AssertContains(module, "ShapeExportScope.AllComponents, includePads: true", "all-components-with-pads command must enable pad export", failures);
             AssertContains(module, "ShapeExportScope.SelectedComponent, includePads: true", "selected-component-with-pads command must enable pad export", failures);
+            AssertContains(shapeExporter, "isCancellationRequested, includePads);", "PCB board export must pass the with-pads option into its component exporter", failures);
+            AssertContains(shapeExporter, "includePads: includePads", "PCB board component export must write the optional Pads SVG group", failures);
+            AssertContains(shapeExporter, "ReadBoardPersistedPadContours(board, componentList", "PCB pad export must preload exact custom contours from source footprint libraries", failures);
+            AssertContains(shapeExporter, "PcbLibPadContourReader.Read(request.Key, request.Value)", "PCB pad export must request only footprints used by the board from each source library", failures);
             AssertContains(shapeExporter, "Internal_GetState_ExtractedPrimitiveOnLayer(layer)", "pad export should use Altium's extracted shape-based primitive when available", failures);
             AssertContains(shapeExporter, "Internal_PCBContourMaker()", "pad export must ask Altium's contour maker for rendered pad geometry", failures);
             AssertContains(shapeExporter, "contourMaker.Internal_MakeContour(pad, 0, PadLayerNumber(layer))", "pad export must generate the exact contour on the selected copper layer", failures);
@@ -10392,6 +10398,8 @@ namespace StepCleaner.Tests
             AssertContains(shapeExporter, "selectedComponent == null ? null : new[] { selectedComponent.ExportName }", "selected pad export should request only the active footprint's persisted contour stream", failures);
             AssertContains(shapeExporter, "candidate.PadIndex == padIndex", "custom pad contours must match Altium's stable pad index before geometric fallback", failures);
             AssertContains(shapeExporter, "if (!matchedByIndex && bestDistance > Math.Max(0.05", "geometric custom-pad matching must reject contours belonging to another nearby pad", failures);
+            AssertContains(shapeExporter, "TransformPersistedStoredContours(candidate)", "PCB pad export must evaluate source-library contours without applying board placement rotation", failures);
+            AssertContains(shapeExporter, "point.X * millimetersPerCoord", "source-library custom pad contours must retain footprint-local coordinates", failures);
             AssertContains(padContourReader, "ReadNamedChildDataStreams(libraryPath, requestedNames)", "selected pad export should directly read named PcbLib storage streams", failures);
             AssertContains(padContourReader, "if (requestedNames.All(parsedNames.Contains))", "targeted PcbLib reads should retain a full-library fallback when direct storage lookup fails", failures);
             AssertContains(padContourReader, "result[footprintName] = contours;", "persisted pad reads should record footprints without custom contours to avoid redundant region scans", failures);
