@@ -53,12 +53,13 @@ namespace EasyEDA_Loader.EasyEDAShapeSvg
 
         protected override bool InternalRunPropertiesForm()
         {
-            using (var form = new EasyEDAShapeSvgPropertiesForm(settings.IncludePads))
+            using (var form = new EasyEDAShapeSvgPropertiesForm(settings.IncludePads, settings.CheckPadGeometry))
             {
                 if (form.ShowDialog() != DialogResult.OK)
                     return false;
 
                 settings.IncludePads = form.IncludePads;
+                settings.CheckPadGeometry = form.CheckPadGeometry;
                 return true;
             }
         }
@@ -107,7 +108,8 @@ namespace EasyEDA_Loader.EasyEDAShapeSvg
                             {
                                 progressForm.Pump();
                                 return progressForm.IsCancellationRequested;
-                            });
+                            },
+                            settings.CheckPadGeometry);
                     }
                     finally
                     {
@@ -127,6 +129,8 @@ namespace EasyEDA_Loader.EasyEDAShapeSvg
 
                 if (exportResult.Errors.Count > 0)
                     HandleOutputerError("EasyEDA Shape SVG export completed with errors: " + string.Join(" | ", exportResult.Errors));
+                if (exportResult.Warnings.Count > 0)
+                    ShowExportWarnings(exportResult.Warnings, exportResult.DiagnosticsPath);
 
                 return exportResult.FileCount > 0;
             }
@@ -146,11 +150,30 @@ namespace EasyEDA_Loader.EasyEDAShapeSvg
             public ShapeExportResultAdapter(PcbShapeSvgExportResult result)
             {
                 FileCount = result.FileCount;
+                DiagnosticsPath = result.DiagnosticsPath;
                 Errors = result.Errors;
+                Warnings = result.Warnings;
             }
 
             public int FileCount { get; }
+            public string DiagnosticsPath { get; }
             public IReadOnlyList<string> Errors { get; }
+            public IReadOnlyList<string> Warnings { get; }
+        }
+
+        private static void ShowExportWarnings(IReadOnlyList<string> warnings, string diagnosticsPath)
+        {
+            string report = string.Join(Environment.NewLine, warnings);
+            string summary = "SVG export completed with warnings. Select text or copy the complete report.";
+            if (!string.IsNullOrWhiteSpace(diagnosticsPath))
+                summary += Environment.NewLine + "Debug file: " + diagnosticsPath;
+            using (var dialog = new ShapeExportReportForm(
+                "SVG Shapes Warnings",
+                summary,
+                report))
+            {
+                dialog.ShowDialog();
+            }
         }
 
         private string ResolveOutputDirectory()

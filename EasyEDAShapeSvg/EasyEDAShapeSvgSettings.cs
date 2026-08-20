@@ -6,12 +6,15 @@ namespace EasyEDA_Loader.EasyEDAShapeSvg
     public sealed class EasyEDAShapeSvgSettings : IOutputSettings
     {
         private const string IncludePadsKey = "IncludePads";
+        private const string CheckPadGeometryKey = "CheckPadGeometry";
 
         public bool IncludePads { get; set; } = true;
+        public bool CheckPadGeometry { get; set; } = true;
 
         public string ExportToParameters()
         {
-            return IncludePadsKey + "=" + (IncludePads ? "True" : "False");
+            return IncludePadsKey + "=" + (IncludePads ? "True" : "False")
+                + "|" + CheckPadGeometryKey + "=" + (CheckPadGeometry ? "True" : "False");
         }
 
         public void ImportFromParameters(string parameters)
@@ -33,12 +36,18 @@ namespace EasyEDA_Loader.EasyEDAShapeSvg
                 {
                     IncludePads = includePads;
                 }
+                else if (string.Equals(key, CheckPadGeometryKey, StringComparison.OrdinalIgnoreCase)
+                    && bool.TryParse(value, out bool checkPadGeometry))
+                {
+                    CheckPadGeometry = checkPadGeometry;
+                }
             }
         }
 
         public void ResetToDefault()
         {
             IncludePads = true;
+            CheckPadGeometry = true;
         }
     }
 }

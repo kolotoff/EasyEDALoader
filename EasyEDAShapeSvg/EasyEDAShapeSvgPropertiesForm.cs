@@ -6,10 +6,12 @@ namespace EasyEDA_Loader.EasyEDAShapeSvg
     internal sealed class EasyEDAShapeSvgPropertiesForm : Form
     {
         private readonly CheckBox includePadsCheckBox;
+        private readonly CheckBox checkPadGeometryCheckBox;
 
         public bool IncludePads => includePadsCheckBox.Checked;
+        public bool CheckPadGeometry => checkPadGeometryCheckBox.Checked;
 
-        public EasyEDAShapeSvgPropertiesForm(bool includePads)
+        public EasyEDAShapeSvgPropertiesForm(bool includePads, bool checkPadGeometry)
         {
             Text = "EasyEDA Shape SVG Export";
             StartPosition = FormStartPosition.CenterScreen;
@@ -17,7 +19,7 @@ namespace EasyEDA_Loader.EasyEDAShapeSvg
             MaximizeBox = false;
             MinimizeBox = false;
             ShowInTaskbar = false;
-            ClientSize = new Size(460, 142);
+            ClientSize = new Size(460, 174);
 
             var targetFolderLabel = new Label
             {
@@ -34,10 +36,23 @@ namespace EasyEDA_Loader.EasyEDAShapeSvg
                 Text = "Export component pads"
             };
 
+            checkPadGeometryCheckBox = new CheckBox
+            {
+                AutoSize = true,
+                Checked = checkPadGeometry,
+                Enabled = includePads,
+                Location = new Point(16, 82),
+                Text = "Check pad geometry"
+            };
+            includePadsCheckBox.CheckedChanged += (_, _) =>
+            {
+                checkPadGeometryCheckBox.Enabled = includePadsCheckBox.Checked;
+            };
+
             var okButton = new Button
             {
                 DialogResult = DialogResult.OK,
-                Location = new Point(300, 96),
+                Location = new Point(300, 128),
                 Size = new Size(68, 28),
                 Text = "OK"
             };
@@ -45,7 +60,7 @@ namespace EasyEDA_Loader.EasyEDAShapeSvg
             var cancelButton = new Button
             {
                 DialogResult = DialogResult.Cancel,
-                Location = new Point(376, 96),
+                Location = new Point(376, 128),
                 Size = new Size(68, 28),
                 Text = "Cancel"
             };
@@ -54,6 +69,7 @@ namespace EasyEDA_Loader.EasyEDAShapeSvg
             CancelButton = cancelButton;
             Controls.Add(targetFolderLabel);
             Controls.Add(includePadsCheckBox);
+            Controls.Add(checkPadGeometryCheckBox);
             Controls.Add(okButton);
             Controls.Add(cancelButton);
         }

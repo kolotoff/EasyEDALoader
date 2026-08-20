@@ -13,6 +13,7 @@ namespace EasyEDA_Loader
             FileCount = result.FileCount;
             PrimitiveCount = result.PrimitiveCount;
             OutputFiles = result.OutputFiles.ToArray();
+            DiagnosticsPath = result.DiagnosticsPath;
             Warnings = result.Warnings.ToArray();
             Errors = result.Errors.ToArray();
         }
@@ -21,6 +22,7 @@ namespace EasyEDA_Loader
         public int FileCount { get; }
         public int PrimitiveCount { get; }
         public IReadOnlyList<string> OutputFiles { get; }
+        public string DiagnosticsPath { get; }
         public IReadOnlyList<string> Warnings { get; }
         public IReadOnlyList<string> Errors { get; }
     }
@@ -32,7 +34,8 @@ namespace EasyEDA_Loader
             string folder,
             bool includePads,
             Action<ShapeExportProgress> progress = null,
-            Func<bool> isCancellationRequested = null)
+            Func<bool> isCancellationRequested = null,
+            bool checkPadGeometry = true)
         {
             if (board == null)
                 throw new ArgumentNullException(nameof(board));
@@ -43,7 +46,8 @@ namespace EasyEDA_Loader
                     folder,
                     includePads,
                     progress,
-                    isCancellationRequested));
+                    isCancellationRequested,
+                    checkPadGeometry));
         }
 
         public static IReadOnlyList<string> PredictBoardOutputFiles(

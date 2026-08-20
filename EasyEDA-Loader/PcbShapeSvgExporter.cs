@@ -91,6 +91,8 @@ namespace EasyEDA_Loader
         private const int MaxContourPoints = 10000;
         private const string PadFillColor = "#2F80ED";
         private const string PadFillOpacity = "0.45";
+        private const double PadComparisonPositionToleranceMm = 0.001;
+        private const double PadComparisonRotationToleranceDegrees = 0.01;
 
         private sealed class ExportComponentItem
         {
@@ -108,6 +110,21 @@ namespace EasyEDA_Loader
         {
             public List<SvgPrimitive> ShapePrimitives { get; } = new List<SvgPrimitive>();
             public List<SvgPrimitive> PadPrimitives { get; } = new List<SvgPrimitive>();
+        }
+
+        private sealed class BoardFootprintInstance
+        {
+            public string ComponentName { get; set; }
+            public string PadSignature { get; set; }
+            public IReadOnlyList<BoardPadGeometry> Pads { get; set; }
+            public string DebugDetail { get; set; }
+        }
+
+        private sealed class BoardPadGeometry
+        {
+            public double X { get; set; }
+            public double Y { get; set; }
+            public double Rotation { get; set; }
         }
 
         private sealed class LinkedPadRegion
@@ -187,7 +204,8 @@ namespace EasyEDA_Loader
             string folder,
             bool includePads,
             Action<ShapeExportProgress> progress = null,
-            Func<bool> isCancellationRequested = null)
+            Func<bool> isCancellationRequested = null,
+            bool checkPadGeometry = true)
         {
             if (board == null)
                 throw new ArgumentNullException(nameof(board));
@@ -203,7 +221,8 @@ namespace EasyEDA_Loader
                 progress,
                 diagnosticsEnabled: false,
                 isCancellationRequested: isCancellationRequested,
-                includePads: includePads);
+                includePads: includePads,
+                checkPadGeometry: checkPadGeometry);
         }
 
         internal static IReadOnlyList<string> PredictBoardOutputFiles(IPCB_Board board, string folder)
@@ -277,7 +296,8 @@ namespace EasyEDA_Loader
             Action<ShapeExportProgress> progress,
             bool diagnosticsEnabled,
             Func<bool> isCancellationRequested,
-            bool includePads)
+            bool includePads,
+            bool checkPadGeometry = true)
         {
             ThrowIfCancellationRequested(isCancellationRequested);
             progress?.Invoke(new ShapeExportProgress
@@ -290,15 +310,28 @@ namespace EasyEDA_Loader
                 ? GetSelectedBoardComponents(board)
                 : EnumerateBoardComponents(board);
 
-            if (scope == ShapeExportScope.AllComponents)
-                components = UniqueBoardComponentsByFootprint(components);
-
-            List<object> componentList = components.Where(component => component != null).ToList();
+            List<object> allComponents = components.Where(component => component != null).ToList();
+            List<object> componentList = scope == ShapeExportScope.AllComponents
+                ? UniqueBoardComponentsByFootprint(allComponents).Where(component => component != null).ToList()
+                : allComponents;
             IReadOnlyCollection<int> flippedMechanical2LayerNumbers = ResolveFlippedMechanical2LayerNumbers(board);
+            string padComparisonDiagnosticsPath = null;
+            List<string> consistencyWarnings = scope == ShapeExportScope.AllComponents && includePads && checkPadGeometry
+                ? ValidateBoardFootprintPads(
+                    allComponents,
+                    componentList,
+                    folder,
+                    flippedMechanical2LayerNumbers,
+                    progress,
+                    diagnosticsEnabled,
+                    isCancellationRequested,
+                    out padComparisonDiagnosticsPath)
+                : new List<string>();
+
             IReadOnlyDictionary<string, List<PersistedPadContour>> persistedPadContours = includePads
                 ? ReadBoardPersistedPadContours(board, componentList, progress, isCancellationRequested)
                 : null;
-            return ExportComponents(
+            ShapeExportResult result = ExportComponents(
                 componentList,
                 folder,
                 "Component",
@@ -309,6 +342,472 @@ namespace EasyEDA_Loader
                 includePads: includePads,
                 persistedPadContours: persistedPadContours,
                 flippedMechanical2LayerNumbers: flippedMechanical2LayerNumbers);
+            result.Warnings.AddRange(consistencyWarnings);
+            if (!string.IsNullOrWhiteSpace(padComparisonDiagnosticsPath))
+                result.DiagnosticsPath = padComparisonDiagnosticsPath;
+            return result;
+        }
+
+        private static List<string> ValidateBoardFootprintPads(
+            IReadOnlyList<object> components,
+            IReadOnlyList<object> exportComponents,
+            string folder,
+            IReadOnlyCollection<int> flippedMechanical2LayerNumbers,
+            Action<ShapeExportProgress> progress,
+            bool diagnosticsEnabled,
+            Func<bool> isCancellationRequested,
+            out string diagnosticsPath)
+        {
+            diagnosticsPath = null;
+            var warnings = new List<string>();
+            var groups = new Dictionary<string, List<BoardFootprintInstance>>(StringComparer.OrdinalIgnoreCase);
+            var exportableFootprints = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+            int exportComponentCount = exportComponents?.Count ?? 0;
+            int exportComponentIndex = 0;
+            foreach (object exportComponent in exportComponents ?? Array.Empty<object>())
+            {
+                ThrowIfCancellationRequested(isCancellationRequested);
+                exportComponentIndex++;
+                if (exportComponentIndex == 1 || exportComponentIndex % 10 == 0)
+                {
+                    progress?.Invoke(new ShapeExportProgress
+                    {
+                        Message = "Checking footprint shapes...",
+                        Detail = exportComponentIndex.ToString(CultureInfo.InvariantCulture)
+                            + " of " + exportComponentCount.ToString(CultureInfo.InvariantCulture),
+                        Percent = exportComponentCount == 0 ? 100.0 : (exportComponentIndex - 1) * 100.0 / exportComponentCount
+                    });
+                }
+
+                string footprintName = ReadFootprintName(exportComponent);
+                if (!string.IsNullOrWhiteSpace(footprintName))
+                {
+                    exportableFootprints[footprintName] = HasExportableMechanical2Shape(
+                        exportComponent,
+                        flippedMechanical2LayerNumbers,
+                        isCancellationRequested);
+                }
+            }
+
+            int componentCount = components?.Count ?? 0;
+            progress?.Invoke(new ShapeExportProgress
+            {
+                Message = "Checking footprint pads...",
+                Detail = componentCount.ToString(CultureInfo.InvariantCulture) + " component(s)",
+                Percent = componentCount == 0 ? 100.0 : 0.0
+            });
+            int componentIndex = 0;
+            foreach (object component in components ?? Array.Empty<object>())
+            {
+                ThrowIfCancellationRequested(isCancellationRequested);
+                componentIndex++;
+                if (componentIndex == 1 || componentIndex % 10 == 0)
+                {
+                    progress?.Invoke(new ShapeExportProgress
+                    {
+                        Message = "Checking footprint pads...",
+                        Detail = componentIndex.ToString(CultureInfo.InvariantCulture)
+                            + " of " + componentCount.ToString(CultureInfo.InvariantCulture),
+                        Percent = componentCount == 0 ? 100.0 : (componentIndex - 1) * 100.0 / componentCount
+                    });
+                }
+
+                string footprintName = ReadFootprintName(component);
+                if (string.IsNullOrWhiteSpace(footprintName))
+                    continue;
+
+                // Board export writes one representative SVG per footprint name.
+                // Only compare footprint names whose actual export representative
+                // produces a shape; pad geometry is still read from every instance.
+                if (!exportableFootprints.TryGetValue(footprintName, out bool exportable) || !exportable)
+                    continue;
+
+                if (!groups.TryGetValue(footprintName, out List<BoardFootprintInstance> instances))
+                {
+                    instances = new List<BoardFootprintInstance>();
+                    groups[footprintName] = instances;
+                }
+
+                string signature = BuildBoardPadSignature(
+                    component,
+                    isCancellationRequested,
+                    diagnosticsEnabled,
+                    out IReadOnlyList<BoardPadGeometry> pads,
+                    out string debugDetail);
+                instances.Add(new BoardFootprintInstance
+                {
+                    ComponentName = FirstNonEmpty(ReadDesignator(UnwrapExportComponent(component)), ObjectIdentity(component)),
+                    PadSignature = signature,
+                    Pads = pads,
+                    DebugDetail = debugDetail
+                });
+            }
+
+            progress?.Invoke(new ShapeExportProgress
+            {
+                Message = "Checking footprint pads...",
+                Detail = componentCount.ToString(CultureInfo.InvariantCulture)
+                    + " of " + componentCount.ToString(CultureInfo.InvariantCulture),
+                Percent = 100.0
+            });
+
+            int duplicateGroupCount = groups.Count(pair => pair.Value.Count > 1);
+            progress?.Invoke(new ShapeExportProgress
+            {
+                Message = "Checking duplicate footprint pads...",
+                Detail = duplicateGroupCount.ToString(CultureInfo.InvariantCulture) + " footprint group(s)"
+            });
+
+            StringBuilder diagnostics = diagnosticsEnabled ? new StringBuilder() : null;
+            if (diagnostics != null)
+            {
+                diagnostics.AppendLine("SVG Shapes pad comparison debug");
+                diagnostics.AppendLine("Timestamp: " + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture));
+                diagnostics.AppendLine("Coordinates are component-local; comparison tolerance is 0.001 mm.");
+                diagnostics.AppendLine("Pad rotations are modulo 180 degrees; comparison tolerance is 0.01 degrees.");
+                diagnostics.AppendLine("The canonical signature accepts reflected and non-reflected forms for bottom-layer normalization.");
+                diagnostics.AppendLine();
+            }
+
+            foreach (KeyValuePair<string, List<BoardFootprintInstance>> group in groups.OrderBy(pair => pair.Key, StringComparer.OrdinalIgnoreCase))
+            {
+                ThrowIfCancellationRequested(isCancellationRequested);
+                if (group.Value.Count < 2)
+                    continue;
+
+                var variantGroups = new List<List<BoardFootprintInstance>>();
+                foreach (BoardFootprintInstance instance in group.Value)
+                {
+                    List<BoardFootprintInstance> matchingVariant = variantGroups
+                        .FirstOrDefault(variant => PadGeometriesMatch(variant[0], instance));
+                    if (matchingVariant == null)
+                    {
+                        matchingVariant = new List<BoardFootprintInstance>();
+                        variantGroups.Add(matchingVariant);
+                    }
+                    matchingVariant.Add(instance);
+                }
+                variantGroups = variantGroups
+                    .OrderByDescending(variant => variant.Count)
+                    .ThenBy(variant => variant[0].PadSignature, StringComparer.Ordinal)
+                    .ToList();
+                if (variantGroups.Count == 1)
+                    continue;
+
+                if (diagnostics != null)
+                {
+                    diagnostics.AppendLine("Footprint: " + group.Key);
+                    diagnostics.AppendLine("Components: " + group.Value.Count.ToString(CultureInfo.InvariantCulture));
+                    diagnostics.AppendLine("Variants: " + variantGroups.Count.ToString(CultureInfo.InvariantCulture));
+                    for (int variantIndex = 0; variantIndex < variantGroups.Count; variantIndex++)
+                    {
+                        List<BoardFootprintInstance> variant = variantGroups[variantIndex];
+                        BoardFootprintInstance representative = variant[0];
+                        diagnostics.AppendLine("  Variant " + (variantIndex + 1).ToString(CultureInfo.InvariantCulture)
+                            + ": count=" + variant.Count.ToString(CultureInfo.InvariantCulture)
+                            + ", representative=" + representative.ComponentName);
+                        diagnostics.AppendLine("    members: " + string.Join(", ", variant.Select(instance => instance.ComponentName)));
+                        diagnostics.AppendLine("    signature: " + representative.PadSignature);
+                        diagnostics.Append(representative.DebugDetail);
+                    }
+                    diagnostics.AppendLine();
+                }
+
+                // Use the most common geometry as the reference. The first board
+                // component can itself be the exceptional instance, which made a
+                // single bad footprint produce a warning listing every good one.
+                BoardFootprintInstance reference = variantGroups[0][0];
+                string componentNames = string.Join(", ", group.Value
+                    .Where(instance => !PadGeometriesMatch(reference, instance))
+                    .Select(instance => instance.ComponentName)
+                    .Where(name => !string.IsNullOrWhiteSpace(name))
+                    .Distinct(StringComparer.OrdinalIgnoreCase));
+                warnings.Add(
+                    "Footprint '" + group.Key + "' has non-matching pad X/Y positions or rotations in components: "
+                    + componentNames
+                    + " (reference: " + reference.ComponentName + "). SVG export uses one representative footprint.");
+            }
+
+            if (diagnostics != null && warnings.Count > 0)
+            {
+                diagnosticsPath = Path.Combine(folder, "SVG-Shapes-Pad-Comparison-Debug.txt");
+                try
+                {
+                    File.WriteAllText(diagnosticsPath, diagnostics.ToString(), Utf8NoBom);
+                }
+                catch (Exception ex)
+                {
+                    EasyEDALoaderModule.Trace("SVG pad comparison debug write failed: " + ex.Message);
+                    diagnosticsPath = null;
+                }
+            }
+
+            return warnings;
+        }
+
+        private static bool HasExportableMechanical2Shape(
+            object component,
+            IReadOnlyCollection<int> flippedMechanical2LayerNumbers,
+            Func<bool> isCancellationRequested)
+        {
+            int originX = GetInt(component, "GetState_XLocation");
+            int originY = GetInt(component, "GetState_YLocation");
+            double rotation = IsBoardComponent(component) ? GetDouble(component, "GetState_Rotation") : 0.0;
+            List<object> shapeObjects = EnumerateComponentShapeObjects(component).ToList();
+            bool mirrored = IsFlippedBoardComponent(component)
+                || (IsBoardComponent(component)
+                    && flippedMechanical2LayerNumbers != null
+                    && shapeObjects.Any(primitive => IsAlternateMechanicalLayerPrimitive(primitive, flippedMechanical2LayerNumbers)));
+            IReadOnlyCollection<int> alternateMechanical2LayerNumbers = mirrored
+                ? flippedMechanical2LayerNumbers
+                : null;
+            HashSet<string> excludedTextValues = BuildComponentTextExclusionSet(component);
+            HashSet<string> repeatedBoardTextValues = IsBoardComponent(component)
+                ? BuildRepeatedBoardTextExclusionSet(shapeObjects, alternateMechanical2LayerNumbers)
+                : new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (object primitive in shapeObjects)
+            {
+                ThrowIfCancellationRequested(isCancellationRequested);
+                int objectId = GetObjectId(primitive);
+                if (IsExcludedTextPrimitive(primitive, objectId, excludedTextValues, repeatedBoardTextValues))
+                    continue;
+                if (!IsMechanical2Primitive(primitive, objectId, alternateMechanical2LayerNumbers))
+                    continue;
+
+                string textValue = ReadExportTextString(primitive, objectId, excludedTextValues);
+                SvgPrimitive svgPrimitive = !string.IsNullOrWhiteSpace(textValue)
+                    ? TryCreateTextPrimitive(primitive, textValue, originX, originY, rotation, mirrored)
+                    : TryCreateSvgPrimitive(primitive, objectId, originX, originY, rotation, mirrored);
+                if (svgPrimitive != null)
+                    return true;
+            }
+
+            return false;
+        }
+
+        private static string BuildBoardPadSignature(
+            object component,
+            Func<bool> isCancellationRequested,
+            bool diagnosticsEnabled,
+            out IReadOnlyList<BoardPadGeometry> padGeometry,
+            out string debugDetail)
+        {
+            int originX = GetInt(component, "GetState_XLocation");
+            int originY = GetInt(component, "GetState_YLocation");
+            double componentRotation = GetDouble(component, "GetState_Rotation");
+            List<string> normalPads = diagnosticsEnabled ? new List<string>() : null;
+            List<string> reflectedPads = diagnosticsEnabled ? new List<string>() : null;
+            var pads = new List<BoardPadGeometry>();
+            StringBuilder debug = diagnosticsEnabled ? new StringBuilder() : null;
+            if (debug != null)
+            {
+                bool detectedBottom = IsFlippedBoardComponent(component);
+                bool flippedState = GetBool(component, "GetState_FlippedOnLayer");
+                string rawLayer = TryGetRawLayerNumber(component, out int rawLayerNumber)
+                    ? rawLayerNumber.ToString(CultureInfo.InvariantCulture)
+                    : "unknown";
+                object unwrappedComponent = UnwrapExportComponent(component);
+                string sourceLibrary = unwrappedComponent is IPCB_Component pcbComponent
+                    ? SafeCall(() => pcbComponent.GetState_SourceFootprintLibrary())
+                    : "";
+                debug.AppendLine("    component: " + FirstNonEmpty(ReadDesignator(UnwrapExportComponent(component)), ObjectIdentity(component)));
+                debug.AppendLine("    detectedBottom: " + detectedBottom.ToString(CultureInfo.InvariantCulture)
+                    + ", flippedState=" + flippedState.ToString(CultureInfo.InvariantCulture)
+                    + ", rawLayer=" + rawLayer
+                    + ", componentRotation=" + Format(componentRotation)
+                    + ", originRaw=" + originX.ToString(CultureInfo.InvariantCulture)
+                    + "," + originY.ToString(CultureInfo.InvariantCulture));
+                debug.AppendLine("    sourceLibrary: " + sourceLibrary);
+            }
+
+            foreach (object primitive in EnumerateComponentPadObjects(component))
+            {
+                ThrowIfCancellationRequested(isCancellationRequested);
+                if (!(primitive is IPCB_Pad pad))
+                    continue;
+
+                TransformPoint(
+                    pad.GetState_XLocation(),
+                    pad.GetState_YLocation(),
+                    originX,
+                    originY,
+                    componentRotation,
+                    mirrored: false,
+                    out double localX,
+                    out double localY);
+                double localRotation = pad.GetState_Rotation() - componentRotation;
+                pads.Add(new BoardPadGeometry
+                {
+                    X = localX,
+                    Y = localY,
+                    Rotation = NormalizeSymmetricPadAngle(localRotation)
+                });
+
+                // Pad designators and primitive indexes are not geometry. They can
+                // be swapped on otherwise identical capacitors/resistors, so sort
+                // an unordered set of local pad positions and rotations instead.
+                if (normalPads != null)
+                {
+                    normalPads.Add(
+                        "x=" + FormatSignatureValue(localX)
+                        + ":y=" + FormatSignatureValue(localY)
+                        + ":r=" + FormatSymmetricPadAngle(localRotation));
+                    reflectedPads.Add(
+                        "x=" + FormatSignatureValue(localX)
+                        + ":y=" + FormatSignatureValue(-localY)
+                        + ":r=" + FormatSymmetricPadAngle(-localRotation));
+                }
+
+                if (debug != null)
+                {
+                    debug.AppendLine("      pad name=" + SafeCall(() => pad.GetState_Name())
+                        + ", index=" + SafeIntCall(() => ((IPCB_Primitive)pad).GetState_Index()).ToString(CultureInfo.InvariantCulture)
+                        + ", raw=" + pad.GetState_XLocation().ToString(CultureInfo.InvariantCulture)
+                        + "," + pad.GetState_YLocation().ToString(CultureInfo.InvariantCulture)
+                        + ", rawRotation=" + Format(pad.GetState_Rotation())
+                        + ", local=" + FormatSignatureValue(localX)
+                        + "," + FormatSignatureValue(localY)
+                        + ", localRotation=" + FormatSymmetricPadAngle(localRotation)
+                        + ", reflected=" + FormatSignatureValue(localX)
+                        + "," + FormatSignatureValue(-localY)
+                        + ", reflectedRotation=" + FormatSymmetricPadAngle(-localRotation));
+                }
+            }
+
+            // A single pad has no placement-invariant geometry to compare. This
+            // avoids false positives for test points and similar markers.
+            if (pads.Count < 2)
+            {
+                padGeometry = pads;
+                debugDetail = debug?.ToString() ?? "";
+                return "count:" + pads.Count.ToString(CultureInfo.InvariantCulture);
+            }
+
+            // Geometry matching uses the raw numeric pad list. Canonical strings
+            // are only useful in the optional debug report, so avoid formatting
+            // and allocating them during normal exports.
+            if (normalPads == null)
+            {
+                padGeometry = pads;
+                debugDetail = "";
+                return "count:" + pads.Count.ToString(CultureInfo.InvariantCulture);
+            }
+
+            normalPads.Sort(StringComparer.Ordinal);
+            reflectedPads.Sort(StringComparer.Ordinal);
+            string normalSignature = string.Join(";", normalPads);
+            string reflectedSignature = string.Join(";", reflectedPads);
+            bool selectedNormal = string.CompareOrdinal(normalSignature, reflectedSignature) <= 0;
+            string canonicalSignature = selectedNormal
+                ? normalSignature
+                : reflectedSignature;
+            if (debug != null)
+            {
+                debug.AppendLine("      normalSignature: " + normalSignature);
+                debug.AppendLine("      reflectedSignature: " + reflectedSignature);
+                debug.AppendLine("      selected: " + (selectedNormal ? "normal" : "reflected"));
+            }
+            padGeometry = pads;
+            debugDetail = debug?.ToString() ?? "";
+            return canonicalSignature;
+        }
+
+        private static bool PadGeometriesMatch(BoardFootprintInstance first, BoardFootprintInstance second)
+        {
+            IReadOnlyList<BoardPadGeometry> firstPads = first?.Pads ?? Array.Empty<BoardPadGeometry>();
+            IReadOnlyList<BoardPadGeometry> secondPads = second?.Pads ?? Array.Empty<BoardPadGeometry>();
+            if (firstPads.Count != secondPads.Count)
+                return false;
+            if (firstPads.Count < 2)
+                return true;
+
+            return PadGeometriesMatch(firstPads, secondPads, reflectSecond: false)
+                || PadGeometriesMatch(firstPads, secondPads, reflectSecond: true);
+        }
+
+        private static bool PadGeometriesMatch(
+            IReadOnlyList<BoardPadGeometry> firstPads,
+            IReadOnlyList<BoardPadGeometry> secondPads,
+            bool reflectSecond)
+        {
+            var matched = new bool[secondPads.Count];
+            foreach (BoardPadGeometry firstPad in firstPads)
+            {
+                int bestIndex = -1;
+                double bestDistance = double.MaxValue;
+                for (int index = 0; index < secondPads.Count; index++)
+                {
+                    if (matched[index])
+                        continue;
+
+                    BoardPadGeometry secondPad = secondPads[index];
+                    double secondY = reflectSecond ? -secondPad.Y : secondPad.Y;
+                    double secondRotation = reflectSecond ? -secondPad.Rotation : secondPad.Rotation;
+                    double dx = firstPad.X - secondPad.X;
+                    double dy = firstPad.Y - secondY;
+                    double rotationDifference = SymmetricPadAngleDifference(firstPad.Rotation, secondRotation);
+                    if (Math.Abs(dx) > PadComparisonPositionToleranceMm
+                        || Math.Abs(dy) > PadComparisonPositionToleranceMm
+                        || rotationDifference > PadComparisonRotationToleranceDegrees)
+                    {
+                        continue;
+                    }
+
+                    double distance = (dx * dx) + (dy * dy)
+                        + (rotationDifference * rotationDifference);
+                    if (distance < bestDistance)
+                    {
+                        bestIndex = index;
+                        bestDistance = distance;
+                    }
+                }
+
+                if (bestIndex < 0)
+                    return false;
+                matched[bestIndex] = true;
+            }
+
+            return true;
+        }
+
+        private static double SymmetricPadAngleDifference(double first, double second)
+        {
+            double difference = Math.Abs(NormalizeSymmetricPadAngle(first - second));
+            return difference > 90.0 ? 180.0 - difference : difference;
+        }
+
+        private static string FormatSignatureValue(double value)
+        {
+            // Board instances can differ by a few internal coordinate units after
+            // Altium applies rotation. A 0.01 mm comparison resolution removes
+            // that placement noise while retaining meaningful pad movement.
+            double rounded = Math.Round(value, 2);
+            if (Math.Abs(rounded) < 0.005)
+                rounded = 0.0;
+            return rounded.ToString("0.##", CultureInfo.InvariantCulture);
+        }
+
+        private static string FormatSymmetricPadAngle(double value)
+        {
+            // Standard PCB pad contours are unchanged by a 180-degree rotation.
+            // Treat 0/180 and 90/270 as equivalent to avoid passive-component
+            // warnings that do not represent a different exported pad shape.
+            double normalized = NormalizeSymmetricPadAngle(value);
+            double rounded = Math.Round(normalized, 2);
+            if (Math.Abs(rounded) < 0.005)
+                rounded = 0.0;
+            return rounded.ToString("0.##", CultureInfo.InvariantCulture);
+        }
+
+        private static double NormalizeSymmetricPadAngle(double value)
+        {
+            double normalized = value % 180.0;
+            if (normalized >= 90.0)
+                normalized -= 180.0;
+            if (normalized < -90.0)
+                normalized += 180.0;
+            return normalized;
         }
 
         private static IReadOnlyDictionary<string, List<PersistedPadContour>> ReadBoardPersistedPadContours(
@@ -427,7 +926,6 @@ namespace EasyEDA_Loader
                         {
                             string identity = ComponentDebugIdentity(exportComponent);
                             result.MissingFootprintNames.Add(identity);
-                            result.Warnings.Add(identity + ": no readable PCB library footprint name found.");
                             continue;
                         }
 
@@ -458,7 +956,6 @@ namespace EasyEDA_Loader
                         {
                             string footprintName = FirstNonEmpty(ReadFootprintName(exportComponent), componentName);
                             result.MissingMechanical2Footprints.Add(footprintName);
-                            result.Warnings.Add(componentName + ": no Mechanical 2 shape primitives found.");
                             progress?.Invoke(new ShapeExportProgress
                             {
                                 Message = "Skipped " + componentName,

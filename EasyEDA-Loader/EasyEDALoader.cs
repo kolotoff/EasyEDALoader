@@ -654,8 +654,25 @@ namespace EasyEDA_Loader
                 Trace("ExportShape warnings: " + string.Join(" | ", result.Warnings));
             if (result.Errors.Count > 0)
                 ShowShapeExportErrors(result.Errors);
+            if (result.Warnings.Count > 0)
+                ShowShapeExportWarnings(result.Warnings, result.DiagnosticsPath);
             if (diagnosticsEnabled)
                 Trace("ExportShape completed. " + message.Replace(Environment.NewLine, " | "));
+        }
+
+        private static void ShowShapeExportWarnings(IReadOnlyList<string> warnings, string diagnosticsPath)
+        {
+            string report = string.Join(Environment.NewLine, warnings);
+            string summary = "SVG export completed with warnings. Select text or copy the complete report.";
+            if (!string.IsNullOrWhiteSpace(diagnosticsPath))
+                summary += Environment.NewLine + "Debug file: " + diagnosticsPath;
+            using (var dialog = new ShapeExportReportForm(
+                "EasyEDA SVG Export Warnings",
+                summary,
+                report))
+            {
+                dialog.ShowDialog();
+            }
         }
 
         private void ExportSelectedShapeLibraries(IReadOnlyList<string> libraryFiles, string targetFolder)
