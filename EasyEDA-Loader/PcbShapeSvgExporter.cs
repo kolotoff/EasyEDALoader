@@ -92,6 +92,8 @@ namespace EasyEDA_Loader
         private const int MaxContourPoints = 10000;
         private const string PadFillColor = "#2F80ED";
         private const string PadFillOpacity = "0.45";
+        private const string BoardOutlineColor = "#000000";
+        private const double BoardOutlineStrokeWidthMm = 0.1;
         private const double PadComparisonPositionToleranceMm = 0.001;
         private const double PadComparisonRotationToleranceDegrees = 0.01;
 
@@ -3300,7 +3302,7 @@ namespace EasyEDA_Loader
                 writer.WriteEndDocument();
             }
 
-            return sb.ToString();
+            return AddSvgCoordinateUnits(sb.ToString());
         }
 
         private static string BuildBoardAssemblySvg(
@@ -3332,6 +3334,7 @@ namespace EasyEDA_Loader
                 writer.WriteStartElement("svg", "http://www.w3.org/2000/svg");
                 writer.WriteAttributeString("version", "1.2");
                 writer.WriteAttributeString("baseProfile", "tiny");
+                writer.WriteAttributeString("data-coordinate-units", "mm");
                 writer.WriteAttributeString("width", Format(width) + "mm");
                 writer.WriteAttributeString("height", Format(height) + "mm");
                 writer.WriteAttributeString("viewBox", Format(left) + " " + Format(-top) + " " + Format(width) + " " + Format(height));
@@ -3346,10 +3349,12 @@ namespace EasyEDA_Loader
 
                 writer.WriteStartElement("path");
                 writer.WriteAttributeString("id", "BoardOutline");
+                writer.WriteAttributeString("data-layer", "board-outline");
+                writer.WriteAttributeString("data-stroke-width-mm", Format(BoardOutlineStrokeWidthMm));
                 writer.WriteAttributeString("d", BuildBoardContourPath(boardContour, boardBounds));
                 writer.WriteAttributeString("fill", "none");
-                writer.WriteAttributeString("stroke", "#555555");
-                writer.WriteAttributeString("stroke-width", "0.1");
+                writer.WriteAttributeString("stroke", BoardOutlineColor);
+                writer.WriteAttributeString("stroke-width", Format(BoardOutlineStrokeWidthMm));
                 writer.WriteAttributeString("stroke-linecap", "round");
                 writer.WriteAttributeString("stroke-linejoin", "round");
                 writer.WriteEndElement();
@@ -3406,7 +3411,16 @@ namespace EasyEDA_Loader
                 writer.WriteEndElement();
                 writer.WriteEndDocument();
             }
-            return sb.ToString();
+            return AddSvgCoordinateUnits(sb.ToString());
+        }
+
+        private static string AddSvgCoordinateUnits(string svg)
+        {
+            if (string.IsNullOrWhiteSpace(svg)
+                || svg.IndexOf("data-coordinate-units=", StringComparison.OrdinalIgnoreCase) >= 0)
+                return svg;
+
+            return svg.Replace("<svg ", "<svg data-coordinate-units=\"mm\" ");
         }
 
         private static string BuildBoardContourPath(EdgeRailContour contour, EdgeRailBounds bounds)

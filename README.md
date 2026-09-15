@@ -209,6 +209,13 @@ the footprint pad to its schematic pin. Panelized boards can contain repeated
 component designators; board assembly exports keep every SVG `id` unique and add
 `data-instance` (for example `R1-2`) while preserving `data-component="R1"`.
 
+All component and board SVG dimensions and view-box coordinates use millimetres.
+The root element records `data-coordinate-units="mm"`, and its `width` and
+`height` are written with the `mm` suffix. Unitless path coordinates and stroke
+widths therefore represent millimetres in the SVG view box. Board assembly SVGs
+draw `BoardOutline` in black (`#000000`) with a `0.1` mm stroke; the path also
+records `data-stroke-width-mm="0.1"` for machine-readable confirmation.
+
 The same SVG conversion is available to local automation through the
 `EasyEDA-Loader.CommandBridge` named pipe. `export-component-assembly` writes
 one requested PCB component (or the current PcbLib footprint) as SVG, and
