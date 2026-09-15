@@ -59,5 +59,41 @@ namespace EasyEDA_Loader
 
             return PcbShapeSvgExporter.PredictBoardOutputFiles(board, folder);
         }
+
+        public static PcbShapeSvgExportResult ExportComponent(
+            IPCB_Board board,
+            string designator,
+            string outputPath)
+        {
+            if (board == null)
+                throw new ArgumentNullException(nameof(board));
+
+            return new PcbShapeSvgExportResult(
+                PcbShapeSvgExporter.ExportBoardComponent(board, designator, outputPath));
+        }
+
+        public static PcbShapeSvgExportResult ExportCurrentLibraryFootprint(
+            IPCB_Library pcbLibrary,
+            string outputPath)
+        {
+            if (pcbLibrary == null)
+                throw new ArgumentNullException(nameof(pcbLibrary));
+
+            return new PcbShapeSvgExportResult(
+                PcbShapeSvgExporter.ExportCurrentPcbLibraryFootprint(pcbLibrary, outputPath));
+        }
+
+        public static PcbShapeSvgExportResult ExportBoardAssembly(
+            IPCB_Board board,
+            string outputPath,
+            bool bottom,
+            bool mirrorBottom = true)
+        {
+            if (board == null)
+                throw new ArgumentNullException(nameof(board));
+
+            return new PcbShapeSvgExportResult(
+                PcbShapeSvgExporter.ExportBoardAssembly(board, outputPath, bottom, mirrorBottom));
+        }
     }
 }

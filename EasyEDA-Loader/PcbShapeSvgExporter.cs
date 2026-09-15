@@ -112,6 +112,21 @@ namespace EasyEDA_Loader
             public List<SvgPrimitive> PadPrimitives { get; } = new List<SvgPrimitive>();
         }
 
+        private sealed class BoardAssemblyComponent
+        {
+            public double X { get; set; }
+            public double Y { get; set; }
+            public double Rotation { get; set; }
+            public bool Mirrored { get; set; }
+            public List<SvgPrimitive> Primitives { get; set; }
+        }
+
+        private sealed class BoardAssemblyGeometry
+        {
+            public bool Mirrored { get; set; }
+            public List<SvgPrimitive> Primitives { get; set; }
+        }
+
         private sealed class BoardFootprintInstance
         {
             public string ComponentName { get; set; }
@@ -223,6 +238,164 @@ namespace EasyEDA_Loader
                 isCancellationRequested: isCancellationRequested,
                 includePads: includePads,
                 checkPadGeometry: checkPadGeometry);
+        }
+
+        internal static ShapeExportResult ExportBoardComponent(
+            IPCB_Board board,
+            string designator,
+            string outputPath)
+        {
+            if (board == null)
+                throw new ArgumentNullException(nameof(board));
+            if (string.IsNullOrWhiteSpace(designator))
+                throw new ArgumentException("Component designator is required.", nameof(designator));
+            if (string.IsNullOrWhiteSpace(outputPath))
+                throw new ArgumentException("SVG output path is required.", nameof(outputPath));
+
+            object component = EnumerateBoardComponents(board)
+                .FirstOrDefault(candidate => string.Equals(
+                    ReadDesignator(candidate),
+                    designator.Trim(),
+                    StringComparison.OrdinalIgnoreCase));
+            if (component == null)
+                throw new InvalidOperationException("PCB component was not found: " + designator);
+
+            return ExportSingleComponent(
+                component,
+                outputPath,
+                ResolveFlippedMechanical2LayerNumbers(board));
+        }
+
+        internal static ShapeExportResult ExportCurrentPcbLibraryFootprint(
+            IPCB_Library pcbLibrary,
+            string outputPath)
+        {
+            if (pcbLibrary == null)
+                throw new ArgumentNullException(nameof(pcbLibrary));
+            if (string.IsNullOrWhiteSpace(outputPath))
+                throw new ArgumentException("SVG output path is required.", nameof(outputPath));
+
+            ExportComponentItem item = GetCurrentPcbLibExportComponent(pcbLibrary);
+            if (item == null)
+                throw new InvalidOperationException("No PCB library footprint is currently selected.");
+            return ExportSingleComponent(item.Component, outputPath, null);
+        }
+
+        internal static ShapeExportResult ExportBoardAssembly(
+            IPCB_Board board,
+            string outputPath,
+            bool bottom,
+            bool mirrorBottom)
+        {
+            if (board == null)
+                throw new ArgumentNullException(nameof(board));
+            if (string.IsNullOrWhiteSpace(outputPath))
+                throw new ArgumentException("SVG output path is required.", nameof(outputPath));
+            if (!EdgeRailsPcbReader.TryRead(board, out EdgeRailBounds boardBounds, out EdgeRailContour boardContour, out _)
+                || boardBounds.IsEmpty
+                || boardContour == null
+                || boardContour.Points.Count < 2)
+                throw new InvalidOperationException("The active PCB has no readable board outline.");
+
+            IReadOnlyCollection<int> flippedLayers = ResolveFlippedMechanical2LayerNumbers(board);
+            var assemblyComponents = new List<BoardAssemblyComponent>();
+            var geometryCache = new Dictionary<string, BoardAssemblyGeometry>(StringComparer.OrdinalIgnoreCase);
+            var result = new ShapeExportResult();
+            foreach (object component in EnumerateBoardComponents(board))
+            {
+                if (component == null || IsFlippedBoardComponent(component) != bottom)
+                    continue;
+
+                string exportName = FirstNonEmpty(ReadDesignator(component), ReadFootprintName(component), "Component");
+                result.ComponentCount++;
+                string footprintName = ReadFootprintName(component);
+                string geometryKey = string.IsNullOrWhiteSpace(footprintName)
+                    ? "instance:" + exportName
+                    : (bottom ? "bottom:" : "top:") + footprintName.Trim();
+                if (!geometryCache.TryGetValue(geometryKey, out BoardAssemblyGeometry geometry))
+                {
+                    List<SvgPrimitive> capturedPrimitives = CaptureMechanicalShapePrimitives(
+                        component,
+                        null,
+                        exportName,
+                        out ShapeCaptureStats stats,
+                        out bool mirrored,
+                        null,
+                        flippedLayers);
+                    result.CaptureStats.Add(stats);
+                    geometry = new BoardAssemblyGeometry
+                    {
+                        Mirrored = mirrored,
+                        Primitives = capturedPrimitives
+                    };
+                    geometryCache[geometryKey] = geometry;
+                }
+
+                List<SvgPrimitive> primitives = geometry.Primitives;
+                if (primitives.Count == 0)
+                    continue;
+
+                assemblyComponents.Add(new BoardAssemblyComponent
+                {
+                    X = AltiumApi.CoordToMm(GetInt(component, "GetState_XLocation")),
+                    Y = AltiumApi.CoordToMm(GetInt(component, "GetState_YLocation")),
+                    Rotation = GetDouble(component, "GetState_Rotation"),
+                    Mirrored = geometry.Mirrored,
+                    Primitives = primitives
+                });
+                result.PrimitiveCount += primitives.Count;
+            }
+
+            string fullPath = Path.GetFullPath(outputPath);
+            string directory = Path.GetDirectoryName(fullPath);
+            if (!string.IsNullOrWhiteSpace(directory))
+                Directory.CreateDirectory(directory);
+            File.WriteAllText(
+                fullPath,
+                BuildBoardAssemblySvg(boardBounds, boardContour, assemblyComponents, bottom && mirrorBottom),
+                Utf8NoBom);
+            result.OutputFiles.Add(fullPath);
+            result.FileCount = 1;
+            result.PrimitiveCount++;
+            return result;
+        }
+
+        private static ShapeExportResult ExportSingleComponent(
+            object component,
+            string outputPath,
+            IReadOnlyCollection<int> flippedMechanical2LayerNumbers)
+        {
+            string fullPath = Path.GetFullPath(outputPath);
+            string directory = Path.GetDirectoryName(fullPath);
+            if (!string.IsNullOrWhiteSpace(directory))
+                Directory.CreateDirectory(directory);
+
+            string exportName = FirstNonEmpty(
+                ReadDesignator(component),
+                ReadFootprintName(component),
+                "Component");
+            List<SvgPrimitive> primitives = CaptureMechanicalShapePrimitives(
+                component,
+                null,
+                exportName,
+                out ShapeCaptureStats captureStats,
+                out _,
+                null,
+                flippedMechanical2LayerNumbers);
+
+            var result = new ShapeExportResult { ComponentCount = 1 };
+            result.CaptureStats.Add(captureStats);
+            if (primitives.Count == 0)
+            {
+                result.MissingMechanical2Footprints.Add(FirstNonEmpty(ReadFootprintName(component), exportName));
+                return result;
+            }
+
+            File.WriteAllText(fullPath, BuildSvg(primitives, Array.Empty<SvgPrimitive>(), false), Utf8NoBom);
+            result.OutputFiles.Add(fullPath);
+            result.FileCount = 1;
+            result.PrimitiveCount = primitives.Count;
+            return result;
         }
 
         internal static IReadOnlyList<string> PredictBoardOutputFiles(IPCB_Board board, string folder)
@@ -3029,6 +3202,99 @@ namespace EasyEDA_Loader
             }
 
             return sb.ToString();
+        }
+
+        private static string BuildBoardAssemblySvg(
+            EdgeRailBounds boardBounds,
+            EdgeRailContour boardContour,
+            IReadOnlyList<BoardAssemblyComponent> components,
+            bool mirror)
+        {
+            const double paddingMm = 0.25;
+            double left = boardBounds.MinX - paddingMm;
+            double right = boardBounds.MaxX + paddingMm;
+            double bottom = boardBounds.MinY - paddingMm;
+            double top = boardBounds.MaxY + paddingMm;
+            double width = right - left;
+            double height = top - bottom;
+
+            var sb = new StringBuilder();
+            var settings = new XmlWriterSettings
+            {
+                Encoding = Utf8NoBom,
+                OmitXmlDeclaration = false,
+                Indent = true,
+                NewLineChars = "\n"
+            };
+            using (var stringWriter = new Utf8StringWriter(sb))
+            using (var writer = XmlWriter.Create(stringWriter, settings))
+            {
+                writer.WriteStartDocument();
+                writer.WriteStartElement("svg", "http://www.w3.org/2000/svg");
+                writer.WriteAttributeString("version", "1.2");
+                writer.WriteAttributeString("baseProfile", "tiny");
+                writer.WriteAttributeString("width", Format(width) + "mm");
+                writer.WriteAttributeString("height", Format(height) + "mm");
+                writer.WriteAttributeString("viewBox", Format(left) + " " + Format(-top) + " " + Format(width) + " " + Format(height));
+
+                writer.WriteStartElement("g");
+                writer.WriteAttributeString("transform", "scale(1,-1)");
+                if (mirror)
+                {
+                    writer.WriteStartElement("g");
+                    writer.WriteAttributeString("transform", "translate(" + Format(boardBounds.MinX + boardBounds.MaxX) + " 0) scale(-1 1)");
+                }
+
+                writer.WriteStartElement("path");
+                writer.WriteAttributeString("id", "BoardOutline");
+                writer.WriteAttributeString("d", BuildBoardContourPath(boardContour, boardBounds));
+                writer.WriteAttributeString("fill", "none");
+                writer.WriteAttributeString("stroke", "#555555");
+                writer.WriteAttributeString("stroke-width", "0.1");
+                writer.WriteAttributeString("stroke-linecap", "round");
+                writer.WriteAttributeString("stroke-linejoin", "round");
+                writer.WriteEndElement();
+
+                writer.WriteStartElement("g");
+                writer.WriteAttributeString("id", "Assembly");
+                foreach (BoardAssemblyComponent component in components)
+                {
+                    writer.WriteStartElement("g");
+                    writer.WriteAttributeString(
+                        "transform",
+                        "translate(" + Format(component.X) + " " + Format(component.Y) + ") rotate(" +
+                        Format(component.Rotation) + ")" + (component.Mirrored ? " scale(1 -1)" : string.Empty));
+                    foreach (SvgPrimitive primitive in component.Primitives)
+                        primitive.Write(writer);
+                    writer.WriteEndElement();
+                }
+                writer.WriteEndElement();
+
+                if (mirror)
+                    writer.WriteEndElement();
+                writer.WriteEndElement();
+                writer.WriteEndElement();
+                writer.WriteEndDocument();
+            }
+            return sb.ToString();
+        }
+
+        private static string BuildBoardContourPath(EdgeRailContour contour, EdgeRailBounds bounds)
+        {
+            if (contour != null && contour.Points.Count >= 2)
+            {
+                var path = new StringBuilder();
+                path.Append("M ").Append(Format(contour.Points[0].X)).Append(' ').Append(Format(contour.Points[0].Y));
+                for (int index = 1; index < contour.Points.Count; index++)
+                    path.Append(" L ").Append(Format(contour.Points[index].X)).Append(' ').Append(Format(contour.Points[index].Y));
+                path.Append(" Z");
+                return path.ToString();
+            }
+
+            return "M " + Format(bounds.MinX) + " " + Format(bounds.MinY) +
+                " L " + Format(bounds.MaxX) + " " + Format(bounds.MinY) +
+                " L " + Format(bounds.MaxX) + " " + Format(bounds.MaxY) +
+                " L " + Format(bounds.MinX) + " " + Format(bounds.MaxY) + " Z";
         }
 
         private static void WriteSvgGroup(

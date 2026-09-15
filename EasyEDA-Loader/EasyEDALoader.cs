@@ -912,8 +912,9 @@ namespace EasyEDA_Loader
                 throw new InvalidOperationException("Could not switch to the selected primitive layer. Open a PCB document, select a PCB primitive with a layer, and try again.");
         }
 
-        private EasyEdaCommandBridge.CommandResponse HandleBridgeCommand(string command)
+        private EasyEdaCommandBridge.CommandResponse HandleBridgeCommand(EasyEdaCommandBridge.CommandRequest request)
         {
+            string command = request?.Command ?? string.Empty;
             if (IsLoaderDialogOpen())
             {
                 return EasyEdaCommandBridge.CommandResponse.Error(
@@ -927,33 +928,38 @@ namespace EasyEDA_Loader
             {
                 EasyEdaCommandBridge.CommandResponse response = null;
                 Exception exception = null;
-                using (var completed = new ManualResetEventSlim(false))
-                {
-                    bridgeSynchronizationContext.Post(
-                        _ =>
-                        {
-                            try
-                            {
-                                response = HandleBridgeCommandOnAltiumThread(command);
-                            }
-                            catch (Exception ex)
-                            {
-                                exception = ex;
-                            }
-                            finally
-                            {
-                                completed.Set();
-                            }
-                        },
-                        null);
-
-                    if (!completed.Wait(TimeSpan.FromSeconds(30)))
+                var completed = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                bridgeSynchronizationContext.Post(
+                    _ =>
                     {
-                        return EasyEdaCommandBridge.CommandResponse.Error(
-                            "command-timeout",
-                            "Timed out waiting for Altium to execute EasyEDALoader command.",
-                            command);
-                    }
+                        try
+                        {
+                            response = HandleBridgeCommandOnAltiumThread(request);
+                        }
+                        catch (Exception ex)
+                        {
+                            exception = ex;
+                        }
+                        finally
+                        {
+                            completed.TrySetResult(true);
+                        }
+                    },
+                    null);
+
+                TimeSpan commandTimeout =
+                    string.Equals(command, EasyEdaCommandBridge.CommandExportComponentAssembly, StringComparison.Ordinal) ||
+                    string.Equals(command, EasyEdaCommandBridge.CommandExportBoardAssembly, StringComparison.Ordinal) ||
+                    string.Equals(command, EasyEdaCommandBridge.CommandExportBoard3D, StringComparison.Ordinal)
+                        ? TimeSpan.FromMinutes(5)
+                        : TimeSpan.FromSeconds(30);
+
+                if (!completed.Task.Wait(commandTimeout))
+                {
+                    return EasyEdaCommandBridge.CommandResponse.Error(
+                        "command-timeout",
+                        "Timed out waiting for Altium to execute EasyEDALoader command.",
+                        command);
                 }
 
                 if (exception != null)
@@ -962,7 +968,7 @@ namespace EasyEDA_Loader
                 return response;
             }
 
-            return HandleBridgeCommandOnAltiumThread(command);
+            return HandleBridgeCommandOnAltiumThread(request);
         }
 
         private bool IsLoaderDialogOpen()
@@ -970,8 +976,9 @@ namespace EasyEDA_Loader
             return Interlocked.CompareExchange(ref loaderDialogOpen, 0, 0) != 0;
         }
 
-        private EasyEdaCommandBridge.CommandResponse HandleBridgeCommandOnAltiumThread(string command)
+        private EasyEdaCommandBridge.CommandResponse HandleBridgeCommandOnAltiumThread(EasyEdaCommandBridge.CommandRequest request)
         {
+            string command = request?.Command ?? string.Empty;
             string parameters = string.Empty;
             IServerDocumentView context = null;
 
@@ -1001,6 +1008,12 @@ namespace EasyEDA_Loader
                 case EasyEdaCommandBridge.CommandLayerSelectedPrimitive:
                     SwitchToSelectedPrimitiveLayer(context, ref parameters);
                     break;
+                case EasyEdaCommandBridge.CommandExportComponentAssembly:
+                    return ExportComponentAssemblyForBridge(request);
+                case EasyEdaCommandBridge.CommandExportBoardAssembly:
+                    return ExportBoardAssemblyForBridge(request);
+                case EasyEdaCommandBridge.CommandExportBoard3D:
+                    return ExportBoard3DForBridge(request);
                 default:
                     return EasyEdaCommandBridge.CommandResponse.Error(
                         "invalid-command",
@@ -1009,6 +1022,132 @@ namespace EasyEDA_Loader
             }
 
             return EasyEdaCommandBridge.CommandResponse.Ok(command);
+        }
+
+        private static EasyEdaCommandBridge.CommandResponse ExportBoard3DForBridge(
+            EasyEdaCommandBridge.CommandRequest request)
+        {
+            string outputPath = request.GetString("output_path");
+            if (string.IsNullOrWhiteSpace(outputPath))
+                throw new ArgumentException("output_path is required.");
+            outputPath = Path.GetFullPath(outputPath);
+            if (!string.Equals(Path.GetExtension(outputPath), ".png", StringComparison.OrdinalIgnoreCase))
+                throw new ArgumentException("output_path must end in .png.");
+
+            string side = request.GetString("side", "top").Trim().ToLowerInvariant();
+            if (side != "top" && side != "bottom")
+                throw new ArgumentException("side must be 'top' or 'bottom'.");
+
+            int dpi = request.GetInt32("dpi", 600);
+            if (dpi != 75 && dpi != 150 && dpi != 300 && dpi != 600)
+                throw new ArgumentException("dpi must be 75, 150, 300, or 600.");
+
+            IPCB_Board board = EEPCB.GetCurrentPcbBoard();
+            if (board == null)
+                throw new InvalidOperationException("Open a PCB document before exporting a 3D image.");
+
+            var options = new Pcb3DImageExportOptions
+            {
+                Side = side,
+                Dpi = dpi,
+                UseSystemColors = request.GetBoolean("use_system_colors", true),
+                WorkspaceColor = request.GetInt32("workspace_color", -1),
+                BoardColor = request.GetInt32("board_color", -1),
+                SolderMaskColor = request.GetInt32("solder_mask_color", -1),
+                SilkColor = request.GetInt32("silk_color", -1),
+                CopperColor = request.GetInt32("copper_color", -1)
+            };
+
+            Directory.CreateDirectory(Path.GetDirectoryName(outputPath));
+            Pcb3DImageExportResult result = Pcb3DImageExporter.Export(board, outputPath, options);
+            return EasyEdaCommandBridge.CommandResponse.Ok(EasyEdaCommandBridge.CommandExportBoard3D)
+                .WithData("output_path", outputPath)
+                .WithData("side", side)
+                .WithData("dpi", dpi)
+                .WithData("generator", result.GeneratorName)
+                .WithData("document_modified", false)
+                .WithData("document_saved", false);
+        }
+
+        private static EasyEdaCommandBridge.CommandResponse ExportComponentAssemblyForBridge(
+            EasyEdaCommandBridge.CommandRequest request)
+        {
+            string component = request.GetString("component");
+            string outputPath = request.GetString("output_path");
+            if (string.IsNullOrWhiteSpace(outputPath))
+                outputPath = request.GetString("svg_path");
+            if (string.IsNullOrWhiteSpace(outputPath))
+                throw new ArgumentException("output_path is required.");
+
+            outputPath = Path.GetFullPath(outputPath);
+            if (!string.Equals(Path.GetExtension(outputPath), ".svg", StringComparison.OrdinalIgnoreCase))
+                throw new ArgumentException("output_path must end in .svg.");
+            string outputDirectory = Path.GetDirectoryName(outputPath);
+            if (!string.IsNullOrWhiteSpace(outputDirectory))
+                Directory.CreateDirectory(outputDirectory);
+
+            IPCB_Board board = EEPCB.GetCurrentPcbBoard();
+            PcbShapeSvgExportResult result;
+            if (board != null)
+            {
+                if (string.IsNullOrWhiteSpace(component))
+                    throw new ArgumentException("component is required when a PCB document is active.");
+                result = PcbShapeSvgExportService.ExportComponent(board, component, outputPath);
+            }
+            else
+            {
+                IPCB_Library pcbLibrary = AltiumApi.GlobalVars.PCBServer.GetCurrentPCBLibrary();
+                if (pcbLibrary == null)
+                    throw new InvalidOperationException("Open a PCB document or PCB library before exporting component assembly artwork.");
+                result = PcbShapeSvgExportService.ExportCurrentLibraryFootprint(pcbLibrary, outputPath);
+            }
+
+            if (result.FileCount != 1)
+            {
+                string detail = result.Errors.Count > 0
+                    ? string.Join(" | ", result.Errors)
+                    : "No Mechanical 2 assembly primitives were found.";
+                throw new InvalidOperationException(detail);
+            }
+
+            return EasyEdaCommandBridge.CommandResponse.Ok(EasyEdaCommandBridge.CommandExportComponentAssembly)
+                .WithData("component", component)
+                .WithData("output_path", outputPath)
+                .WithData("primitive_count", result.PrimitiveCount)
+                .WithData("document_modified", false)
+                .WithData("document_saved", false);
+        }
+
+        private static EasyEdaCommandBridge.CommandResponse ExportBoardAssemblyForBridge(
+            EasyEdaCommandBridge.CommandRequest request)
+        {
+            string outputPath = request.GetString("output_path");
+            if (string.IsNullOrWhiteSpace(outputPath))
+                throw new ArgumentException("output_path is required.");
+            outputPath = Path.GetFullPath(outputPath);
+            if (!string.Equals(Path.GetExtension(outputPath), ".svg", StringComparison.OrdinalIgnoreCase))
+                throw new ArgumentException("output_path must end in .svg.");
+
+            string side = request.GetString("side", "top").Trim().ToLowerInvariant();
+            if (side != "top" && side != "bottom")
+                throw new ArgumentException("side must be 'top' or 'bottom'.");
+
+            IPCB_Board board = EEPCB.GetCurrentPcbBoard();
+            if (board == null)
+                throw new InvalidOperationException("Open a PCB document before exporting assembly artwork.");
+            PcbShapeSvgExportResult result = PcbShapeSvgExportService.ExportBoardAssembly(
+                board,
+                outputPath,
+                side == "bottom",
+                request.GetBoolean("mirror_bottom", true));
+
+            return EasyEdaCommandBridge.CommandResponse.Ok(EasyEdaCommandBridge.CommandExportBoardAssembly)
+                .WithData("side", side)
+                .WithData("output_path", outputPath)
+                .WithData("component_count", result.ComponentCount)
+                .WithData("primitive_count", result.PrimitiveCount)
+                .WithData("document_modified", false)
+                .WithData("document_saved", false);
         }
 
         private static IPCB_Group GetActivePcbLibComponentOrThrow()

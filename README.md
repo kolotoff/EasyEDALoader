@@ -192,6 +192,14 @@ shape geometry as `Tools -> EasyEDA -> Export shape -> All components with Pads`
 The output properties include `Export component pads`, enabled by default. When
 enabled, each SVG also contains the component pad groups.
 
+The same SVG conversion is available to local automation through the
+`EasyEDA-Loader.CommandBridge` named pipe. `export-component-assembly` writes
+one requested PCB component (or the current PcbLib footprint) as SVG, and
+`export-board-assembly` composes the top or bottom Mechanical 2 component
+artwork with the active PCB's board contour. These read-only commands are used
+by the adjacent Altium MCP server to produce SVG and transparent 600-DPI PNG
+artifacts without changing or saving the Altium document.
+
 # Runtime Dependencies
 
 ## Experimental local AI layout duplication

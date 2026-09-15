@@ -6,6 +6,8 @@ using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 
 namespace EasyEDA_Loader
 {
@@ -20,12 +22,15 @@ namespace EasyEDA_Loader
         public const string CommandLayerNext = "layer-next";
         public const string CommandLayerPrevious = "layer-previous";
         public const string CommandLayerSelectedPrimitive = "layer-selected-primitive";
+        public const string CommandExportComponentAssembly = "export-component-assembly";
+        public const string CommandExportBoardAssembly = "export-board-assembly";
+        public const string CommandExportBoard3D = "export-board-3d";
 
         private readonly CancellationTokenSource cancellation = new CancellationTokenSource();
         private Task listenTask;
         private bool disposed;
 
-        public event Func<string, CommandResponse> CommandReceived;
+        public event Func<CommandRequest, CommandResponse> CommandReceived;
 
         public void Start()
         {
@@ -88,24 +93,26 @@ namespace EasyEDA_Loader
 
         private CommandResponse ExecuteRequest(string request)
         {
-            string command = NormalizeCommand(request);
+            CommandRequest parsedRequest = CommandRequest.Parse(request);
+            string command = NormalizeCommand(parsedRequest.Command);
             if (string.IsNullOrWhiteSpace(command))
                 return CommandResponse.Error("invalid-command", "Missing or unknown EasyEDALoader command.");
+            parsedRequest.Command = command;
 
-            if (!IsAltiumWindowActive())
+            if (RequiresActiveAltiumWindow(command) && !IsAltiumWindowActive())
             {
                 return CommandResponse.Error(
                     "altium-not-active",
                     "Altium window must be active before running EasyEDALoader bridge commands.");
             }
 
-            Func<string, CommandResponse> handler = CommandReceived;
+            Func<CommandRequest, CommandResponse> handler = CommandReceived;
             if (handler == null)
                 return CommandResponse.Error("bridge-not-ready", "EasyEDALoader command bridge is not ready.");
 
             try
             {
-                return handler(command) ?? CommandResponse.Ok(command);
+                return handler(parsedRequest) ?? CommandResponse.Ok(command);
             }
             catch (Exception ex)
             {
@@ -114,12 +121,15 @@ namespace EasyEDA_Loader
             }
         }
 
-        private static string NormalizeCommand(string request)
+        private static bool RequiresActiveAltiumWindow(string command)
         {
-            string value = (request ?? string.Empty).Trim();
-            if (value.StartsWith("{", StringComparison.Ordinal))
-                value = ExtractJsonStringValue(value, "command");
+            return !string.Equals(command, CommandExportComponentAssembly, StringComparison.Ordinal)
+                && !string.Equals(command, CommandExportBoardAssembly, StringComparison.Ordinal)
+                && !string.Equals(command, CommandExportBoard3D, StringComparison.Ordinal);
+        }
 
+        private static string NormalizeCommand(string value)
+        {
             if (string.IsNullOrWhiteSpace(value))
                 return string.Empty;
 
@@ -157,31 +167,21 @@ namespace EasyEDA_Loader
                 case "selected-primitive-layer":
                 case "layer-selected-primitive":
                     return CommandLayerSelectedPrimitive;
+                case "component-assembly":
+                case "export-assembly-component":
+                case "export-component-assembly":
+                    return CommandExportComponentAssembly;
+                case "board-assembly":
+                case "export-assembly-board":
+                case "export-board-assembly":
+                    return CommandExportBoardAssembly;
+                case "board-3d":
+                case "export-3d-board":
+                case "export-board-3d":
+                    return CommandExportBoard3D;
                 default:
                     return string.Empty;
             }
-        }
-
-        private static string ExtractJsonStringValue(string json, string propertyName)
-        {
-            string quotedProperty = "\"" + propertyName + "\"";
-            int propertyIndex = json.IndexOf(quotedProperty, StringComparison.OrdinalIgnoreCase);
-            if (propertyIndex < 0)
-                return string.Empty;
-
-            int colonIndex = json.IndexOf(':', propertyIndex + quotedProperty.Length);
-            if (colonIndex < 0)
-                return string.Empty;
-
-            int valueStart = json.IndexOf('"', colonIndex + 1);
-            if (valueStart < 0)
-                return string.Empty;
-
-            int valueEnd = json.IndexOf('"', valueStart + 1);
-            if (valueEnd <= valueStart)
-                return string.Empty;
-
-            return json.Substring(valueStart + 1, valueEnd - valueStart - 1);
         }
 
         private static bool IsAltiumWindowActive()
@@ -211,12 +211,69 @@ namespace EasyEDA_Loader
         [DllImport("user32.dll")]
         private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
 
+        internal sealed class CommandRequest
+        {
+            private readonly JObject values;
+
+            private CommandRequest(string command, JObject values)
+            {
+                Command = command ?? string.Empty;
+                this.values = values ?? new JObject();
+            }
+
+            public string Command { get; set; }
+
+            public string GetString(string name, string defaultValue = "")
+            {
+                JToken token = values.GetValue(name, StringComparison.OrdinalIgnoreCase);
+                return token == null || token.Type == JTokenType.Null
+                    ? defaultValue
+                    : token.ToString();
+            }
+
+            public int GetInt32(string name, int defaultValue)
+            {
+                JToken token = values.GetValue(name, StringComparison.OrdinalIgnoreCase);
+                return token != null && int.TryParse(token.ToString(), out int result)
+                    ? result
+                    : defaultValue;
+            }
+
+            public bool GetBoolean(string name, bool defaultValue)
+            {
+                JToken token = values.GetValue(name, StringComparison.OrdinalIgnoreCase);
+                return token != null && bool.TryParse(token.ToString(), out bool result)
+                    ? result
+                    : defaultValue;
+            }
+
+            public static CommandRequest Parse(string request)
+            {
+                string value = (request ?? string.Empty).Trim();
+                if (!value.StartsWith("{", StringComparison.Ordinal))
+                    return new CommandRequest(value, null);
+
+                try
+                {
+                    JObject json = JObject.Parse(value);
+                    return new CommandRequest(
+                        Convert.ToString(json.GetValue("command", StringComparison.OrdinalIgnoreCase)),
+                        json);
+                }
+                catch (JsonException)
+                {
+                    return new CommandRequest(string.Empty, null);
+                }
+            }
+        }
+
         internal sealed class CommandResponse
         {
             public bool Success { get; private set; }
             public string Command { get; private set; }
             public string ErrorCode { get; private set; }
             public string Message { get; private set; }
+            public JObject Data { get; private set; }
 
             public static CommandResponse Ok(string command)
             {
@@ -239,21 +296,29 @@ namespace EasyEDA_Loader
                 };
             }
 
-            public string ToJson()
+            public CommandResponse WithData(string name, object value)
             {
-                return "{" +
-                    "\"success\":" + (Success ? "true" : "false") + "," +
-                    "\"command\":\"" + JsonEscape(Command) + "\"," +
-                    "\"errorCode\":\"" + JsonEscape(ErrorCode) + "\"," +
-                    "\"message\":\"" + JsonEscape(Message) + "\"" +
-                    "}";
+                if (Data == null)
+                    Data = new JObject();
+                Data[name] = value == null ? JValue.CreateNull() : JToken.FromObject(value);
+                return this;
             }
 
-            private static string JsonEscape(string value)
+            public string ToJson()
             {
-                return (value ?? string.Empty)
-                    .Replace("\\", "\\\\")
-                    .Replace("\"", "\\\"");
+                var json = new JObject
+                {
+                    ["success"] = Success,
+                    ["command"] = Command ?? string.Empty,
+                    ["errorCode"] = ErrorCode ?? string.Empty,
+                    ["message"] = Message ?? string.Empty
+                };
+                if (Data != null)
+                {
+                    foreach (JProperty property in Data.Properties())
+                        json[property.Name] = property.Value;
+                }
+                return json.ToString(Formatting.None);
             }
         }
     }

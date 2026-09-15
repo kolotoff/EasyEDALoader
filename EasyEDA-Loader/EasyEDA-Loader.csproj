@@ -38,6 +38,14 @@
     <Reference Include="Altium.SDK.Interfaces">
       <HintPath>Assemblies\Altium.SDK.Interfaces.dll</HintPath>
     </Reference>
+    <Reference Include="Altium.Edp.Interfaces">
+      <HintPath>D:\Program files\ADAgile\System\Altium.Edp.Interfaces.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Altium.Dxp.Interfaces">
+      <HintPath>D:\Program files\ADAgile\System\Altium.Dxp.Interfaces.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
     <Reference Include="DevExpress.Data.v24.1">
       <HintPath>Assemblies\DevExpress.Data.v24.1.dll</HintPath>
     </Reference>
