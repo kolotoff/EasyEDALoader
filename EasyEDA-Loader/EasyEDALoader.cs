@@ -1114,6 +1114,8 @@ namespace EasyEDA_Loader
                 .WithData("component", component)
                 .WithData("output_path", outputPath)
                 .WithData("primitive_count", result.PrimitiveCount)
+                .WithData("pad_count", result.PadCount)
+                .WithData("pads_included", true)
                 .WithData("document_modified", false)
                 .WithData("document_saved", false);
         }
@@ -1146,6 +1148,8 @@ namespace EasyEDA_Loader
                 .WithData("output_path", outputPath)
                 .WithData("component_count", result.ComponentCount)
                 .WithData("primitive_count", result.PrimitiveCount)
+                .WithData("pad_count", result.PadCount)
+                .WithData("pads_included", true)
                 .WithData("document_modified", false)
                 .WithData("document_saved", false);
         }

@@ -190,15 +190,36 @@ files should be written, then run the output. It exports the same Mechanical 2
 shape geometry as `Tools -> EasyEDA -> Export shape -> All components with Pads`.
 
 The output properties include `Export component pads`, enabled by default. When
-enabled, each SVG also contains the component pad groups.
+enabled, each SVG contains pad geometry in a separate `<g id="Pads"
+data-layer="pads">` group. Every pad path carries non-visible metadata read from
+the Altium PCB pad, including a stable element ID, `data-component`,
+`data-footprint`, `data-pad-number`, and `data-pad-index` where available. For
+example:
+
+```xml
+<g id="Pads" data-layer="pads">
+  <path id="U1-pad-1" data-component="U1" data-footprint="QFN-32"
+        data-pad-number="1" data-pad-index="17" d="..." />
+</g>
+```
+
+These attributes do not draw pin-number text. `data-pad-number` is the PCB pad
+designator (`IPCB_Pad.GetState_Name()`), which is the value Altium uses to map
+the footprint pad to its schematic pin. Panelized boards can contain repeated
+component designators; board assembly exports keep every SVG `id` unique and add
+`data-instance` (for example `R1-2`) while preserving `data-component="R1"`.
 
 The same SVG conversion is available to local automation through the
 `EasyEDA-Loader.CommandBridge` named pipe. `export-component-assembly` writes
 one requested PCB component (or the current PcbLib footprint) as SVG, and
 `export-board-assembly` composes the top or bottom Mechanical 2 component
-artwork with the active PCB's board contour. These read-only commands are used
-by the adjacent Altium MCP server to produce SVG and transparent 600-DPI PNG
-artifacts without changing or saving the Altium document.
+artwork with the active PCB's board contour. Both bridge exports always include
+the same metadata-bearing `Pads` layer. Board assembly SVGs also wrap pads by
+component so consumers can select either the full `Pads` layer or one component's
+pad group. These read-only commands are used by the adjacent Altium MCP server
+to produce SVG and transparent 600-DPI PNG artifacts without changing or saving
+the Altium document. SVG groups and metadata are not retained as editable layers
+in the raster PNG; the pad geometry is rendered into the PNG pixels.
 
 # Runtime Dependencies
 

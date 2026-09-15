@@ -23,6 +23,7 @@ namespace EasyEDA_Loader
         public int ComponentCount { get; set; }
         public int FileCount { get; set; }
         public int PrimitiveCount { get; set; }
+        public int PadCount { get; set; }
         public List<string> OutputFiles { get; } = new List<string>();
         public string DiagnosticsPath { get; set; }
         public List<string> Warnings { get; } = new List<string>();
@@ -114,11 +115,14 @@ namespace EasyEDA_Loader
 
         private sealed class BoardAssemblyComponent
         {
+            public string Designator { get; set; }
+            public string InstanceId { get; set; }
             public double X { get; set; }
             public double Y { get; set; }
             public double Rotation { get; set; }
             public bool Mirrored { get; set; }
-            public List<SvgPrimitive> Primitives { get; set; }
+            public List<SvgPrimitive> ShapePrimitives { get; set; }
+            public List<SvgPrimitive> PadPrimitives { get; set; }
         }
 
         private sealed class BoardAssemblyGeometry
@@ -300,6 +304,7 @@ namespace EasyEDA_Loader
             IReadOnlyCollection<int> flippedLayers = ResolveFlippedMechanical2LayerNumbers(board);
             var assemblyComponents = new List<BoardAssemblyComponent>();
             var geometryCache = new Dictionary<string, BoardAssemblyGeometry>(StringComparer.OrdinalIgnoreCase);
+            var componentInstanceCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
             var result = new ShapeExportResult();
             foreach (object component in EnumerateBoardComponents(board))
             {
@@ -332,18 +337,34 @@ namespace EasyEDA_Loader
                 }
 
                 List<SvgPrimitive> primitives = geometry.Primitives;
-                if (primitives.Count == 0)
+                List<SvgPrimitive> padPrimitives = CapturePadPrimitives(
+                    component,
+                    null,
+                    exportName,
+                    null,
+                    null,
+                    geometry.Mirrored);
+                if (primitives.Count == 0 && padPrimitives.Count == 0)
                     continue;
+
+                string instanceId = NextBoardComponentInstanceId(exportName, componentInstanceCounts);
+                AssignPadElementIds(padPrimitives, instanceId);
+                foreach (SvgPrimitive padPrimitive in padPrimitives)
+                    padPrimitive.InstanceId = instanceId;
 
                 assemblyComponents.Add(new BoardAssemblyComponent
                 {
+                    Designator = exportName,
+                    InstanceId = instanceId,
                     X = AltiumApi.CoordToMm(GetInt(component, "GetState_XLocation")),
                     Y = AltiumApi.CoordToMm(GetInt(component, "GetState_YLocation")),
                     Rotation = GetDouble(component, "GetState_Rotation"),
                     Mirrored = geometry.Mirrored,
-                    Primitives = primitives
+                    ShapePrimitives = primitives,
+                    PadPrimitives = padPrimitives
                 });
-                result.PrimitiveCount += primitives.Count;
+                result.PrimitiveCount += primitives.Count + padPrimitives.Count;
+                result.PadCount += padPrimitives.Count;
             }
 
             string fullPath = Path.GetFullPath(outputPath);
@@ -379,9 +400,16 @@ namespace EasyEDA_Loader
                 null,
                 exportName,
                 out ShapeCaptureStats captureStats,
-                out _,
+                out bool componentMirrored,
                 null,
                 flippedMechanical2LayerNumbers);
+            List<SvgPrimitive> padPrimitives = CapturePadPrimitives(
+                component,
+                null,
+                exportName,
+                null,
+                null,
+                componentMirrored);
 
             var result = new ShapeExportResult { ComponentCount = 1 };
             result.CaptureStats.Add(captureStats);
@@ -391,10 +419,11 @@ namespace EasyEDA_Loader
                 return result;
             }
 
-            File.WriteAllText(fullPath, BuildSvg(primitives, Array.Empty<SvgPrimitive>(), false), Utf8NoBom);
+            File.WriteAllText(fullPath, BuildSvg(primitives, padPrimitives, true), Utf8NoBom);
             result.OutputFiles.Add(fullPath);
             result.FileCount = 1;
-            result.PrimitiveCount = primitives.Count;
+            result.PrimitiveCount = primitives.Count + padPrimitives.Count;
+            result.PadCount = padPrimitives.Count;
             return result;
         }
 
@@ -1144,6 +1173,7 @@ namespace EasyEDA_Loader
                         result.OutputFiles.Add(filePath);
                         result.FileCount++;
                         result.PrimitiveCount += layers.ShapePrimitives.Count + layers.PadPrimitives.Count;
+                        result.PadCount += layers.PadPrimitives.Count;
                         progress?.Invoke(new ShapeExportProgress
                         {
                             Message = "Exported " + componentName,
@@ -1481,6 +1511,11 @@ namespace EasyEDA_Loader
             double componentRotation = IsBoardComponent(component) ? GetDouble(component, "GetState_Rotation") : 0.0;
             bool mirrored = IsBoardComponent(component) ? componentMirrored : false;
             var result = new List<SvgPrimitive>();
+            string componentDesignator = FirstNonEmpty(
+                ReadDesignator(component),
+                componentName,
+                ReadFootprintName(component));
+            string footprintName = ReadFootprintName(component);
             List<LinkedPadRegion> linkedRegions = persistedContours != null
                 ? new List<LinkedPadRegion>()
                 : EnumerateLinkedPadRegions(component).ToList();
@@ -1511,12 +1546,76 @@ namespace EasyEDA_Loader
                     ?? TryCreatePadPrimitive(primitive, originX, originY, componentRotation, mirrored);
                 if (padPrimitive is SvgPathPrimitive padPath)
                 {
+                    string padNumber = primitive is IPCB_Pad pad
+                        ? SafeCall(() => pad.GetState_Name())
+                        : "";
+                    int padIndex = primitive is IPCB_Primitive pcbPrimitive
+                        ? SafeIntCall(() => (int)pcbPrimitive.GetState_Index())
+                        : 0;
                     padPath.UseGroupStyle = true;
+                    padPath.ComponentDesignator = componentDesignator;
+                    padPath.FootprintName = footprintName;
+                    padPath.PadNumber = padNumber;
+                    padPath.PadIndex = padIndex;
                     result.Add(padPath);
                 }
             }
 
+            AssignPadElementIds(result, componentDesignator);
+
             return result;
+        }
+
+        private static string NextBoardComponentInstanceId(
+            string componentDesignator,
+            Dictionary<string, int> instanceCounts)
+        {
+            string baseId = SanitizeSvgIdToken(componentDesignator, "component");
+            int occurrence = instanceCounts.TryGetValue(baseId, out int count) ? count + 1 : 1;
+            instanceCounts[baseId] = occurrence;
+            return occurrence == 1
+                ? baseId
+                : baseId + "-" + occurrence.ToString(CultureInfo.InvariantCulture);
+        }
+
+        private static void AssignPadElementIds(IEnumerable<SvgPrimitive> padPrimitives, string componentId)
+        {
+            var usedElementIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            int padOrdinal = 0;
+            foreach (SvgPrimitive primitive in padPrimitives ?? Enumerable.Empty<SvgPrimitive>())
+            {
+                padOrdinal++;
+                string elementId = BuildPadElementId(componentId, primitive.PadNumber, padOrdinal);
+                if (!usedElementIds.Add(elementId))
+                {
+                    elementId += "-" + padOrdinal.ToString(CultureInfo.InvariantCulture);
+                    usedElementIds.Add(elementId);
+                }
+                primitive.ElementId = elementId;
+            }
+        }
+
+        private static string BuildPadElementId(string componentDesignator, string padNumber, int padOrdinal)
+        {
+            string componentToken = SanitizeSvgIdToken(componentDesignator, "component");
+            string padToken = SanitizeSvgIdToken(
+                padNumber,
+                padOrdinal.ToString(CultureInfo.InvariantCulture));
+            return componentToken + "-pad-" + padToken;
+        }
+
+        private static string SanitizeSvgIdToken(string value, string fallback)
+        {
+            string source = string.IsNullOrWhiteSpace(value) ? fallback : value.Trim();
+            var result = new StringBuilder(source.Length);
+            foreach (char character in source)
+            {
+                result.Append(char.IsLetterOrDigit(character) || character == '-' || character == '_' || character == '.'
+                    ? character
+                    : '-');
+            }
+
+            return result.Length == 0 ? fallback : result.ToString();
         }
 
         private static SvgPrimitive TryTakePersistedPadContour(
@@ -3256,15 +3355,46 @@ namespace EasyEDA_Loader
                 writer.WriteEndElement();
 
                 writer.WriteStartElement("g");
-                writer.WriteAttributeString("id", "Assembly");
+                writer.WriteAttributeString("id", "Pads");
+                writer.WriteAttributeString("data-layer", "pads");
+                writer.WriteAttributeString("fill", PadFillColor);
+                writer.WriteAttributeString("fill-opacity", PadFillOpacity);
                 foreach (BoardAssemblyComponent component in components)
                 {
+                    if (component.PadPrimitives == null || component.PadPrimitives.Count == 0)
+                        continue;
+
                     writer.WriteStartElement("g");
+                    writer.WriteAttributeString("id", "component-" + component.InstanceId + "-pads");
+                    writer.WriteAttributeString("data-component", component.Designator);
+                    writer.WriteAttributeString("data-instance", component.InstanceId);
                     writer.WriteAttributeString(
                         "transform",
                         "translate(" + Format(component.X) + " " + Format(component.Y) + ") rotate(" +
                         Format(component.Rotation) + ")" + (component.Mirrored ? " scale(1 -1)" : string.Empty));
-                    foreach (SvgPrimitive primitive in component.Primitives)
+                    foreach (SvgPrimitive primitive in component.PadPrimitives)
+                        primitive.Write(writer);
+                    writer.WriteEndElement();
+                }
+                writer.WriteEndElement();
+
+                writer.WriteStartElement("g");
+                writer.WriteAttributeString("id", "Assembly");
+                writer.WriteAttributeString("data-layer", "assembly");
+                foreach (BoardAssemblyComponent component in components)
+                {
+                    if (component.ShapePrimitives == null || component.ShapePrimitives.Count == 0)
+                        continue;
+
+                    writer.WriteStartElement("g");
+                    writer.WriteAttributeString("id", "component-" + component.InstanceId + "-assembly");
+                    writer.WriteAttributeString("data-component", component.Designator);
+                    writer.WriteAttributeString("data-instance", component.InstanceId);
+                    writer.WriteAttributeString(
+                        "transform",
+                        "translate(" + Format(component.X) + " " + Format(component.Y) + ") rotate(" +
+                        Format(component.Rotation) + ")" + (component.Mirrored ? " scale(1 -1)" : string.Empty));
+                    foreach (SvgPrimitive primitive in component.ShapePrimitives)
                         primitive.Write(writer);
                     writer.WriteEndElement();
                 }
@@ -3306,6 +3436,7 @@ namespace EasyEDA_Loader
         {
             writer.WriteStartElement("g");
             writer.WriteAttributeString("id", id);
+            writer.WriteAttributeString("data-layer", id.ToLowerInvariant());
             writer.WriteAttributeString("transform", "scale(1,-1)");
             if (!string.IsNullOrWhiteSpace(fill))
                 writer.WriteAttributeString("fill", fill);
@@ -5531,6 +5662,12 @@ namespace EasyEDA_Loader
 
         private abstract class SvgPrimitive
         {
+            public string ElementId { get; set; }
+            public string ComponentDesignator { get; set; }
+            public string InstanceId { get; set; }
+            public string FootprintName { get; set; }
+            public string PadNumber { get; set; }
+            public int PadIndex { get; set; }
             public double Left { get; set; } = double.PositiveInfinity;
             public double Bottom { get; set; } = double.PositiveInfinity;
             public double Right { get; set; } = double.NegativeInfinity;
@@ -5538,6 +5675,22 @@ namespace EasyEDA_Loader
             public double StrokeWidth { get; set; }
 
             public abstract void Write(XmlWriter writer);
+
+            protected void WriteMetadataAttributes(XmlWriter writer)
+            {
+                if (!string.IsNullOrWhiteSpace(ElementId))
+                    writer.WriteAttributeString("id", ElementId);
+                if (!string.IsNullOrWhiteSpace(ComponentDesignator))
+                    writer.WriteAttributeString("data-component", ComponentDesignator);
+                if (!string.IsNullOrWhiteSpace(InstanceId))
+                    writer.WriteAttributeString("data-instance", InstanceId);
+                if (!string.IsNullOrWhiteSpace(FootprintName))
+                    writer.WriteAttributeString("data-footprint", FootprintName);
+                if (!string.IsNullOrWhiteSpace(PadNumber))
+                    writer.WriteAttributeString("data-pad-number", PadNumber);
+                if (PadIndex > 0)
+                    writer.WriteAttributeString("data-pad-index", PadIndex.ToString(CultureInfo.InvariantCulture));
+            }
         }
 
         private sealed class SvgPathPrimitive : SvgPrimitive
@@ -5558,6 +5711,7 @@ namespace EasyEDA_Loader
             public override void Write(XmlWriter writer)
             {
                 writer.WriteStartElement("path");
+                WriteMetadataAttributes(writer);
                 writer.WriteAttributeString("d", Data);
                 if (EvenOddFill)
                     writer.WriteAttributeString("fill-rule", "evenodd");

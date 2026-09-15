@@ -12,6 +12,7 @@ namespace EasyEDA_Loader
             ComponentCount = result.ComponentCount;
             FileCount = result.FileCount;
             PrimitiveCount = result.PrimitiveCount;
+            PadCount = result.PadCount;
             OutputFiles = result.OutputFiles.ToArray();
             DiagnosticsPath = result.DiagnosticsPath;
             Warnings = result.Warnings.ToArray();
@@ -21,6 +22,7 @@ namespace EasyEDA_Loader
         public int ComponentCount { get; }
         public int FileCount { get; }
         public int PrimitiveCount { get; }
+        public int PadCount { get; }
         public IReadOnlyList<string> OutputFiles { get; }
         public string DiagnosticsPath { get; }
         public IReadOnlyList<string> Warnings { get; }
