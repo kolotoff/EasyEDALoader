@@ -10440,6 +10440,14 @@ namespace StepCleaner.Tests
             AssertContains(shapeExporter, "(int)TObjectId.ePadObject", "pad export must enumerate footprint pad primitives", failures);
             AssertContains(shapeExporter, "private const string PadFillColor = \"#2F80ED\";", "pad SVG group must use a blue fill", failures);
             AssertContains(shapeExporter, "private const string PadFillOpacity = \"0.45\";", "pad SVG group must be semi-transparent", failures);
+            AssertContains(shapeExporter, "StandaloneMountingHoleMinimumDiameterMm = 1.0", "board SVG export must require a 1 mm minimum standalone mounting-hole diameter", failures);
+            AssertContains(shapeExporter, "iterator.AddFilter_ObjectSet(CreateObjectSet((int)TObjectId.ePadObject))", "board SVG export must use the typed SDK pad filter without requesting vias", failures);
+            AssertContains(shapeExporter, "owningComponent != null", "board SVG export must reject component-owned pads from the standalone mounting-pad layer", failures);
+            AssertContains(shapeExporter, "pad.GetState_HoleSize()", "standalone mounting-pad circles must use the actual drilled-hole diameter", failures);
+            AssertContains(shapeExporter, "if (holeSizeCoord <= 0)", "standalone pads without drilled holes must be excluded", failures);
+            AssertContains(shapeExporter, "writer.WriteStartElement(\"circle\")", "standalone mounting pads must be emitted as SVG circle elements", failures);
+            AssertContains(shapeExporter, "writer.WriteAttributeString(\"id\", \"BoardShape\")", "board contour and standalone mounting pads must share the board-shape layer", failures);
+            AssertContains(shapeExporter, "writer.WriteAttributeString(\"id\", \"StandaloneMountingPads\")", "standalone mounting pads must use a separate subgroup inside BoardShape", failures);
             AssertContains(shapeExporter, "WriteSvgGroup(writer, \"Pads\", padPrimitives, PadFillColor, PadFillOpacity);", "with-pads export must identify the pad SVG group as Pads", failures);
             AssertContains(shapeExporter, "WriteSvgGroup(writer, \"Shape\", shapePrimitives);", "shape exporter must identify the Mechanical 2 SVG group as Shape", failures);
             int padsSvgGroupIndex = shapeExporter.IndexOf("WriteSvgGroup(writer, \"Pads\"", StringComparison.Ordinal);

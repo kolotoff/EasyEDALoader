@@ -215,6 +215,10 @@ The root element records `data-coordinate-units="mm"`, and its `width` and
 widths therefore represent millimetres in the SVG view box. Board assembly SVGs
 draw `BoardOutline` in black (`#000000`) with a `0.1` mm stroke; the path also
 records `data-stroke-width-mm="0.1"` for machine-readable confirmation.
+The same `BoardShape` layer contains real SVG `<circle>` elements for holes in
+standalone pads when the drilled-hole diameter is at least `1 mm`. Each circle
+records `data-hole-diameter-mm`. Standalone pads without holes, component-owned
+pads, and vias are excluded.
 
 The same SVG conversion is available to local automation through the
 `EasyEDA-Loader.CommandBridge` named pipe. `export-component-assembly` writes

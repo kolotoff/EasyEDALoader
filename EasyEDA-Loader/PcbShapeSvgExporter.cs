@@ -94,6 +94,7 @@ namespace EasyEDA_Loader
         private const string PadFillOpacity = "0.45";
         private const string BoardOutlineColor = "#000000";
         private const double BoardOutlineStrokeWidthMm = 0.1;
+        private const double StandaloneMountingHoleMinimumDiameterMm = 1.0;
         private const double PadComparisonPositionToleranceMm = 0.001;
         private const double PadComparisonRotationToleranceDegrees = 0.01;
 
@@ -131,6 +132,35 @@ namespace EasyEDA_Loader
         {
             public bool Mirrored { get; set; }
             public List<SvgPrimitive> Primitives { get; set; }
+        }
+
+        private sealed class BoardMountingPad
+        {
+            public string ElementId { get; set; }
+            public string PadNumber { get; set; }
+            public int PadIndex { get; set; }
+            public double X { get; set; }
+            public double Y { get; set; }
+            public double Diameter { get; set; }
+
+            public void Write(XmlWriter writer)
+            {
+                writer.WriteStartElement("circle");
+                writer.WriteAttributeString("id", ElementId);
+                writer.WriteAttributeString("data-kind", "standalone-mounting-pad");
+                if (!string.IsNullOrWhiteSpace(PadNumber))
+                    writer.WriteAttributeString("data-pad-number", PadNumber);
+                if (PadIndex > 0)
+                    writer.WriteAttributeString("data-pad-index", PadIndex.ToString(CultureInfo.InvariantCulture));
+                writer.WriteAttributeString("data-hole-diameter-mm", Format(Diameter));
+                writer.WriteAttributeString("cx", Format(X));
+                writer.WriteAttributeString("cy", Format(Y));
+                writer.WriteAttributeString("r", Format(Diameter / 2.0));
+                writer.WriteAttributeString("fill", "none");
+                writer.WriteAttributeString("stroke", BoardOutlineColor);
+                writer.WriteAttributeString("stroke-width", Format(BoardOutlineStrokeWidthMm));
+                writer.WriteEndElement();
+            }
         }
 
         private sealed class BoardFootprintInstance
@@ -305,6 +335,7 @@ namespace EasyEDA_Loader
 
             IReadOnlyCollection<int> flippedLayers = ResolveFlippedMechanical2LayerNumbers(board);
             var assemblyComponents = new List<BoardAssemblyComponent>();
+            List<BoardMountingPad> mountingPads = CaptureStandaloneMountingPads(board);
             var geometryCache = new Dictionary<string, BoardAssemblyGeometry>(StringComparer.OrdinalIgnoreCase);
             var componentInstanceCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
             var result = new ShapeExportResult();
@@ -375,12 +406,98 @@ namespace EasyEDA_Loader
                 Directory.CreateDirectory(directory);
             File.WriteAllText(
                 fullPath,
-                BuildBoardAssemblySvg(boardBounds, boardContour, assemblyComponents, bottom && mirrorBottom),
+                BuildBoardAssemblySvg(boardBounds, boardContour, assemblyComponents, mountingPads, bottom && mirrorBottom),
                 Utf8NoBom);
             result.OutputFiles.Add(fullPath);
             result.FileCount = 1;
-            result.PrimitiveCount++;
+            result.PrimitiveCount += mountingPads.Count + 1;
+            result.PadCount += mountingPads.Count;
             return result;
+        }
+
+        private static List<BoardMountingPad> CaptureStandaloneMountingPads(IPCB_Board board)
+        {
+            var result = new List<BoardMountingPad>();
+            var usedElementIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            IPCB_BoardIterator iterator = null;
+            try
+            {
+                iterator = board.Internal_BoardIterator_Create() as IPCB_BoardIterator;
+                if (iterator == null)
+                    return result;
+
+                // A typed SDK filter is required here. The generic COM invoke
+                // path can silently ignore object-set filters on large boards.
+                // ePadObject deliberately excludes every eViaObject primitive.
+                iterator.AddFilter_ObjectSet(CreateObjectSet((int)TObjectId.ePadObject));
+                object primitive = iterator.Internal_FirstPCBObject();
+                int visitedPadCount = 0;
+                while (primitive != null)
+                {
+                    GuardIteratorObject(ref visitedPadCount, MaxBoardIteratorObjects, "standalone PCB pad");
+                    if (GetObjectId(primitive) == (int)TObjectId.ePadObject
+                        && primitive is IPCB_Pad pad)
+                    {
+                        AddStandaloneMountingPad(result, usedElementIds, primitive, pad);
+                    }
+
+                    primitive = iterator.Internal_NextPCBObject();
+                }
+            }
+            finally
+            {
+                if (iterator != null)
+                    board.BoardIterator_Destroy(ref iterator);
+            }
+
+            return result;
+        }
+
+        private static void AddStandaloneMountingPad(
+            List<BoardMountingPad> result,
+            HashSet<string> usedElementIds,
+            object primitive,
+            IPCB_Pad pad)
+        {
+            object owningComponent = primitive is IPCB_Primitive pcbPrimitive
+                ? SafeObjectCall(() => pcbPrimitive.Internal_GetState_Component())
+                : Invoke(primitive, "Internal_GetState_Component") ?? Invoke(primitive, "GetState_Component");
+            if (owningComponent != null)
+                return;
+
+            int holeSizeCoord = SafeIntCall(() => pad.GetState_HoleSize());
+            if (holeSizeCoord <= 0)
+                return;
+
+            double diameter = AltiumApi.CoordToMm(holeSizeCoord);
+            if (diameter + 0.0000005 < StandaloneMountingHoleMinimumDiameterMm)
+                return;
+
+            string padNumber = SafeCall(() => pad.GetState_Name());
+            int padIndex = primitive is IPCB_Primitive indexedPrimitive
+                ? SafeIntCall(() => (int)indexedPrimitive.GetState_Index())
+                : 0;
+            int ordinal = result.Count + 1;
+            string elementId = "standalone-pad-" + SanitizeSvgIdToken(
+                padNumber,
+                padIndex > 0
+                    ? padIndex.ToString(CultureInfo.InvariantCulture)
+                    : ordinal.ToString(CultureInfo.InvariantCulture));
+            if (!usedElementIds.Add(elementId))
+            {
+                elementId += "-" + ordinal.ToString(CultureInfo.InvariantCulture);
+                usedElementIds.Add(elementId);
+            }
+
+            result.Add(new BoardMountingPad
+            {
+                ElementId = elementId,
+                PadNumber = padNumber,
+                PadIndex = padIndex,
+                X = AltiumApi.CoordToMm(pad.GetState_XLocation()),
+                Y = AltiumApi.CoordToMm(pad.GetState_YLocation()),
+                Diameter = diameter
+            });
         }
 
         private static ShapeExportResult ExportSingleComponent(
@@ -3309,6 +3426,7 @@ namespace EasyEDA_Loader
             EdgeRailBounds boardBounds,
             EdgeRailContour boardContour,
             IReadOnlyList<BoardAssemblyComponent> components,
+            IReadOnlyList<BoardMountingPad> mountingPads,
             bool mirror)
         {
             const double paddingMm = 0.25;
@@ -3347,6 +3465,10 @@ namespace EasyEDA_Loader
                     writer.WriteAttributeString("transform", "translate(" + Format(boardBounds.MinX + boardBounds.MaxX) + " 0) scale(-1 1)");
                 }
 
+                writer.WriteStartElement("g");
+                writer.WriteAttributeString("id", "BoardShape");
+                writer.WriteAttributeString("data-layer", "board-shape");
+
                 writer.WriteStartElement("path");
                 writer.WriteAttributeString("id", "BoardOutline");
                 writer.WriteAttributeString("data-layer", "board-outline");
@@ -3357,6 +3479,20 @@ namespace EasyEDA_Loader
                 writer.WriteAttributeString("stroke-width", Format(BoardOutlineStrokeWidthMm));
                 writer.WriteAttributeString("stroke-linecap", "round");
                 writer.WriteAttributeString("stroke-linejoin", "round");
+                writer.WriteEndElement();
+
+                if (mountingPads != null && mountingPads.Count > 0)
+                {
+                    writer.WriteStartElement("g");
+                    writer.WriteAttributeString("id", "StandaloneMountingPads");
+                    writer.WriteAttributeString("data-layer", "standalone-mounting-pads");
+                    writer.WriteAttributeString(
+                        "data-minimum-hole-diameter-mm",
+                        Format(StandaloneMountingHoleMinimumDiameterMm));
+                    foreach (BoardMountingPad mountingPad in mountingPads)
+                        mountingPad.Write(writer);
+                    writer.WriteEndElement();
+                }
                 writer.WriteEndElement();
 
                 writer.WriteStartElement("g");
