@@ -15,6 +15,7 @@ internal static class Program
         HolesAndFiducialsMatchReferencePositions();
         RoundedRectangleDetectsR3();
         SharpRectangleDetectsZero();
+        MountingHolesStayInsideOutline();
         Console.WriteLine("EdgeRails tests passed.");
         return 0;
     }
@@ -184,6 +185,25 @@ internal static class Program
         Check(Near(EdgeRailContourAnalyzer.DetectCornerRadius(c), 0), "sharp -> 0");
     }
     private static void AddPt(EdgeRailContour c, double x, double y) { c.Points.Add(new EdgeRailPoint(x, y)); c.Bounds.Add(new EdgeRailPoint(x, y)); }
+
+    private static void MountingHolesStayInsideOutline()
+    {
+        var rectangle = new EdgeRailContour();
+        AddPt(rectangle, 0, 0); AddPt(rectangle, 10, 0);
+        AddPt(rectangle, 10, 10); AddPt(rectangle, 0, 10);
+        Check(EdgeRailContourAnalyzer.ContainsCircle(rectangle, 5, 5, 1), "interior mounting hole");
+        Check(EdgeRailContourAnalyzer.ContainsCircle(rectangle, 1, 5, 1), "hole tangent to outline");
+        Check(!EdgeRailContourAnalyzer.ContainsCircle(rectangle, 0.5, 5, 1), "hole crossing outline");
+        Check(!EdgeRailContourAnalyzer.ContainsCircle(rectangle, 11, 5, 1), "panel hole outside outline");
+
+        var concave = new EdgeRailContour();
+        AddPt(concave, 0, 0); AddPt(concave, 10, 0); AddPt(concave, 10, 10);
+        AddPt(concave, 6, 10); AddPt(concave, 6, 4); AddPt(concave, 4, 4);
+        AddPt(concave, 4, 10); AddPt(concave, 0, 10);
+        Check(!EdgeRailContourAnalyzer.ContainsCircle(concave, 5, 7, 0.5), "hole in concave cutout");
+        Check(!EdgeRailContourAnalyzer.ContainsCircle(concave, 3.5, 7, 1), "hole crossing concave edge");
+        Check(EdgeRailContourAnalyzer.ContainsCircle(concave, 2, 7, 1), "hole inside concave board");
+    }
 }
 
 namespace EasyEDA_Loader { internal static class EasyEDALoaderModule { internal static void Trace(string m) { Console.Error.WriteLine(m); } } }

@@ -218,7 +218,8 @@ records `data-stroke-width-mm="0.1"` for machine-readable confirmation.
 The same `BoardShape` layer contains real SVG `<circle>` elements for holes in
 standalone pads when the drilled-hole diameter is at least `1 mm`. Each circle
 records `data-hole-diameter-mm`. Standalone pads without holes, component-owned
-pads, and vias are excluded.
+pads, and vias are excluded. The entire drilled-hole circle must fit inside
+the actual PCB contour; panel-rail pads outside it are not exported as holes.
 
 The same SVG conversion is available to local automation through the
 `EasyEDA-Loader.CommandBridge` named pipe. `export-component-assembly` writes

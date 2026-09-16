@@ -7,6 +7,49 @@ namespace EasyEDA_Loader
     {
         private const double TolMm = 0.05;
 
+        // A drilled hole belongs to the board only when its entire circle is
+        // inside the actual outline. Bounds alone also include panel-rail pads
+        // and the empty corners of concave boards.
+        public static bool ContainsCircle(EdgeRailContour contour, double x, double y, double radiusMm)
+        {
+            if (contour == null || contour.Points.Count < 3 ||
+                contour.Bounds == null || contour.Bounds.IsEmpty || radiusMm < 0)
+                return false;
+
+            EdgeRailBounds bounds = contour.Bounds;
+            if (x - radiusMm < bounds.MinX || x + radiusMm > bounds.MaxX ||
+                y - radiusMm < bounds.MinY || y + radiusMm > bounds.MaxY)
+                return false;
+
+            bool inside = false;
+            int count = contour.Points.Count;
+            for (int index = 0; index < count; index++)
+            {
+                EdgeRailPoint a = contour.Points[index];
+                EdgeRailPoint b = contour.Points[(index + 1) % count];
+                double dx = b.X - a.X;
+                double dy = b.Y - a.Y;
+                double lengthSquared = dx * dx + dy * dy;
+                if (lengthSquared == 0)
+                    continue;
+
+                double projection = ((x - a.X) * dx + (y - a.Y) * dy) / lengthSquared;
+                projection = Math.Max(0, Math.Min(1, projection));
+                double nearestX = a.X + projection * dx;
+                double nearestY = a.Y + projection * dy;
+                double edgeDx = x - nearestX;
+                double edgeDy = y - nearestY;
+                if (edgeDx * edgeDx + edgeDy * edgeDy < radiusMm * radiusMm)
+                    return false;
+
+                if ((a.Y > y) != (b.Y > y) &&
+                    x < a.X + (y - a.Y) * dx / dy)
+                    inside = !inside;
+            }
+
+            return inside;
+        }
+
         public static double DetectCornerRadius(EdgeRailContour contour)
         {
             if (contour == null || contour.Bounds == null || contour.Bounds.IsEmpty || contour.Points.Count < 4) return 0;

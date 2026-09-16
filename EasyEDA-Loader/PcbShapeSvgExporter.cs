@@ -335,7 +335,7 @@ namespace EasyEDA_Loader
 
             IReadOnlyCollection<int> flippedLayers = ResolveFlippedMechanical2LayerNumbers(board);
             var assemblyComponents = new List<BoardAssemblyComponent>();
-            List<BoardMountingPad> mountingPads = CaptureStandaloneMountingPads(board);
+            List<BoardMountingPad> mountingPads = CaptureStandaloneMountingPads(board, boardContour);
             var geometryCache = new Dictionary<string, BoardAssemblyGeometry>(StringComparer.OrdinalIgnoreCase);
             var componentInstanceCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
             var result = new ShapeExportResult();
@@ -415,7 +415,7 @@ namespace EasyEDA_Loader
             return result;
         }
 
-        private static List<BoardMountingPad> CaptureStandaloneMountingPads(IPCB_Board board)
+        private static List<BoardMountingPad> CaptureStandaloneMountingPads(IPCB_Board board, EdgeRailContour boardContour)
         {
             var result = new List<BoardMountingPad>();
             var usedElementIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -438,7 +438,7 @@ namespace EasyEDA_Loader
                     if (GetObjectId(primitive) == (int)TObjectId.ePadObject
                         && primitive is IPCB_Pad pad)
                     {
-                        AddStandaloneMountingPad(result, usedElementIds, primitive, pad);
+                        AddStandaloneMountingPad(result, usedElementIds, primitive, pad, boardContour);
                     }
 
                     primitive = iterator.Internal_NextPCBObject();
@@ -457,7 +457,8 @@ namespace EasyEDA_Loader
             List<BoardMountingPad> result,
             HashSet<string> usedElementIds,
             object primitive,
-            IPCB_Pad pad)
+            IPCB_Pad pad,
+            EdgeRailContour boardContour)
         {
             object owningComponent = primitive is IPCB_Primitive pcbPrimitive
                 ? SafeObjectCall(() => pcbPrimitive.Internal_GetState_Component())
@@ -471,6 +472,11 @@ namespace EasyEDA_Loader
 
             double diameter = AltiumApi.CoordToMm(holeSizeCoord);
             if (diameter + 0.0000005 < StandaloneMountingHoleMinimumDiameterMm)
+                return;
+
+            double x = AltiumApi.CoordToMm(pad.GetState_XLocation());
+            double y = AltiumApi.CoordToMm(pad.GetState_YLocation());
+            if (!EdgeRailContourAnalyzer.ContainsCircle(boardContour, x, y, diameter / 2.0))
                 return;
 
             string padNumber = SafeCall(() => pad.GetState_Name());
@@ -494,8 +500,8 @@ namespace EasyEDA_Loader
                 ElementId = elementId,
                 PadNumber = padNumber,
                 PadIndex = padIndex,
-                X = AltiumApi.CoordToMm(pad.GetState_XLocation()),
-                Y = AltiumApi.CoordToMm(pad.GetState_YLocation()),
+                X = x,
+                Y = y,
                 Diameter = diameter
             });
         }
