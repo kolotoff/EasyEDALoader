@@ -1065,6 +1065,12 @@ namespace EasyEDA_Loader
                 .WithData("side", side)
                 .WithData("dpi", dpi)
                 .WithData("generator", result.GeneratorName)
+                .WithData("camera_look_at_x", result.CameraLookAtX)
+                .WithData("camera_look_at_y", result.CameraLookAtY)
+                .WithData("camera_view_x", result.CameraViewX)
+                .WithData("camera_view_y", result.CameraViewY)
+                .WithData("camera_units_per_inch", 10000000)
+                .WithData("camera_mirror_x", result.CameraMirrorX)
                 .WithData("document_modified", false)
                 .WithData("document_saved", false);
         }

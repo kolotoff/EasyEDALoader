@@ -23,6 +23,11 @@ namespace EasyEDA_Loader
     internal sealed class Pcb3DImageExportResult
     {
         public string GeneratorName { get; set; }
+        public float CameraLookAtX { get; set; }
+        public float CameraLookAtY { get; set; }
+        public int CameraViewX { get; set; }
+        public int CameraViewY { get; set; }
+        public bool CameraMirrorX { get; set; }
     }
 
     internal static class Pcb3DImageExporter
@@ -143,11 +148,20 @@ namespace EasyEDA_Loader
                     pixelWidth / (double)camera.ViewX,
                     pixelHeight / (double)camera.ViewY);
                 ConfigureCamera(exportView, camera, options.Side != "top");
-                RenderViewToPng(exportView, outputPath, options.Dpi, pixelWidth, pixelHeight);
+                RenderViewToPng(exportView, outputPath, options.Dpi, pixelWidth, pixelHeight,
+                    options.WorkspaceColor);
 
                 if (!File.Exists(outputPath))
                     throw new InvalidOperationException("Altium returned without creating the requested PNG image.");
-                return new Pcb3DImageExportResult { GeneratorName = "Altium PCB 3D graphical view" };
+                return new Pcb3DImageExportResult
+                {
+                    GeneratorName = "Altium PCB 3D graphical view",
+                    CameraLookAtX = camera.LookAtX,
+                    CameraLookAtY = camera.LookAtY,
+                    CameraViewX = camera.ViewX,
+                    CameraViewY = camera.ViewY,
+                    CameraMirrorX = options.Side != "top"
+                };
             }
             finally
             {
@@ -299,7 +313,7 @@ namespace EasyEDA_Loader
         }
 
         private static void RenderViewToPng(RT_PCB.IPCB_GraphicalView view,
-            string outputPath, int dpi, int pixelWidth, int pixelHeight)
+            string outputPath, int dpi, int pixelWidth, int pixelHeight, int workspaceColor)
         {
             var rectangle = new rt_basic.TRect
             {
@@ -318,12 +332,15 @@ namespace EasyEDA_Loader
                 bitmap.SetResolution(dpi, dpi);
                 using (Graphics graphics = Graphics.FromImage(bitmap))
                 {
-                    graphics.Clear(Color.Transparent);
+                    // The opaque renderer paints Altium's shaded workspace even when
+                    // SetState_3DWorkspaceColor is white. Render the scene with a
+                    // transparent workspace onto a flat requested-color canvas.
+                    graphics.Clear(ToDrawingColor(workspaceColor, Color.White));
                     IntPtr dc = graphics.GetHdc();
                     try
                     {
                         view.RenderToDCTransparent(
-                            dc, pixelWidth, pixelHeight, rectangle, rectangle, false);
+                            dc, pixelWidth, pixelHeight, rectangle, rectangle, true);
                     }
                     finally
                     {
@@ -332,6 +349,16 @@ namespace EasyEDA_Loader
                 }
                 bitmap.Save(outputPath, ImageFormat.Png);
             }
+        }
+
+        private static Color ToDrawingColor(int colorRef, Color fallback)
+        {
+            if (colorRef < 0)
+                return fallback;
+            return Color.FromArgb(
+                colorRef & 0xFF,
+                (colorRef >> 8) & 0xFF,
+                (colorRef >> 16) & 0xFF);
         }
 
         private static ActiveViewConfiguration PrepareOrthographicViewConfig(IPCB_Board board,
