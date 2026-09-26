@@ -45,7 +45,10 @@ namespace EasyEDA_Loader
 
         private async void RefreshModelsButton_Click(object sender, RoutedEventArgs e)
         {
+            if (!duplicateButton.IsEnabled)
+                return;
             cancellation?.Cancel();
+            cancellation?.Dispose();
             cancellation = new CancellationTokenSource();
             await RefreshModelsAsync(cancellation.Token).ConfigureAwait(true);
         }
@@ -71,6 +74,8 @@ namespace EasyEDA_Loader
             try
             {
                 duplicateButton.IsEnabled = false;
+                cancellation?.Cancel();
+                cancellation?.Dispose();
                 cancellation = new CancellationTokenSource();
                 await DuplicateAsync(cancellation.Token).ConfigureAwait(true);
             }
@@ -96,6 +101,13 @@ namespace EasyEDA_Loader
             DialogResult = false;
         }
 
+        protected override void OnClosed(EventArgs e)
+        {
+            cancellation?.Cancel();
+            cancellation?.Dispose();
+            base.OnClosed(e);
+        }
+
         private async Task RefreshModelsAsync(CancellationToken cancellationToken)
         {
             SetProgress("Checking Ollama...", null, true);
@@ -112,6 +124,9 @@ namespace EasyEDA_Loader
             {
                 modelStatusText.Text = "Ollama unavailable: " + ex.Message;
             }
+
+            if (cancellationToken.IsCancellationRequested)
+                return;
 
             string selected = OllamaLayoutMappingClient.SelectInitialModel(installed, loaded, session.LastUsedModel);
             var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -252,6 +267,7 @@ namespace EasyEDA_Loader
             string prompt = LayoutDuplicationMapper.BuildMappingPrompt(request);
             SetProgress("Waiting for AI mapping...", null, true);
             string response = await ollamaClient.RequestMappingAsync(model.Name, prompt, cancellationToken).ConfigureAwait(true);
+            cancellationToken.ThrowIfCancellationRequested();
             SetProgress("Validating mapping...", null, true);
             LayoutMappingValidationResult validation = LayoutDuplicationMapper.ValidateMappingResponse(response, request);
             if (!validation.HasValidGroups)

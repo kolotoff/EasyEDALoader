@@ -30,6 +30,7 @@ namespace EasyEDA_Loader
             var result = new JlcCamGerberFile { Path = path };
             var apertures = new Dictionary<int, JlcCamAperture>();
             bool inches = false, unitsSpecified = false, trailingZero = false, absolute = true, clockwise = false, inRegion = false, darkPolarity = true;
+            bool singleQuadrant = false;
             int xInt = 2, xDec = 4, yInt = 2, yDec = 4, currentAperture = -1, operation = 2, interpolation = 1, depth = 0;
             JlcCamPoint current = new JlcCamPoint(0, 0);
             int commandCount = 0;
@@ -37,7 +38,8 @@ namespace EasyEDA_Loader
             {
                 if (++commandCount > MaxCommands) throw new InvalidDataException("Gerber command limit (" + MaxCommands + ") exceeded in " + path + ".");
                 string command = raw.Trim().ToUpperInvariant();
-                if (command.Length == 0 || command == "M02") continue;
+                if (command.Length == 0) continue;
+                if (command == "M02") break;
                 if (command.StartsWith("G04")) { int parsed; if (TryDepth(command, out parsed)) depth = parsed; continue; }
                 if (command.StartsWith("FS"))
                 {
@@ -58,15 +60,16 @@ namespace EasyEDA_Loader
                 if (command.StartsWith("G01") || command.StartsWith("G1")) { interpolation = 1; command = command.StartsWith("G01") ? command.Substring(3) : command.Substring(2); if (command.Length == 0) continue; }
                 if (command.StartsWith("G02") || command.StartsWith("G2")) { interpolation = 2; clockwise = true; command = command.StartsWith("G02") ? command.Substring(3) : command.Substring(2); if (command.Length == 0) continue; }
                 if (command.StartsWith("G03") || command.StartsWith("G3")) { interpolation = 3; clockwise = false; command = command.StartsWith("G03") ? command.Substring(3) : command.Substring(2); if (command.Length == 0) continue; }
-                if (command == "G74" || command == "G75") continue;
+                if (command == "G74") { singleQuadrant = true; continue; }
+                if (command == "G75") { singleQuadrant = false; continue; }
                 if (command == "LPD") { darkPolarity = true; continue; }
                 if (command == "LPC") { darkPolarity = false; continue; }
                 if (command.StartsWith("D") && int.TryParse(command.Substring(1), out int selected) && selected >= 10) { currentAperture = selected; continue; }
-                if (!command.Contains("X") && !command.Contains("Y") && !command.Contains("I") && !command.Contains("J")) continue;
-                if (inRegion) continue;
+                int suffixD = ExtractOperation(command, -1);
+                if (suffixD < 0 && !CoordinateRegex.IsMatch(command)) continue;
                 if (!unitsSpecified) throw new InvalidDataException("Gerber units are missing before coordinate data: " + path);
                 if (!absolute) throw new InvalidDataException("Incremental Gerber coordinates are unsupported: " + path);
-                int suffixD = ExtractOperation(command, operation); if (suffixD >= 0) operation = suffixD;
+                if (suffixD >= 0) operation = suffixD;
                 double x = current.X, y = current.Y, i = 0, j = 0; bool hasI = false, hasJ = false;
                 foreach (Match match in CoordinateRegex.Matches(command))
                 {
@@ -75,18 +78,24 @@ namespace EasyEDA_Loader
                     if (key == 'X') x = value; else if (key == 'Y') y = value; else if (key == 'I') { i = value; hasI = true; } else { j = value; hasJ = true; }
                 }
                 var target = new JlcCamPoint(x, y);
+                // Regions do not contribute rail centre-lines or fiducial flashes,
+                // but their operations still update the current point and mode.
+                if (inRegion) { current = target; continue; }
                 if (operation == 3)
                 {
                     if (!apertures.TryGetValue(currentAperture, out JlcCamAperture aperture)) throw new InvalidDataException("Flash has no selected aperture in " + path);
                     if (darkPolarity) result.Flashes.Add(new JlcCamFlash { Center = target, Aperture = aperture, Depth = depth, SourceFile = path }); current = target; continue;
                 }
-                if (operation == 1)
+                if (operation == 1 && darkPolarity)
                 {
                     JlcCamSegment segment = new JlcCamSegment { Kind = interpolation == 1 ? JlcCamSegmentKind.Line : JlcCamSegmentKind.Arc, Start = current, End = target, Depth = depth, Clockwise = clockwise };
                     if (segment.Kind == JlcCamSegmentKind.Arc)
                     {
                         if (!hasI && !hasJ) throw new InvalidDataException("Arc missing I/J centre offset in " + path);
-                        segment.Center = new JlcCamPoint(current.X + i, current.Y + j);
+                        segment.Center = singleQuadrant
+                            ? SingleQuadrantCenter(current, target, i, j, clockwise,
+                                Math.Pow(10, -Math.Min(xDec, yDec)) * (inches ? 25.4 : 1.0) * 2, path)
+                            : new JlcCamPoint(current.X + i, current.Y + j);
                     }
                     result.Segments.Add(segment);
                 }
@@ -99,6 +108,26 @@ namespace EasyEDA_Loader
         private static IEnumerable<string> Tokenize(string text)
         {
             foreach (string item in Regex.Split(text.Replace("\r", "").Replace("\n", ""), "[\\*%]")) yield return item;
+        }
+        private static JlcCamPoint SingleQuadrantCenter(JlcCamPoint start, JlcCamPoint end,
+            double i, double j, bool clockwise, double tolerance, string path)
+        {
+            JlcCamPoint best = null;
+            double bestError = double.PositiveInfinity;
+            foreach (int sx in new[] { -1, 1 }) foreach (int sy in new[] { -1, 1 })
+            {
+                var center = new JlcCamPoint(start.X + sx * Math.Abs(i), start.Y + sy * Math.Abs(j));
+                double radius = center.DistanceTo(start);
+                double error = Math.Abs(radius - center.DistanceTo(end));
+                if (radius <= 0 || error > tolerance) continue;
+                double a = Math.Atan2(start.Y - center.Y, start.X - center.X);
+                double b = Math.Atan2(end.Y - center.Y, end.X - center.X);
+                double sweep = clockwise ? a - b : b - a;
+                sweep = (sweep % (2 * Math.PI) + 2 * Math.PI) % (2 * Math.PI);
+                if (sweep > Math.PI / 2 + tolerance / radius) continue;
+                if (error < bestError) { best = center; bestError = error; }
+            }
+            return best ?? throw new InvalidDataException("Invalid single-quadrant arc in " + path);
         }
         private static void AddAperture(string command, Dictionary<int, JlcCamAperture> apertures, bool inches, string path)
         {

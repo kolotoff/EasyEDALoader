@@ -188,7 +188,7 @@ namespace StepCleaner.Tests
             if (method == null)
                 throw new InvalidOperationException("RemoveFullyOverlappedOcctPrimitives was not found.");
 
-            return (List<StepSilhouettePrimitive>)method.Invoke(null, new object[] { primitives });
+            return (List<StepSilhouettePrimitive>)method.Invoke(null, new object[] { primitives, Type.Missing });
         }
 
         private static List<StepSilhouettePrimitive> OptimizeOcctPrimitives(List<StepSilhouettePrimitive> primitives)

@@ -29,7 +29,7 @@ namespace EasyEDA_Loader
 
             return GetJsonObjectAsync(
                 Path.Combine(GetComponentCacheDirectory(lcscId), "product-search.json"),
-                () => api.SearchProductInfoAsync(lcscId),
+                () => api.SearchProductInfoAsync(lcscId, cancellationToken),
                 cancellationToken);
         }
 
@@ -59,7 +59,7 @@ namespace EasyEDA_Loader
 
             return GetJsonObjectAsync(
                 Path.Combine(GetComponentCacheDirectory(search), "product-info-" + GetStableHash(uuid) + ".json"),
-                () => api.GetProductInfoAsync(search, uuid),
+                () => api.GetProductInfoAsync(search, uuid, cancellationToken),
                 cancellationToken);
         }
 
@@ -245,6 +245,23 @@ namespace EasyEDA_Loader
             foreach (char invalidChar in Path.GetInvalidFileNameChars())
                 value = value.Replace(invalidChar, '_');
 
+            // Windows normalizes trailing dots/spaces, including "." and "..".
+            // Such keys must never resolve to the cache root or its parent.
+            string trimmed = value.TrimEnd(' ', '.');
+            if (trimmed.Length == 0)
+                return "_" + GetStableHash(value);
+            value = trimmed;
+
+            string stem = value.Split('.')[0];
+            if (string.Equals(stem, "CON", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(stem, "PRN", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(stem, "AUX", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(stem, "NUL", StringComparison.OrdinalIgnoreCase)
+                || (stem.Length == 4 && stem[3] >= '1' && stem[3] <= '9'
+                    && (stem.StartsWith("COM", StringComparison.OrdinalIgnoreCase)
+                        || stem.StartsWith("LPT", StringComparison.OrdinalIgnoreCase))))
+                value = "_" + value;
+
             return value;
         }
 
@@ -321,10 +338,14 @@ namespace EasyEDA_Loader
             if (string.IsNullOrWhiteSpace(json))
                 return default;
 
+            T data = JsonConvert.DeserializeObject<T>(json);
+            if (data == null || (isValid != null && !isValid(data)))
+                return default;
+
             Directory.CreateDirectory(Path.GetDirectoryName(cachePath));
             File.WriteAllText(cachePath, json, Encoding.UTF8);
 
-            return JsonConvert.DeserializeObject<T>(json);
+            return data;
         }
 
         private static bool IsUsableComponentRoot(Root root)
@@ -403,6 +424,11 @@ namespace EasyEDA_Loader
         {
             if (string.IsNullOrWhiteSpace(directory) || !Directory.Exists(directory))
                 return 0;
+
+            string cacheRoot = Path.GetFullPath(Path.Combine(GetLocalDataRoot(), "ComponentCache")) + Path.DirectorySeparatorChar;
+            directory = Path.GetFullPath(directory);
+            if (!directory.StartsWith(cacheRoot, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException("Component cache deletion must stay below the component cache root.");
 
             int fileCount = Directory.GetFiles(directory, "*", SearchOption.AllDirectories).Length;
             Directory.Delete(directory, true);

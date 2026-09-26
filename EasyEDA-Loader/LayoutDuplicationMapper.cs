@@ -60,7 +60,7 @@ namespace EasyEDA_Loader
             JObject root;
             try
             {
-                root = JObject.Parse(json);
+                root = JObject.Parse(json, new JsonLoadSettings { DuplicatePropertyNameHandling = DuplicatePropertyNameHandling.Error });
             }
             catch (Exception ex)
             {
@@ -81,6 +81,12 @@ namespace EasyEDA_Loader
 
             foreach (JToken groupToken in groups)
             {
+                if (!(groupToken is JObject))
+                {
+                    result.Errors.Add("Mapping group must be a JSON object.");
+                    continue;
+                }
+
                 string targetAnchor = groupToken["target_anchor"]?.ToString() ?? groupToken["anchor"]?.ToString();
                 if (string.IsNullOrWhiteSpace(targetAnchor) || !checkedTargets.Contains(targetAnchor))
                 {
@@ -106,13 +112,21 @@ namespace EasyEDA_Loader
                     continue;
                 }
 
+                if (map.Count != sourceByDesignator.Count
+                    || map.Properties().Any(property => !sourceByDesignator.ContainsKey(property.Name))
+                    || map.Properties().Select(property => property.Name).Distinct(StringComparer.OrdinalIgnoreCase).Count() != map.Count)
+                {
+                    result.Errors.Add("Target " + targetAnchor + " must map exactly the requested source keys.");
+                    continue;
+                }
+
                 var destinationsUsed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                 var validated = new LayoutValidatedGroup { TargetAnchorDesignator = targetAnchor };
                 bool groupValid = true;
                 foreach (LayoutComponentSnapshot source in request.SourceComponents)
                 {
-                    JToken valueToken = map[source.Designator];
-                    string destinationDesignator = valueToken?.ToString();
+                    JToken valueToken = map.GetValue(source.Designator, StringComparison.OrdinalIgnoreCase);
+                    string destinationDesignator = valueToken?.Type == JTokenType.String ? valueToken.Value<string>() : null;
                     if (string.IsNullOrWhiteSpace(destinationDesignator))
                     {
                         result.Errors.Add("Target " + targetAnchor + " is missing source key " + source.Designator + ".");
@@ -123,6 +137,15 @@ namespace EasyEDA_Loader
                     if (!destinationByDesignator.TryGetValue(destinationDesignator, out LayoutComponentSnapshot destination))
                     {
                         result.Errors.Add("Target " + targetAnchor + " invented destination " + destinationDesignator + ".");
+                        groupValid = false;
+                        continue;
+                    }
+
+                    if (sourceByDesignator.ContainsKey(destinationDesignator)
+                        || (checkedTargets.Contains(destinationDesignator)
+                            && !string.Equals(destinationDesignator, targetAnchor, StringComparison.OrdinalIgnoreCase)))
+                    {
+                        result.Errors.Add("Target " + targetAnchor + " reuses a source component or another target anchor: " + destinationDesignator + ".");
                         groupValid = false;
                         continue;
                     }
@@ -156,6 +179,23 @@ namespace EasyEDA_Loader
                     result.ValidGroups.Add(validated);
                 }
             }
+
+            foreach (string missingTarget in checkedTargets.Except(seenTargets, StringComparer.OrdinalIgnoreCase))
+                result.Errors.Add("Mapping response omitted target anchor " + missingTarget + ".");
+
+            // A component may belong to only one copy. Reject every conflicting
+            // group, so response order cannot decide which copy moves shared parts.
+            var conflictingGroups = new HashSet<LayoutValidatedGroup>();
+            foreach (var usage in result.ValidGroups
+                .SelectMany(group => group.SourceToDestination.Values.Select(destination => new { Destination = destination, Group = group }))
+                .GroupBy(item => item.Destination, StringComparer.OrdinalIgnoreCase)
+                .Where(group => group.Count() > 1))
+            {
+                result.Errors.Add("Destination " + usage.Key + " is shared by multiple target groups.");
+                foreach (var item in usage)
+                    conflictingGroups.Add(item.Group);
+            }
+            result.ValidGroups.RemoveAll(group => conflictingGroups.Contains(group));
 
             return result;
         }

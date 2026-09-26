@@ -17,22 +17,31 @@ namespace EasyEDA_Loader
     {
         private const string Version = "6.4.19.5";
         private const string UserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36";
-        private HttpClient HttpClient;
+        private static readonly HttpClient SharedHttpClient = CreateHttpClient();
+        private readonly HttpClient HttpClient;
 
-        public EasyedaApi()
+        public EasyedaApi() : this(SharedHttpClient)
         {
-            HttpClient = new HttpClient(new HttpClientHandler
+        }
+
+        internal EasyedaApi(HttpClient httpClient)
+        {
+            HttpClient = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
+        }
+
+        private static HttpClient CreateHttpClient()
+        {
+            var client = new HttpClient(new HttpClientHandler
             {
-                AutomaticDecompression = System.Net.DecompressionMethods.GZip | System.Net.DecompressionMethods.Deflate
+                AutomaticDecompression = System.Net.DecompressionMethods.All
             })
             {
                 Timeout = TimeSpan.FromSeconds(30)
             };
 
-            HttpClient.DefaultRequestHeaders.Clear();
-            HttpClient.DefaultRequestHeaders.Add("Accept-Encoding", "gzip, deflate, br");
-            HttpClient.DefaultRequestHeaders.Add("Accept", "application/json, text/javascript, */*; q=0.01");
-            HttpClient.DefaultRequestHeaders.Add("User-Agent", UserAgent);
+            client.DefaultRequestHeaders.Add("Accept", "application/json, text/javascript, */*; q=0.01");
+            client.DefaultRequestHeaders.Add("User-Agent", UserAgent);
+            return client;
         }
 
         private void LogResponse(string content)
@@ -72,7 +81,7 @@ namespace EasyEDA_Loader
 
             try
             {
-                var response = await HttpClient.GetAsync(url, cancellationToken).ConfigureAwait(false);
+                using var response = await HttpClient.GetAsync(url, cancellationToken).ConfigureAwait(false);
                 Debug.WriteLine($"[API] Response Status: {(int)response.StatusCode} {response.StatusCode}");
                 Console.WriteLine($"[API] Response Status: {(int)response.StatusCode} {response.StatusCode}");
                 
@@ -89,7 +98,7 @@ namespace EasyEDA_Loader
             {
                 Debug.WriteLine($"[API] Download was cancelled: {cancel.Message}");
                 Console.WriteLine($"Download was cancelled: {cancel.Message}");
-                return null;
+                throw;
             }
             catch (Exception ex)
             {
@@ -97,25 +106,24 @@ namespace EasyEDA_Loader
                 Debug.WriteLine($"[API] Stack Trace: {ex.StackTrace}");
                 Console.WriteLine($"[API] Error: {ex.Message}");
                 Console.WriteLine($"[API] Stack Trace: {ex.StackTrace}");
-                throw ex;
+                throw;
             }
         }
 
         public async Task<byte[]> LoadPngBytesAsync(string imageUrl, CancellationToken cancellationToken)
         {
-            // Add the host path if it doesnt exist
-            if (!imageUrl.Contains("//"))
-            {
-                imageUrl = "//image.lceda.cn" + imageUrl;
-            }
+            if (string.IsNullOrWhiteSpace(imageUrl))
+                return null;
 
-            string fullUrl = $"https:{imageUrl}";
+            var fullUrl = new Uri(new Uri("https://image.lceda.cn/"), imageUrl);
+            if (fullUrl.Scheme != Uri.UriSchemeHttps && fullUrl.Scheme != Uri.UriSchemeHttp)
+                throw new ArgumentException("Thumbnail URL must use HTTP or HTTPS.", nameof(imageUrl));
             Debug.WriteLine($"[API] GET Request (Image): {fullUrl}");
             Console.WriteLine($"[API] GET Request (Image): {fullUrl}");
 
             try
             {
-                var res = await HttpClient.GetAsync(fullUrl, cancellationToken).ConfigureAwait(false);
+                using var res = await HttpClient.GetAsync(fullUrl, cancellationToken).ConfigureAwait(false);
                 Debug.WriteLine($"[API] Response Status: {(int)res.StatusCode} {res.StatusCode}");
                 Console.WriteLine($"[API] Response Status: {(int)res.StatusCode} {res.StatusCode}");
                 
@@ -130,13 +138,13 @@ namespace EasyEDA_Loader
             {
                 Debug.WriteLine($"[API] Download was cancelled: {cancel.Message}");
                 Console.WriteLine($"Download was cancelled: {cancel.Message}");
-                return null;
+                throw;
             }
             catch (Exception ex)
             {
                 Debug.WriteLine($"[API] Error loading image: {ex.Message}");
                 Console.WriteLine($"[API] Error loading image: {ex.Message}");
-                throw ex;
+                throw;
             }
         }
 
@@ -149,7 +157,7 @@ namespace EasyEDA_Loader
                     return null;
 
                 var bitmap = new BitmapImage();
-                var stream = new MemoryStream(imageData);
+                using var stream = new MemoryStream(imageData);
 
                 bitmap.BeginInit();
                 bitmap.CacheOption = BitmapCacheOption.OnLoad;
@@ -165,13 +173,13 @@ namespace EasyEDA_Loader
             {
                 Debug.WriteLine($"[API] Download was cancelled: {cancel.Message}");
                 Console.WriteLine($"Download was cancelled: {cancel.Message}");
-                return null;
+                throw;
             }
             catch (Exception ex)
             {
                 Debug.WriteLine($"[API] Error loading image: {ex.Message}");
                 Console.WriteLine($"[API] Error loading image: {ex.Message}");
-                throw ex;
+                throw;
             }
         }
 
@@ -183,7 +191,7 @@ namespace EasyEDA_Loader
 
             try
             {
-                var res = await HttpClient.GetAsync(url, cancellationToken).ConfigureAwait(false);
+                using var res = await HttpClient.GetAsync(url, cancellationToken).ConfigureAwait(false);
                 Debug.WriteLine($"[API] Response Status: {(int)res.StatusCode} {res.StatusCode}");
                 Console.WriteLine($"[API] Response Status: {(int)res.StatusCode} {res.StatusCode}");
                 
@@ -198,13 +206,13 @@ namespace EasyEDA_Loader
             {
                 Debug.WriteLine($"[API] Download was cancelled: {cancel.Message}");
                 Console.WriteLine($"Download was cancelled: {cancel.Message}");
-                return null;
+                throw;
             }
             catch (Exception ex)
             {
                 Debug.WriteLine($"[API] Error loading model: {ex.Message}");
                 Console.WriteLine($"[API] Error loading model: {ex.Message}");
-                throw ex;
+                throw;
             }
         }
 
@@ -216,7 +224,7 @@ namespace EasyEDA_Loader
 
             try
             {
-                var res = await HttpClient.GetAsync(url, cancellationToken).ConfigureAwait(false);
+                using var res = await HttpClient.GetAsync(url, cancellationToken).ConfigureAwait(false);
                 Debug.WriteLine($"[API] Response Status: {(int)res.StatusCode} {res.StatusCode}");
                 Console.WriteLine($"[API] Response Status: {(int)res.StatusCode} {res.StatusCode}");
                 
@@ -231,13 +239,13 @@ namespace EasyEDA_Loader
             {
                 Debug.WriteLine($"[API] Download was cancelled: {cancel.Message}");
                 Console.WriteLine($"Download was cancelled: {cancel.Message}");
-                return null;
+                throw;
             }
             catch (Exception ex)
             {
                 Debug.WriteLine($"[API] Error loading raw model: {ex.Message}");
                 Console.WriteLine($"[API] Error loading raw model: {ex.Message}");
-                throw ex;
+                throw;
             }
         }
 
@@ -260,7 +268,7 @@ namespace EasyEDA_Loader
             public Vec3 Offset { get; set; }
             public Dictionary<string, string> Parameters { get; set; }
         }
-        public async Task<ProductInfo> GetProductInfoAsync(string search, string uuid)
+        public async Task<ProductInfo> GetProductInfoAsync(string search, string uuid, CancellationToken cancellationToken = default)
         {
             string url = $"https://pro.easyeda.com/api/v2/devices/search";
             Debug.WriteLine($"[API] POST Request: {url}");
@@ -272,7 +280,7 @@ namespace EasyEDA_Loader
                 { "pageSize", "1" },
                 { "uid", uuid },
                 { "path", uuid },
-                { "wd", search.ToLower() },
+                { "wd", search.ToLowerInvariant() },
                 { "returnListStyle", "classifyarr" }
             };
             
@@ -281,7 +289,7 @@ namespace EasyEDA_Loader
             
             var content = new FormUrlEncodedContent(formData);
             
-            var request = new HttpRequestMessage(HttpMethod.Post, url);
+            using var request = new HttpRequestMessage(HttpMethod.Post, url);
             request.Content = content;
             request.Headers.Add("Referer", "https://pro.easyeda.com/editor");
             request.Headers.Add("Origin", "https://pro.easyeda.com");
@@ -292,7 +300,7 @@ namespace EasyEDA_Loader
 
             try
             {
-                var response = await HttpClient.SendAsync(request).ConfigureAwait(false);
+                using var response = await HttpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
                 Debug.WriteLine($"[API] Response Status: {(int)response.StatusCode} {response.StatusCode}");
                 Console.WriteLine($"[API] Response Status: {(int)response.StatusCode} {response.StatusCode}");
                 
@@ -307,6 +315,10 @@ namespace EasyEDA_Loader
                 JObject obj_info = (JObject)obj["result"]["lists"]["lcsc"][0];
                 var attributes = obj_info["attributes"].ToObject<Dictionary<string, string>>();
                 return ProductFromAttributes(attributes, obj_info["description"].ToString());
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
             }
             catch (Exception ex)
             {
@@ -379,7 +391,7 @@ namespace EasyEDA_Loader
             };
         }
 
-        public async Task<List<PartInfo>> SearchProductInfoAsync(string lcscId)
+        public async Task<List<PartInfo>> SearchProductInfoAsync(string lcscId, CancellationToken cancellationToken = default)
         {
             string url = $"https://pro.easyeda.com/api/v2/eda/product/search";
             Debug.WriteLine($"[API] POST Request: {url}");
@@ -396,7 +408,7 @@ namespace EasyEDA_Loader
 
             var content = new StringContent(jsonPayload, Encoding.UTF8, "application/json");
             
-            var request = new HttpRequestMessage(HttpMethod.Post, url);
+            using var request = new HttpRequestMessage(HttpMethod.Post, url);
             request.Content = content;
             request.Headers.Add("Referer", "https://pro.easyeda.com/editor");
             request.Headers.Add("Origin", "https://pro.easyeda.com");
@@ -407,7 +419,7 @@ namespace EasyEDA_Loader
             
             try
             {
-                var response = await HttpClient.SendAsync(request).ConfigureAwait(false);
+                using var response = await HttpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
                 Debug.WriteLine($"[API] Response Status: {(int)response.StatusCode} {response.StatusCode}");
                 Console.WriteLine($"[API] Response Status: {(int)response.StatusCode} {response.StatusCode}");
                 
@@ -430,12 +442,13 @@ namespace EasyEDA_Loader
                     try
                     {
                         JObject device_info = (JObject)product["device_info"];
-                        var attributes = device_info["attributes"].ToObject<Dictionary<string, string>>();
-                        productInfo = ProductFromAttributes(attributes, device_info != null ? device_info["Description"].ToString() : "");
+                        var attributes = device_info?["attributes"]?.ToObject<Dictionary<string, string>>();
+                        productInfo = ProductFromAttributes(attributes,
+                            device_info?["Description"]?.ToString() ?? device_info?["description"]?.ToString() ?? "");
                         
-                        hasSymbol = device_info["symbol_info"] != null;
-                        hasFootprint = device_info["footprint_info"] != null;
-                        has3d = device_info["footprint_info"]?["model_3d"] != null;
+                        hasSymbol = device_info?["symbol_info"] is JToken symbol && symbol.Type != JTokenType.Null;
+                        hasFootprint = device_info?["footprint_info"] is JToken footprint && footprint.Type != JTokenType.Null;
+                        has3d = device_info?["footprint_info"]?["model_3d"] is JToken model && model.Type != JTokenType.Null;
                     }
                     catch (Exception)
                     {
@@ -456,6 +469,10 @@ namespace EasyEDA_Loader
                 Debug.WriteLine($"[API] Found {productList.Count} products");
                 Console.WriteLine($"[API] Found {productList.Count} products");
                 return productList;
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
             }
             catch (Exception ex)
             {

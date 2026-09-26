@@ -10976,7 +10976,13 @@ namespace StepCleaner.Tests
                 if (!line.Contains("await "))
                     continue;
 
-                if (!line.Contains("ConfigureAwait(false)"))
+                string expression = line;
+                // ConfigureAwait can be placed on the next line of the same
+                // statement. Do not diagnose line wrapping as a missing call.
+                for (int next = i + 1; expression.IndexOf(';') < 0 && next < lines.Length; next++)
+                    expression += " " + lines[next].Trim();
+
+                if (!expression.Contains("ConfigureAwait(false)"))
                     failures.Add(label + " line " + (i + 1).ToString(CultureInfo.InvariantCulture) + " awaits without ConfigureAwait(false): " + line);
             }
         }

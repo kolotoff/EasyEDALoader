@@ -34,10 +34,13 @@ namespace EasyEDA_Loader
 
         public void Start()
         {
+            if (disposed)
+                throw new ObjectDisposedException(nameof(EasyEdaCommandBridge));
             if (listenTask != null)
                 return;
 
-            listenTask = Task.Run(() => ListenAsync(cancellation.Token));
+            CancellationToken token = cancellation.Token;
+            listenTask = Task.Run(() => ListenAsync(token));
         }
 
         private async Task ListenAsync(CancellationToken cancellationToken)
@@ -57,9 +60,13 @@ namespace EasyEDA_Loader
                         await HandleClientAsync(pipe, cancellationToken).ConfigureAwait(false);
                     }
                 }
-                catch (OperationCanceledException)
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
                 {
                     return;
+                }
+                catch (OperationCanceledException)
+                {
+                    // An idle client must not monopolize the only pipe instance.
                 }
                 catch (IOException ex) when (IsPipeInstanceBusy(ex))
                 {
@@ -80,14 +87,19 @@ namespace EasyEDA_Loader
                 && exception.Message.IndexOf("All pipe instances are busy", StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
-        private async Task HandleClientAsync(Stream stream, CancellationToken cancellationToken)
+        internal async Task HandleClientAsync(Stream stream, CancellationToken cancellationToken)
         {
             using (var reader = new StreamReader(stream, Encoding.UTF8, false, 1024, true))
             using (var writer = new StreamWriter(stream, new UTF8Encoding(false), 1024, true) { AutoFlush = true })
             {
-                string request = await reader.ReadLineAsync().ConfigureAwait(false);
+                using var readTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                readTimeout.CancelAfter(TimeSpan.FromSeconds(10));
+                string request = await reader.ReadLineAsync(readTimeout.Token).ConfigureAwait(false);
+                cancellationToken.ThrowIfCancellationRequested();
+                if (request == null)
+                    return;
                 CommandResponse response = ExecuteRequest(request);
-                await writer.WriteLineAsync(response.ToJson()).ConfigureAwait(false);
+                await writer.WriteLineAsync(response.ToJson().AsMemory(), cancellationToken).ConfigureAwait(false);
             }
         }
 

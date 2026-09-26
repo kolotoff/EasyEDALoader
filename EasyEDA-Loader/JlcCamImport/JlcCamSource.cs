@@ -73,13 +73,22 @@ namespace EasyEDA_Loader
             string zipRoot = Path.Combine(root, "YG-original"); Directory.CreateDirectory(zipRoot);
             using (ZipArchive archive = ZipFile.OpenRead(zip))
             {
+                long declaredTotal = 0; int count = 0;
+                // Preflight all entries before creating any output files.
+                foreach (ZipArchiveEntry entry in archive.Entries)
+                {
+                    ValidateEntrySize(entry.Length, ref count, ref declaredTotal);
+                    SafeTargetPath(zipRoot, entry.FullName);
+                }
+                long extractedTotal = 0;
                 foreach (ZipArchiveEntry entry in archive.Entries)
                 {
                     if (string.IsNullOrEmpty(entry.Name)) continue;
                     string target = SafeTargetPath(zipRoot, entry.FullName);
                     Directory.CreateDirectory(Path.GetDirectoryName(target));
-                    if (entry.Length > MaxSingleEntryBytes) throw new InvalidDataException("Original YG ZIP entry exceeds " + MaxSingleEntryBytes + " bytes.");
-                    entry.ExtractToFile(target, false);
+                    using (Stream input = entry.Open())
+                    using (FileStream output = new FileStream(target, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+                        CopyEntryWithLimits(input, output, ref extractedTotal);
                 }
             }
             outline = FindOutlineInDirectory(zipRoot);
@@ -111,19 +120,40 @@ namespace EasyEDA_Loader
             if (!File.Exists(archivePath)) throw new FileNotFoundException("JLCCAM archive was not found.", archivePath);
             using (IArchive archive = RarArchive.OpenArchive(archivePath, new ReaderOptions()))
             {
-                long total = 0; int count = 0;
+                long total = 0; long extractedTotal = 0; int count = 0;
                 foreach (IArchiveEntry entry in archive.Entries)
                 {
+                    ValidateEntrySize(entry.Size, ref count, ref total);
                     if (entry.IsDirectory) continue;
-                    if (++count > MaxEntries) throw new InvalidDataException("JLCCAM archive exceeds " + MaxEntries + " entries.");
-                    if (entry.Size > MaxSingleEntryBytes) throw new InvalidDataException("JLCCAM archive entry exceeds " + MaxSingleEntryBytes + " bytes.");
-                    total += entry.Size; if (total > MaxTotalBytes) throw new InvalidDataException("JLCCAM archive exceeds " + MaxTotalBytes + " uncompressed bytes.");
                     string target = SafeTargetPath(tempRoot, entry.Key);
                     Directory.CreateDirectory(Path.GetDirectoryName(target));
                     using (Stream input = entry.OpenEntryStream())
                     using (FileStream output = new FileStream(target, FileMode.CreateNew, FileAccess.Write, FileShare.None))
-                        input.CopyTo(output);
+                        CopyEntryWithLimits(input, output, ref extractedTotal);
                 }
+            }
+        }
+
+        private static void ValidateEntrySize(long size, ref int count, ref long total)
+        {
+            if (++count > MaxEntries) throw new InvalidDataException("JLCCAM archive exceeds " + MaxEntries + " entries.");
+            if (size < 0 || size > MaxSingleEntryBytes) throw new InvalidDataException("JLCCAM archive entry exceeds " + MaxSingleEntryBytes + " bytes.");
+            if (size > MaxTotalBytes - total) throw new InvalidDataException("JLCCAM archive exceeds " + MaxTotalBytes + " uncompressed bytes.");
+            total += size;
+        }
+
+        internal static void CopyEntryWithLimits(Stream input, Stream output, ref long total)
+        {
+            byte[] buffer = new byte[81920];
+            long entryBytes = 0;
+            int read;
+            while ((read = input.Read(buffer, 0, buffer.Length)) > 0)
+            {
+                if (read > MaxSingleEntryBytes - entryBytes || read > MaxTotalBytes - total)
+                    throw new InvalidDataException("JLCCAM archive exceeds its uncompressed size limit.");
+                output.Write(buffer, 0, read);
+                entryBytes += read;
+                total += read;
             }
         }
 

@@ -107,7 +107,8 @@ namespace EasyEDA_Loader
 
         private static bool TryParseMm(string text, out double value)
         {
-            return double.TryParse((text ?? "").Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out value);
+            return double.TryParse((text ?? "").Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out value)
+                && double.IsFinite(value);
         }
 
         private void Add_Click(object sender, RoutedEventArgs e)

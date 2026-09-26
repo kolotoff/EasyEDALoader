@@ -1205,12 +1205,28 @@ namespace EasyEDA_Loader
                 if (process == null)
                     return false;
 
-                process.WaitForExit();
-                if (process.ExitCode != 0)
+                if (!WaitForExternalRenderer(process))
                     return false;
             }
 
             return File.Exists(outputPath) && new FileInfo(outputPath).Length > 0;
+        }
+
+        internal static bool WaitForExternalRenderer(Process process, int timeoutMilliseconds = 60000)
+        {
+            // Both redirected pipes must be drained while the renderer runs.
+            // Waiting for exit first can deadlock once either OS pipe fills.
+            Task output = process.StandardOutput.BaseStream.CopyToAsync(Stream.Null);
+            Task error = process.StandardError.BaseStream.CopyToAsync(Stream.Null);
+            Task completion = Task.WhenAll(process.WaitForExitAsync(), output, error);
+            if (!completion.Wait(timeoutMilliseconds))
+            {
+                try { process.Kill(entireProcessTree: true); }
+                catch (InvalidOperationException) { }
+                process.WaitForExit(5000);
+                return false;
+            }
+            return process.ExitCode == 0;
         }
 
         private static bool TryRenderWithF3DLibraryBatch(
