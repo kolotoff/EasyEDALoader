@@ -187,7 +187,10 @@ namespace EasyEDA_Loader.TronstolE1Pnp
             }
 
             if (settings.ExportEdgeRailsSize)
-                yield return ReadEdgeRailsSize(board, origin, bounds);
+            {
+                foreach (TronstolE1Placement edgeRail in ReadEdgeRailsSize(board, origin, bounds))
+                    yield return edgeRail;
+            }
 
             foreach (TronstolE1Placement placement in ReadPlacements(
                 board,
@@ -287,7 +290,7 @@ namespace EasyEDA_Loader.TronstolE1Pnp
             double widthMm = EDP.Utils.CoordToMMs(bounds.Right - bounds.Left);
             double heightMm = EDP.Utils.CoordToMMs(bounds.Top - bounds.Bottom);
 
-            yield return CreateBoardInfoPlacement(
+            yield return TronstolE1BoardInfo.CreatePlacement(
                 "PCB_Size1",
                 "Board dimensions",
                 "PCB_Size",
@@ -296,7 +299,7 @@ namespace EasyEDA_Loader.TronstolE1Pnp
                 false,
                 1,
                 boardThicknessMm);
-            yield return CreateBoardInfoPlacement(
+            yield return TronstolE1BoardInfo.CreatePlacement(
                 "PCB_BTLC1",
                 "Board bottom left corner",
                 "PCB_BTLC",
@@ -304,7 +307,7 @@ namespace EasyEDA_Loader.TronstolE1Pnp
                 bottomMm,
                 false,
                 2);
-            yield return CreateBoardInfoPlacement(
+            yield return TronstolE1BoardInfo.CreatePlacement(
                 "PCB_Size2",
                 "Board dimensions",
                 "PCB_Size",
@@ -313,7 +316,7 @@ namespace EasyEDA_Loader.TronstolE1Pnp
                 true,
                 3,
                 boardThicknessMm);
-            yield return CreateBoardInfoPlacement(
+            yield return TronstolE1BoardInfo.CreatePlacement(
                 "PCB_BTLC2",
                 "Board bottom left corner",
                 "PCB_BTLC",
@@ -323,7 +326,7 @@ namespace EasyEDA_Loader.TronstolE1Pnp
                 4);
         }
 
-        private static TronstolE1Placement ReadEdgeRailsSize(
+        private static IEnumerable<TronstolE1Placement> ReadEdgeRailsSize(
             IPCB_Board board,
             BoardCoordinateOrigin origin,
             BoardCoordinateBounds bounds)
@@ -342,54 +345,16 @@ namespace EasyEDA_Loader.TronstolE1Pnp
                 EDP.Utils.CoordToMMs(bounds.Left - keepoutBounds.Left));
             double bottomRailMm = ClampRailWidth(
                 EDP.Utils.CoordToMMs(bounds.Bottom - keepoutBounds.Bottom));
+            double topRailMm = ClampRailWidth(
+                EDP.Utils.CoordToMMs(keepoutBounds.Top - bounds.Top));
 
-            return CreateBoardInfoPlacement(
-                "EdgeRail",
-                "Edge rails size",
-                "EdgeRail",
-                leftRailMm,
-                bottomRailMm,
-                false,
-                5);
+            return TronstolE1BoardInfo.CreateEdgeRails(leftRailMm, bottomRailMm, topRailMm);
         }
 
         private static double ClampRailWidth(double value)
         {
             const double absentRailToleranceMm = 0.05;
             return value <= absentRailToleranceMm ? 0.0 : value;
-        }
-
-        private static TronstolE1Placement CreateBoardInfoPlacement(
-            string designator,
-            string partNumber,
-            string footprint,
-            double xMillimeters,
-            double yMillimeters,
-            bool isBottom,
-            int order,
-            double rotationValue = 0.0)
-        {
-            return new TronstolE1Placement
-            {
-                Designator = designator,
-                OriginalPartNumber = partNumber,
-                PartNumber = partNumber,
-                Manufacturer = string.Empty,
-                Description = string.Empty,
-                Footprint = footprint,
-                Carrier = string.Empty,
-                ReelPitch = string.Empty,
-                CenterXMillimeters = xMillimeters,
-                CenterYMillimeters = yMillimeters,
-                IsBottom = isBottom,
-                RotationDegrees = rotationValue,
-                RotationText = rotationValue == 0.0
-                    ? "0.0"
-                    : rotationValue.ToString("0.####", CultureInfo.InvariantCulture),
-                IsBoardInfo = true,
-                BoardInfoOrder = order,
-                DisableBottomTransform = true
-            };
         }
 
         private readonly struct BoardCoordinateOrigin

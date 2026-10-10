@@ -59,7 +59,7 @@ internal static class Program
                 lines[2],
                 "bottom row");
 
-            string sortedCsv = TronstolE1Csv.Render(new List<TronstolE1Placement>
+            var sortedPlacements = new List<TronstolE1Placement>
             {
                 new TronstolE1Placement { Designator = "R11", OriginalPartNumber = "A-PART R0402", PartNumber = "A-PART" },
                 new TronstolE1Placement { Designator = "R10", OriginalPartNumber = "A-PART R0402", PartNumber = "A-PART" },
@@ -131,20 +131,10 @@ internal static class Program
                     IsBoardInfo = true,
                     BoardInfoOrder = 3,
                     DisableBottomTransform = true
-                },
-                new TronstolE1Placement
-                {
-                    Designator = "EdgeRail",
-                    PartNumber = "Edge rails size",
-                    Footprint = "EdgeRail",
-                    CenterXMillimeters = 0.0,
-                    CenterYMillimeters = 4.0,
-                    RotationText = "0.0",
-                    IsBoardInfo = true,
-                    BoardInfoOrder = 5,
-                    DisableBottomTransform = true
                 }
-            });
+            };
+            sortedPlacements.AddRange(TronstolE1BoardInfo.CreateEdgeRails(2.0, 4.0, 6.0));
+            string sortedCsv = TronstolE1Csv.Render(sortedPlacements);
             string[] sortedLines = sortedCsv.Split(
                 new[] { "\r\n", "\n" },
                 StringSplitOptions.RemoveEmptyEntries);
@@ -173,14 +163,18 @@ internal static class Program
                 sortedLines[6],
                 "bottom board bottom-left row");
             AssertEqual(
-                "\"EdgeRail\",\"Edge rails size\",\"EdgeRail\",\"\",\"\",\"0.0000\",\"4.0000\",\"Top\",\"0.0\",\"\",\"\"",
+                "\"EdgeRail\",\"Edge rails size\",\"EdgeRail\",\"\",\"\",\"2.0000\",\"4.0000\",\"Top\",\"0.0\",\"\",\"\"",
                 sortedLines[7],
                 "edge rail size row");
-            AssertStartsWith("\"C1\",\"C-PART\",\"\",\"\",\"\",", sortedLines[8], "first group by first designator");
-            AssertStartsWith("\"C10\",\"C-PART\",\"\",\"\",\"\",", sortedLines[9], "same cleaned PartNumber remains separate original group");
-            AssertStartsWith("\"R2\",\"B-PART\",\"\",\"\",\"\",", sortedLines[10], "second group by first designator");
-            AssertStartsWith("\"R10\",\"A-PART\",\"\",\"\",\"\",", sortedLines[11], "third group by first designator");
-            AssertStartsWith("\"R11\",\"A-PART\",\"\",\"\",\"\",", sortedLines[12], "designator order within group");
+            AssertEqual(
+                "\"EdgeRail\",\"Edge rails size\",\"EdgeRail\",\"\",\"\",\"2.0000\",\"6.0000\",\"Bottom\",\"0.0\",\"\",\"\"",
+                sortedLines[8],
+                "bottom edge rail metadata keeps widths without a mirror axis");
+            AssertStartsWith("\"C1\",\"C-PART\",\"\",\"\",\"\",", sortedLines[9], "first group by first designator");
+            AssertStartsWith("\"C10\",\"C-PART\",\"\",\"\",\"\",", sortedLines[10], "same cleaned PartNumber remains separate original group");
+            AssertStartsWith("\"R2\",\"B-PART\",\"\",\"\",\"\",", sortedLines[11], "second group by first designator");
+            AssertStartsWith("\"R10\",\"A-PART\",\"\",\"\",\"\",", sortedLines[12], "third group by first designator");
+            AssertStartsWith("\"R11\",\"A-PART\",\"\",\"\",\"\",", sortedLines[13], "designator order within group");
 
             var settings = new TronstolE1Settings();
             AssertEqual("BGA144", settings.FormatFootprintName("BGA144_BGA"), "default suffix removal");
