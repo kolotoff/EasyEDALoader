@@ -7,7 +7,7 @@ internal static class Program
 {
     private static int Main()
     {
-        try { ParserAcceptsInlineCommandsAndInches(); ParserPreservesDepthAndArcs(); ParserPreservesModalState(); ParserPreservesRegionPosition(); ParserSkipsClearGeometry(); ParserHandlesSingleQuadrantArcs(); NestedZipEntryLimit(); ArchiveStreamLimit(); ReportUsesMillimetres(); if (Environment.GetCommandLineArgs().Length > 1) AnalyzeFolder(Environment.GetCommandLineArgs()[1]); Console.WriteLine("JlcCamImport tests passed."); return 0; }
+        try { ParserAcceptsInlineCommandsAndInches(); ParserPreservesDepthAndArcs(); ParserPreservesModalState(); ParserPreservesRegionPosition(); ParserSkipsClearGeometry(); ParserHandlesSingleQuadrantArcs(); DuplicateOriginalZips(); DifferentOriginalZips(); NestedZipEntryLimit(); ArchiveStreamLimit(); ReportUsesMillimetres(); if (Environment.GetCommandLineArgs().Length > 1) AnalyzeFolder(Environment.GetCommandLineArgs()[1]); Console.WriteLine("JlcCamImport tests passed."); return 0; }
         catch (Exception ex) { Console.Error.WriteLine(ex); return 1; }
     }
     private static void ParserAcceptsInlineCommandsAndInches()
@@ -49,6 +49,40 @@ internal static class Program
         var s = new JlcCamAnalysisSession { SourcePath = "fixture", PackageRoot = "fixture" }; s.Holes.Add(new JlcCamHole { Number = 1, Center = new JlcCamPoint(1.25, 2.5), CamDiameterMm = 2.05, NominalDiameterMm = 2, Verified = true, Status = "Verified" });
         string report = JlcCamReportBuilder.Build(s); Check(report.Contains("Units: mm") && report.Contains("2.05"), "mm report");
     }
+    private static void DuplicateOriginalZips()
+    {
+        using var session = CreateZipSession();
+        string first = Path.Combine(session.PackageRoot, "YG", "original.zip");
+        const string outline = "%FSLAX24Y24*%%MOMM*%X000000Y000000D02*X010000Y000000D01*M02*";
+        CreateOriginalZip(first, outline);
+        File.Copy(first, Path.Combine(session.PackageRoot, "YG", "PCB_original.ZIP"));
+        string path = JlcCamSource.FindOriginalOutline(session);
+        Check(File.ReadAllText(path) == outline, "duplicate ZIP preserves original outline");
+        Check(JlcCamGerberParser.Parse(path).Segments.Count == 1, "duplicate ZIP outline parses");
+    }
+    private static void DifferentOriginalZips()
+    {
+        using var session = CreateZipSession();
+        CreateOriginalZip(Path.Combine(session.PackageRoot, "YG", "first.zip"), "first outline");
+        CreateOriginalZip(Path.Combine(session.PackageRoot, "YG", "second.zip"), "other outline");
+        Check(new FileInfo(Path.Combine(session.PackageRoot, "YG", "first.zip")).Length == new FileInfo(Path.Combine(session.PackageRoot, "YG", "second.zip")).Length, "ambiguous ZIP fixture exercises content comparison");
+        try { JlcCamSource.FindOriginalOutline(session); throw new Exception("Different original ZIPs were accepted."); }
+        catch (InvalidDataException ex) { Check(ex.Message.Contains("Multiple different original ZIP archives"), "ambiguous ZIP diagnostic"); }
+        Check(!Directory.Exists(Path.Combine(session.PackageRoot, "YG-original")), "ambiguous ZIPs rejected before extraction");
+    }
+    private static JlcCamAnalysisSession CreateZipSession()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "EasyEDA-Loader", "JLCCAM", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(Path.Combine(root, "ok"));
+        Directory.CreateDirectory(Path.Combine(root, "YG"));
+        return new JlcCamAnalysisSession { PackageRoot = root, TemporaryRoot = root };
+    }
+    private static void CreateOriginalZip(string path, string outline)
+    {
+        using var zip = ZipFile.Open(path, ZipArchiveMode.Create);
+        using var writer = new StreamWriter(zip.CreateEntry("board.GKO", CompressionLevel.NoCompression).Open());
+        writer.Write(outline);
+    }
     private static void NestedZipEntryLimit()
     {
         string root = Path.Combine(Path.GetTempPath(), "EasyEDA-Loader", "JLCCAM", Guid.NewGuid().ToString("N"));
@@ -82,7 +116,9 @@ internal static class Program
         using (JlcCamAnalysisSession session = string.Equals(Path.GetExtension(folder), ".rar", StringComparison.OrdinalIgnoreCase) ? JlcCamSource.OpenArchive(folder) : JlcCamSource.OpenFolder(folder))
         {
             JlcCamAnalyzer.Analyze(session);
-            Console.WriteLine("Sample analysis: holes=" + session.Holes.Count + ", fiducials=" + session.Fiducials.Count + ", rails=" + session.RailSegments.Count);
+            Check(session.CanImport, "sample is safe to import: " + string.Join("; ", session.Diagnostics));
+            Check(session.RailSegments.Count > 0, "sample has edge rails");
+            Console.WriteLine("Sample analysis: holes=" + session.Holes.Count + ", fiducials=" + session.Fiducials.Count + ", rails=" + session.RailSegments.Count + ", canImport=" + session.CanImport + ", fitErrorMm=" + session.Transform.FitErrorMm.ToString("0.######", System.Globalization.CultureInfo.InvariantCulture));
         }
     }
     private static bool Near(double a, double b) { return Math.Abs(a - b) < 0.00001; }

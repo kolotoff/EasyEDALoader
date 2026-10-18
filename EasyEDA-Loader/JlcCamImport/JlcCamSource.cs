@@ -6,6 +6,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.IO.Compression;
 using System.Linq;
+using System.Security.Cryptography;
 
 namespace EasyEDA_Loader
 {
@@ -66,7 +67,7 @@ namespace EasyEDA_Loader
             string yg = GetChildDirectory(session.PackageRoot, "YG");
             string outline = FindOutlineInDirectory(yg);
             if (outline != null) { session.OriginalOutlinePath = outline; return outline; }
-            string zip = Directory.EnumerateFiles(yg, "*.zip", SearchOption.AllDirectories).SingleOrDefault();
+            string zip = FindOriginalZip(yg);
             if (zip == null) throw new InvalidDataException("No original board outline (.GKO, .GM1, or .GML) was found in YG.");
             string root = session.TemporaryRoot ?? Path.Combine(Path.GetTempPath(), "EasyEDA-Loader", "JLCCAM", Guid.NewGuid().ToString("N"));
             if (session.TemporaryRoot == null) { Directory.CreateDirectory(root); session.TemporaryRoot = root; }
@@ -101,6 +102,33 @@ namespace EasyEDA_Loader
             string result = Directory.EnumerateDirectories(root).SingleOrDefault(p => string.Equals(Path.GetFileName(p), name, StringComparison.OrdinalIgnoreCase));
             if (result == null) throw new InvalidDataException("JLCCAM package is missing '" + name + "'.");
             return result;
+        }
+
+        private static string FindOriginalZip(string root)
+        {
+            string[] archives = Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories)
+                .Where(p => string.Equals(Path.GetExtension(p), ".zip", StringComparison.OrdinalIgnoreCase))
+                .OrderBy(p => p, StringComparer.OrdinalIgnoreCase).ToArray();
+            if (archives.Length == 0) return null;
+            if (archives.Length > 1)
+            {
+                // JLC can include the same customer archive under multiple names.
+                // Only collapse byte-identical copies; never guess between revisions.
+                long length = new FileInfo(archives[0]).Length;
+                using (SHA256 hash = SHA256.Create())
+                {
+                    byte[] firstHash;
+                    using (FileStream input = File.OpenRead(archives[0])) firstHash = hash.ComputeHash(input);
+                    foreach (string archive in archives.Skip(1))
+                    {
+                        bool identical = new FileInfo(archive).Length == length;
+                        if (identical)
+                            using (FileStream input = File.OpenRead(archive)) identical = firstHash.SequenceEqual(hash.ComputeHash(input));
+                        if (!identical) throw new InvalidDataException("Multiple different original ZIP archives were found in YG; select a package containing only one original archive (identical copies are allowed).");
+                    }
+                }
+            }
+            return archives[0];
         }
 
         public static void CleanupTemporaryRoot(string path)
