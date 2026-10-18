@@ -7,6 +7,8 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <EmbeddedResource Include="Fixtures\MainRK-v1.6-keepout.txt" LogicalName="MainRKKeepout.txt" />
+    <Compile Include="..\..\TronstolE1Pnp\TronstolE1ArcBounds.cs" Link="TronstolE1ArcBounds.cs" />
     <Compile Include="..\..\TronstolE1Pnp\TronstolE1BoardInfo.cs" Link="TronstolE1BoardInfo.cs" />
     <Compile Include="..\..\TronstolE1Pnp\TronstolE1Csv.cs" Link="TronstolE1Csv.cs" />
     <Compile Include="..\..\TronstolE1Pnp\TronstolE1Description.cs" Link="TronstolE1Description.cs" />

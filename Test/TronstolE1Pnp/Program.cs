@@ -2,6 +2,7 @@ using EasyEDA_Loader.TronstolE1Pnp;
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.IO;
 using System.Threading;
 
 internal static class Program
@@ -133,7 +134,11 @@ internal static class Program
                     DisableBottomTransform = true
                 }
             };
-            sortedPlacements.AddRange(TronstolE1BoardInfo.CreateEdgeRails(2.0, 4.0, 6.0));
+            sortedPlacements.AddRange(TronstolE1BoardInfo.CreateEdgeRails(
+                topRailMillimeters: 4.0,
+                bottomRailMillimeters: 3.0,
+                leftRailMillimeters: 1.0,
+                rightRailMillimeters: 2.0));
             string sortedCsv = TronstolE1Csv.Render(sortedPlacements);
             string[] sortedLines = sortedCsv.Split(
                 new[] { "\r\n", "\n" },
@@ -163,18 +168,35 @@ internal static class Program
                 sortedLines[6],
                 "bottom board bottom-left row");
             AssertEqual(
-                "\"EdgeRail\",\"Edge rails size\",\"EdgeRail\",\"\",\"\",\"2.0000\",\"4.0000\",\"Top\",\"0.0\",\"\",\"\"",
+                "\"EdgeRailTopBottom\",\"Top and bottom edge rail widths\",\"\",\"\",\"\",\"4.0000\",\"3.0000\",\"Top\",\"0.0\",\"\",\"\"",
                 sortedLines[7],
-                "edge rail size row");
+                "top and bottom rail widths");
             AssertEqual(
-                "\"EdgeRail\",\"Edge rails size\",\"EdgeRail\",\"\",\"\",\"2.0000\",\"6.0000\",\"Bottom\",\"0.0\",\"\",\"\"",
+                "\"EdgeRailLeftRight\",\"Left and right edge rail widths\",\"\",\"\",\"\",\"1.0000\",\"2.0000\",\"Top\",\"0.0\",\"\",\"\"",
                 sortedLines[8],
-                "bottom edge rail metadata keeps widths without a mirror axis");
+                "left and right rail widths");
+            AssertEqual("14", sortedLines.Length.ToString(), "metadata replaces legacy rows");
             AssertStartsWith("\"C1\",\"C-PART\",\"\",\"\",\"\",", sortedLines[9], "first group by first designator");
             AssertStartsWith("\"C10\",\"C-PART\",\"\",\"\",\"\",", sortedLines[10], "same cleaned PartNumber remains separate original group");
             AssertStartsWith("\"R2\",\"B-PART\",\"\",\"\",\"\",", sortedLines[11], "second group by first designator");
             AssertStartsWith("\"R10\",\"A-PART\",\"\",\"\",\"\",", sortedLines[12], "third group by first designator");
             AssertStartsWith("\"R11\",\"A-PART\",\"\",\"\",\"\",", sortedLines[13], "designator order within group");
+
+            // Exercise the file writer used by the output generator with four distinct widths.
+            string exportPath = Path.GetTempFileName();
+            try
+            {
+                using (var writer = new StreamWriter(exportPath))
+                    TronstolE1Csv.Write(writer, sortedPlacements);
+                AssertEqual(sortedCsv, File.ReadAllText(exportPath), "four-width CSV file export");
+            }
+            finally
+            {
+                File.Delete(exportPath);
+            }
+            VerifyEdgeRailWidths();
+            VerifyArcBounds();
+            VerifyMainRKEdgeRails();
 
             var settings = new TronstolE1Settings();
             AssertEqual("BGA144", settings.FormatFootprintName("BGA144_BGA"), "default suffix removal");
@@ -271,6 +293,11 @@ internal static class Program
             AssertEqual("False", settings.ExportPanelFiducials.ToString(), "disabled panel fiducial export");
             AssertEqual("False", settings.ExportBoardDimensions.ToString(), "disabled board dimensions export");
             AssertEqual("False", settings.ExportEdgeRailsSize.ToString(), "disabled edge rails size export");
+            var restoredSettings = new TronstolE1Settings();
+            restoredSettings.ImportFromParameters(settings.ExportToParameters());
+            AssertEqual("False", restoredSettings.ExportEdgeRailsSize.ToString(), "saved rail export toggle");
+            restoredSettings.ResetToDefault();
+            AssertEqual("True", restoredSettings.ExportEdgeRailsSize.ToString(), "reset rail export toggle");
 
             string partNumber = TronstolE1PartNumber.FromParameters(
                 new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
@@ -326,6 +353,125 @@ internal static class Program
         {
             Thread.CurrentThread.CurrentCulture = originalCulture;
         }
+    }
+
+    private static void VerifyEdgeRailWidths()
+    {
+        string zeroCsv = TronstolE1Csv.Render(TronstolE1BoardInfo.CreateEdgeRails(0, 0, 0, 0));
+        AssertEqual(
+            TronstolE1Csv.Header + Environment.NewLine
+                + "\"EdgeRailTopBottom\",\"Top and bottom edge rail widths\",\"\",\"\",\"\",\"0.0000\",\"0.0000\",\"Top\",\"0.0\",\"\",\"\"" + Environment.NewLine
+                + "\"EdgeRailLeftRight\",\"Left and right edge rail widths\",\"\",\"\",\"\",\"0.0000\",\"0.0000\",\"Top\",\"0.0\",\"\",\"\"" + Environment.NewLine,
+            zeroCsv,
+            "emit both zero-width rows");
+
+        string[] mixedLines = TronstolE1Csv.Render(TronstolE1BoardInfo.CreateEdgeRails(0, 0.125, 1.25, 0))
+            .Split(new[] { "\r\n", "\n" }, StringSplitOptions.RemoveEmptyEntries);
+        AssertEqual(
+            "\"EdgeRailTopBottom\",\"Top and bottom edge rail widths\",\"\",\"\",\"\",\"0.0000\",\"0.1250\",\"Top\",\"0.0\",\"\",\"\"",
+            mixedLines[1], "zero top and fractional bottom under ru-RU culture");
+        AssertEqual(
+            "\"EdgeRailLeftRight\",\"Left and right edge rail widths\",\"\",\"\",\"\",\"1.2500\",\"0.0000\",\"Top\",\"0.0\",\"\",\"\"",
+            mixedLines[2], "fractional left and zero right under ru-RU culture");
+
+        string[] parameterNames = { "topRailMillimeters", "bottomRailMillimeters", "leftRailMillimeters", "rightRailMillimeters" };
+        foreach (double invalid in new[] { -0.001, double.NaN, double.PositiveInfinity, double.NegativeInfinity })
+        {
+            for (int side = 0; side < parameterNames.Length; side++)
+            {
+                double[] widths = { 4, 3, 1, 2 };
+                widths[side] = invalid;
+                try
+                {
+                    TronstolE1Csv.Render(TronstolE1BoardInfo.CreateEdgeRails(widths[0], widths[1], widths[2], widths[3]));
+                }
+                catch (ArgumentOutOfRangeException ex)
+                {
+                    AssertEqual(parameterNames[side], ex.ParamName, "invalid rail width parameter");
+                    continue;
+                }
+                throw new InvalidOperationException("Invalid width accepted for " + parameterNames[side]);
+            }
+        }
+    }
+
+    private static void VerifyArcBounds()
+    {
+        AssertArcBounds(0, 90, 1000, 2000, 1100, 2100, "quarter circle");
+        AssertArcBounds(350, 10, 1098, 1982, 1100, 2018, "sweep across zero");
+        AssertArcBounds(-10, 10, 1098, 1982, 1100, 2018, "negative start angle");
+        AssertArcBounds(0, 360, 900, 1900, 1100, 2100, "full circle");
+        AssertArcBounds(45, 45, 900, 1900, 1100, 2100, "equal angles are a full circle");
+        foreach (double angle in new[] { double.NaN, double.PositiveInfinity, double.NegativeInfinity })
+        {
+            AssertEqual("False", TronstolE1ArcBounds.TryGetBounds(0, 0, 100, angle, 90,
+                out _, out _, out _, out _).ToString(), "invalid start angle");
+            AssertEqual("False", TronstolE1ArcBounds.TryGetBounds(0, 0, 100, 0, angle,
+                out _, out _, out _, out _).ToString(), "invalid end angle");
+        }
+    }
+
+    private static void AssertArcBounds(double start, double end, int left, int bottom, int right, int top, string label)
+    {
+        AssertEqual("True", TronstolE1ArcBounds.TryGetBounds(1000, 2000, 100, start, end,
+            out int actualLeft, out int actualBottom, out int actualRight, out int actualTop).ToString(), label);
+        // Allow one internal coordinate of outward rounding at trigonometric cardinal points.
+        if (Math.Abs(left - actualLeft) > 1 || Math.Abs(bottom - actualBottom) > 1
+            || Math.Abs(right - actualRight) > 1 || Math.Abs(top - actualTop) > 1)
+            throw new InvalidOperationException("Incorrect arc bounds: " + label);
+    }
+
+    private static void VerifyMainRKEdgeRails()
+    {
+        // Read-only capture of MainRK_v1.6's live outline rectangle and Keep-Out primitives.
+        // Its rectangle differs slightly from the polygon bounds used by the generator.
+        using var stream = typeof(Program).Assembly.GetManifestResourceStream("MainRKKeepout.txt");
+        using var reader = new StreamReader(stream);
+        string[] board = reader.ReadLine().Split('|');
+        int boardLeft = int.Parse(board[1]), boardBottom = int.Parse(board[2]);
+        int boardRight = int.Parse(board[3]), boardTop = int.Parse(board[4]);
+        int left = int.MaxValue, bottom = int.MaxValue, right = int.MinValue, top = int.MinValue;
+        int oldLeft = int.MaxValue, oldRight = int.MinValue;
+        string line;
+        while ((line = reader.ReadLine()) != null)
+        {
+            string[] fields = line.Split('|');
+            int x = int.Parse(fields[2]), y = int.Parse(fields[3]);
+            int l, b, r, t;
+            if (fields[0] == "ARC")
+            {
+                int radius = int.Parse(fields[4]);
+                double start = double.Parse(fields[5], CultureInfo.GetCultureInfo("ru-RU"));
+                double end = double.Parse(fields[6], CultureInfo.GetCultureInfo("ru-RU"));
+                AssertEqual("True", TronstolE1ArcBounds.TryGetBounds(x, y, radius, start, end,
+                    out l, out b, out r, out t).ToString(), "MainRK arc");
+                oldLeft = Math.Min(oldLeft, x - radius);
+                oldRight = Math.Max(oldRight, x + radius);
+            }
+            else
+            {
+                int x2 = int.Parse(fields[4]), y2 = int.Parse(fields[5]);
+                l = Math.Min(x, x2); b = Math.Min(y, y2);
+                r = Math.Max(x, x2); t = Math.Max(y, y2);
+                oldLeft = Math.Min(oldLeft, l); oldRight = Math.Max(oldRight, r);
+            }
+            left = Math.Min(left, l); bottom = Math.Min(bottom, b);
+            right = Math.Max(right, r); top = Math.Max(top, t);
+        }
+        AssertEqual("3.1023", ((boardLeft - oldLeft) * 0.00000254).ToString("0.0000", CultureInfo.InvariantCulture),
+            "fixture reproduces phantom left rail");
+        AssertEqual("4.6019", ((oldRight - boardRight) * 0.00000254).ToString("0.0000", CultureInfo.InvariantCulture),
+            "fixture reproduces phantom right rail");
+        double Width(int delta) => delta * 0.00000254 <= 0.05 ? 0 : delta * 0.00000254;
+        string[] rows = TronstolE1Csv.Render(TronstolE1BoardInfo.CreateEdgeRails(
+            Width(top - boardTop), Width(boardBottom - bottom), Width(boardLeft - left), Width(right - boardRight)))
+            .Split(new[] { "\r\n", "\n" }, StringSplitOptions.RemoveEmptyEntries);
+        AssertEqual(
+            "\"EdgeRailTopBottom\",\"Top and bottom edge rail widths\",\"\",\"\",\"\",\"9.9999\",\"10.0000\",\"Top\",\"0.0\",\"\",\"\"",
+            rows[1], "MainRK horizontal rail CSV");
+        AssertEqual(
+            "\"EdgeRailLeftRight\",\"Left and right edge rail widths\",\"\",\"\",\"\",\"0.0000\",\"0.0000\",\"Top\",\"0.0\",\"\",\"\"",
+            rows[2], "MainRK has no vertical rails");
     }
 
     private static void AssertEqual(string expected, string actual, string label)

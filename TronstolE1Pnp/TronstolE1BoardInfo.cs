@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Globalization;
 
@@ -6,18 +7,29 @@ namespace EasyEDA_Loader.TronstolE1Pnp
     internal static class TronstolE1BoardInfo
     {
         public static IEnumerable<TronstolE1Placement> CreateEdgeRails(
-            double leftRailMillimeters,
+            double topRailMillimeters,
             double bottomRailMillimeters,
-            double topRailMillimeters)
+            double leftRailMillimeters,
+            double rightRailMillimeters)
         {
-            // E1 filters the CSV by layer before initializing fiducials.
-            // Flipping around X brings the original top rail to the bottom.
+            ValidateRailWidth(topRailMillimeters, nameof(topRailMillimeters));
+            ValidateRailWidth(bottomRailMillimeters, nameof(bottomRailMillimeters));
+            ValidateRailWidth(leftRailMillimeters, nameof(leftRailMillimeters));
+            ValidateRailWidth(rightRailMillimeters, nameof(rightRailMillimeters));
+
             yield return CreatePlacement(
-                "EdgeRail", "Edge rails size", "EdgeRail",
-                leftRailMillimeters, bottomRailMillimeters, false, 5);
+                "EdgeRailTopBottom", "Top and bottom edge rail widths", string.Empty,
+                topRailMillimeters, bottomRailMillimeters, false, 5);
             yield return CreatePlacement(
-                "EdgeRail", "Edge rails size", "EdgeRail",
-                leftRailMillimeters, topRailMillimeters, true, 6);
+                "EdgeRailLeftRight", "Left and right edge rail widths", string.Empty,
+                leftRailMillimeters, rightRailMillimeters, false, 6);
+        }
+
+        private static void ValidateRailWidth(double value, string parameterName)
+        {
+            if (double.IsNaN(value) || double.IsInfinity(value) || value < 0.0)
+                throw new ArgumentOutOfRangeException(
+                    parameterName, value, "Edge rail width must be finite and nonnegative (mm).");
         }
 
         public static TronstolE1Placement CreatePlacement(

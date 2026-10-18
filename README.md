@@ -142,19 +142,20 @@ following columns:
   they are board metadata, not component placements. If board bounds or the PCB
   coordinate origin cannot be read, generation stops with an error instead of
   emitting placeholder zero values.
-- When edge rail export is enabled, an `EdgeRail` row for each side is added
-  in the same PCB metadata block. It exports `Edge rails size` in the `PartNumber` column,
-  `EdgeRail` in the `Footprint` column, the left rail width in `Mid X`, the
-  bottom rail width in `Mid Y`, layer `Top` or `Bottom`, and rotation `0.0`.
-  The `Bottom` row uses the original top rail width in `Mid Y`, since flipping
-  the board around X brings that rail to the bottom. Rail widths are metadata
-  and are exported without coordinate mirroring.
-  E1 filters rows by layer before importing metadata, so both sides need their
-  own row to initialize fiducial positions with the rail offset. Rail size is
-  calculated from the Keep-Out Layer outer envelope compared with the board
-  outline bounds. The Keep-Out envelope is read from Keep-Out Layer track and
-  arc primitives; when Altium does not expose their typed track/arc coordinate
-  interfaces, the generator falls back to each primitive's bounding rectangle.
+- When edge rail export is enabled, two rows replace the legacy `EdgeRail`
+  rows in the same PCB metadata block: `EdgeRailTopBottom` stores the top width
+  in `Mid X` and bottom width in `Mid Y`; `EdgeRailLeftRight` stores the left
+  width in `Mid X` and right width in `Mid Y`. Their `PartNumber` descriptions
+  are `Top and bottom edge rail widths` and `Left and right edge rail widths`,
+  respectively. Both use an empty `Footprint`, layer `Top`, and rotation `0.0`.
+  All four independent widths are in millimetres and must be finite and
+  nonnegative. Both rows are emitted even when some or all widths are zero.
+  Rail widths are metadata and are exported without coordinate mirroring.
+  They are calculated from the Keep-Out Layer outer envelope compared with
+  the board outline bounds. The Keep-Out envelope is read from Keep-Out Layer track and
+  arc primitives. Arc bounds include only the actual angular sweep, so curved
+  board edges do not create phantom rails. When Altium does not expose track/arc
+  coordinate interfaces, the generator falls back to each primitive's bounding rectangle.
   Absent rails smaller than 0.05 mm are exported as `0.0000`. If Keep-Out Layer
   bounds cannot be read, generation stops with an error.
 - Rows are grouped by the original schematic `PartNumber` value before output
@@ -182,7 +183,9 @@ enabled by default:
   `solder bridge`, case-insensitively.
 - Export panel fiducials from board pads named `PanelFiducial<number>`.
 - Export board dimensions and board bottom-left corner rows.
-- Export edge rails size from the Keep-Out Layer.
+- Export top, bottom, left and right edge rail widths (mm) from the Keep-Out
+  Layer. The saved `ExportEdgeRailsSize` setting controls both metadata rows
+  and remains compatible with existing OutJobs.
 - Remove a trailing footprint name from `PartNumber`, unless `PartNumber`
   consists only of that footprint name. For example,
   `100nF 50V ±10% X7R C0603` becomes `100nF 50V ±10% X7R`.

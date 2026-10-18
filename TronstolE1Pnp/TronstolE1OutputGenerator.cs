@@ -347,8 +347,10 @@ namespace EasyEDA_Loader.TronstolE1Pnp
                 EDP.Utils.CoordToMMs(bounds.Bottom - keepoutBounds.Bottom));
             double topRailMm = ClampRailWidth(
                 EDP.Utils.CoordToMMs(keepoutBounds.Top - bounds.Top));
+            double rightRailMm = ClampRailWidth(
+                EDP.Utils.CoordToMMs(keepoutBounds.Right - bounds.Right));
 
-            return TronstolE1BoardInfo.CreateEdgeRails(leftRailMm, bottomRailMm, topRailMm);
+            return TronstolE1BoardInfo.CreateEdgeRails(topRailMm, bottomRailMm, leftRailMm, rightRailMm);
         }
 
         private static double ClampRailWidth(double value)
@@ -672,16 +674,16 @@ namespace EasyEDA_Loader.TronstolE1Pnp
             if (!TryGetIntMember(primitive, out int centerX, "GetState_CenterX", "Internal_GetState_CenterX", "XCenter", "CenterX")
                 || !TryGetIntMember(primitive, out int centerY, "GetState_CenterY", "Internal_GetState_CenterY", "YCenter", "CenterY")
                 || !TryGetIntMember(primitive, out int radius, "GetState_Radius", "Internal_GetState_Radius", "Radius")
+                || !TryGetDoubleMember(primitive, out double startAngle, "GetState_StartAngle", "Internal_GetState_StartAngle", "StartAngle")
+                || !TryGetDoubleMember(primitive, out double endAngle, "GetState_EndAngle", "Internal_GetState_EndAngle", "EndAngle")
                 || radius <= 0)
             {
                 return false;
             }
 
-            left = centerX - radius;
-            right = centerX + radius;
-            bottom = centerY - radius;
-            top = centerY + radius;
-            return right > left && top > bottom;
+            return TronstolE1ArcBounds.TryGetBounds(
+                centerX, centerY, radius, startAngle, endAngle,
+                out left, out bottom, out right, out top);
         }
 
         private static bool TryGetBoardBounds(
@@ -720,6 +722,27 @@ namespace EasyEDA_Loader.TronstolE1Pnp
                 top = 0;
                 return false;
             }
+        }
+
+        private static bool TryGetDoubleMember(object target, out double value, params string[] memberNames)
+        {
+            value = 0.0;
+            foreach (string memberName in memberNames)
+            {
+                object rawValue = TryInvokeResult(target, memberName) ?? TryGetPropertyValue(target, memberName);
+                if (rawValue == null)
+                    continue;
+                try
+                {
+                    value = Convert.ToDouble(rawValue, CultureInfo.InvariantCulture);
+                    if (!double.IsNaN(value) && !double.IsInfinity(value))
+                        return true;
+                }
+                catch
+                {
+                }
+            }
+            return false;
         }
 
         private static bool TryGetIntMember(object target, out int value, params string[] memberNames)

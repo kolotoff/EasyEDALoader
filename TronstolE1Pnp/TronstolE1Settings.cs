@@ -28,6 +28,7 @@ namespace EasyEDA_Loader.TronstolE1Pnp
         public bool SkipSolderBridge { get; set; } = true;
         public bool ExportPanelFiducials { get; set; } = true;
         public bool ExportBoardDimensions { get; set; } = true;
+        // Retain the saved OutJob key; this controls both four-width metadata rows.
         public bool ExportEdgeRailsSize { get; set; } = true;
         public bool RemoveFootprintFromPartNumber { get; set; } = true;
 

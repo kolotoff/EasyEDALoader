@@ -138,7 +138,7 @@ namespace EasyEDA_Loader.TronstolE1Pnp
                 AutoSize = true,
                 Checked = exportEdgeRailsSize,
                 Location = new Point(16, 318),
-                Text = "Export edge rails size"
+                Text = "Export top, bottom, left and right edge rail widths (mm)"
             };
 
             removeFootprintFromPartNumberCheckBox = new CheckBox
