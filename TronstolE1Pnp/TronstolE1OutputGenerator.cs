@@ -1255,7 +1255,10 @@ namespace EasyEDA_Loader.TronstolE1Pnp
                             settings,
                             origin,
                             bounds);
-                        bool skip = settings.ShouldSkipFootprintName(footprint)
+                        int componentKind = component.Internal_GetState_ComponentKind();
+                        bool skip = componentKind == (int)EDP.TComponentKind.eComponentKind_Standard_NoBOM
+                            || componentKind == (int)EDP.TComponentKind.eComponentKind_NetTie_NoBOM
+                            || settings.ShouldSkipFootprintName(footprint)
                             || settings.ShouldSkipComment(pcbComment)
                             || settings.ShouldSkipAssemblyMarkerPartNumber(placement.OriginalPartNumber)
                             || settings.ShouldSkipAssemblyMarkerPartNumber(placement.PartNumber)
