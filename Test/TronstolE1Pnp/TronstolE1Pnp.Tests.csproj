@@ -15,9 +15,13 @@
     <Compile Include="..\..\TronstolE1Pnp\TronstolE1PartNumber.cs" Link="TronstolE1PartNumber.cs" />
     <Compile Include="..\..\TronstolE1Pnp\TronstolE1Settings.cs" Link="TronstolE1Settings.cs" />
     <Compile Include="..\..\TronstolE1Pnp\TronstolE1Text.cs" Link="TronstolE1Text.cs" />
+    <Compile Include="..\..\TronstolE1Pnp\TronstolE1CompiledParameters.cs" Link="TronstolE1CompiledParameters.cs" />
   </ItemGroup>
 
   <ItemGroup>
+    <Reference Include="Altium.Edp.Interfaces">
+      <HintPath>D:\Program files\ADAgile\System\Altium.Edp.Interfaces.dll</HintPath>
+    </Reference>
     <Reference Include="Altium.SDK.Interfaces">
       <HintPath>..\..\EasyEDA-Loader\Assemblies\Altium.SDK.Interfaces.dll</HintPath>
       <Private>true</Private>

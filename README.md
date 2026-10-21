@@ -81,6 +81,38 @@ production panel. With the defaults on a 146×62 mm board the result matches the
 reference SwarmRK panel. **Add** is disabled when the inputs are out of range or
 both rails are `0`; the changes can be undone.
 
+## Tronstol E1 Scan Gerber output
+
+In an OutJob, choose `Fabrication Outputs` -> `Tronstol E1 Scan Gerber`
+and connect it to a Folder Structure output container. The extension generates
+`<PCB name> Tronstol E1 Scan Gerber.zip` in the configured output directory
+(including the OutJob target prefix or explicit filename, if specified).
+The normal `BuildAndInstall-Altium.ps1` installer includes this output generator.
+
+Each ZIP contains one PCB with a common `board` filename prefix: top and bottom
+copper (`.gtl`, `.gbl`), solder mask openings (`.gts`, `.gbs`), silkscreen
+(`.gto`, `.gbo`), shared drill geometry (`.drl`) and a closed board perimeter
+(`.gko`). Empty legend layers are retained. If Altium exports separate round-hole
+and slot-hole programs, the archive uses `board-RoundHoles.drl` and
+`board-SlotHoles.drl` instead of a combined drill file. Other ambiguous drill
+sets are rejected. Paste, inner copper, fabrication reports and duplicate
+outputs are excluded.
+
+Native Altium RS-274X and NC Drill exporters use metric units and the PCB's
+relative coordinate origin, with no bottom mirror, plot centering or panel
+step-and-repeat. NC Drill uses explicit 4:6 coordinates and G85 slots. The board
+shape, including tessellated curved edges, supplies the closed `.gko` perimeter;
+arbitrary keepout tracks are not substituted for the board shape. All files use
+the same origin. Export validation rejects unsupported transforms, conflicting
+layer identities, missing layers and files exceeding the Scan ZIP limits. A
+failed export leaves the previous ZIP intact.
+
+The archive contains both sides so Scan can choose the side from the imported
+coordinates. Scan's existing registration and fiducial requirements still apply
+to reflection processing; exporting a ZIP does not establish registration.
+
+Focused archive tests: `dotnet run --project Test/TronstolE1ScanGerber/TronstolE1ScanGerber.Tests.csproj -c Release`.
+
 ## Tronstol E1 pick-and-place output
 
 The extension adds a Tronstol E1 pick-and-place CSV generator to Altium

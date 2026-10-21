@@ -1,3 +1,5 @@
+extern alias NativeDxpClasses;
+
 using Altium.Edp.Classes;
 using DXP;
 using PCB;
@@ -81,6 +83,7 @@ namespace EasyEDA_Loader.TronstolE1Pnp
             string skippedOutputFile = ResolveSkippedOutputFilePath(outputFile);
             try
             {
+                TraceExport("Begin export: " + DocumentPath);
                 IPCB_Board board = LoadBoard(DocumentPath);
                 if (board == null)
                     throw new InvalidOperationException("Unable to load PCB document: " + DocumentPath);
@@ -115,10 +118,12 @@ namespace EasyEDA_Loader.TronstolE1Pnp
                     Notify_FinishGeneratingOutputFile(skippedOutputFile);
                 }
 
+                TraceExport("CSV complete: " + outputFile + "; placements=" + outputPlacements.Count + "; skipped=" + skippedPlacements.Count);
                 return true;
             }
             catch (Exception ex)
             {
+                TraceExport("Export failed: " + ex);
                 HandleOutputerError("Tronstol E1 PNP generation failed: " + ex.Message);
                 return false;
             }
@@ -1433,41 +1438,47 @@ namespace EasyEDA_Loader.TronstolE1Pnp
             if (!(board is IPCB_BoardEx boardEx))
                 return result;
 
-            var fullComponents = boardEx.Internal_GetState_FullComponents() as IPCB_FullComponents;
-            var components = fullComponents?.Internal_GetComponentsForCurrentVariant() as IPCB_FullComponentList
-                ?? fullComponents?.Internal_GetComponentsForAllVariants() as IPCB_FullComponentList;
+            object rawFullComponents = boardEx.Internal_GetState_FullComponents();
+            if (rawFullComponents == null) return result;
+            var fullComponents = NativeDxpClasses::DXP.DxpSdkLibrary.GetHardInterfaceByDispatch<RT_PCB.IPCB_FullComponents>(rawFullComponents);
+            if (fullComponents == null)
+                throw new InvalidOperationException("Native compiled component interface is unavailable.");
+            var components = fullComponents.GetComponentsForCurrentVariant()
+                ?? fullComponents.GetComponentsForAllVariants();
             if (components == null)
                 return result;
 
-            for (int index = 0; index < components.GetCount(); index++)
+            int componentCount = components.GetCount();
+            TraceExport("Reading compiled components: " + componentCount);
+            for (int index = 0; index < componentCount; index++)
             {
-                var component = components.Internal_GetItem(index) as IPCB_FullComponent;
+                var component = components.GetItem(index);
                 if (component == null || string.IsNullOrWhiteSpace(component.GetDesignator()))
                     continue;
 
-                IPCB_ParameterList parameters = component.Internal_GetParameters() as IPCB_ParameterList;
-                string partNumber = ReadParameterValue(
+                var parameters = TronstolE1CompiledParameters.Read(component.GetParameters());
+                string partNumber = TronstolE1CompiledParameters.Get(
                     parameters,
                     "PartNumber");
                 string comment = FirstNonEmpty(
-                    ReadParameterValue(parameters, "Comment"),
+                    TronstolE1CompiledParameters.Get(parameters, "Comment"),
                     component.GetComment());
-                string manufacturer = ReadParameterValue(
+                string manufacturer = TronstolE1CompiledParameters.Get(
                     parameters,
                     "Manufacturer");
-                string carrier = ReadParameterValue(
+                string carrier = TronstolE1CompiledParameters.Get(
                     parameters,
                     "Carrier");
-                string reelPitch = ReadParameterValue(
+                string reelPitch = TronstolE1CompiledParameters.Get(
                     parameters,
                     "ReelPitch");
-                string componentDescription = ReadComponentDescription(
-                    component,
-                    parameters);
-                string solderingType = ReadParameterValue(
+                string componentDescription = FirstNonEmpty(
+                    TronstolE1CompiledParameters.Get(parameters, "Description"),
+                    component.GetDescription());
+                string solderingType = TronstolE1CompiledParameters.Get(
                     parameters,
                     "SolderingType");
-                int componentKind = component.Internal_GetKind();
+                int componentKind = (int)component.GetKind();
                 result[TronstolE1Text.Normalize(component.GetDesignator())] = new CompiledComponentData
                 {
                     PartNumber = partNumber,
@@ -1482,41 +1493,24 @@ namespace EasyEDA_Loader.TronstolE1Pnp
                 };
             }
 
+            GC.KeepAlive(components);
+            GC.KeepAlive(fullComponents);
+            GC.KeepAlive(rawFullComponents);
+            TraceExport("Compiled components complete: " + result.Count);
             return result;
         }
 
-        private static string ReadParameterValue(IPCB_ParameterList parameters, string name)
+        private static void TraceExport(string message)
         {
-            if (parameters == null || string.IsNullOrWhiteSpace(name))
-                return string.Empty;
-
-            for (int index = 0; index < parameters.GetCount(); index++)
+            try
             {
-                var parameter = parameters.Internal_GetByIndex(index) as IPCB_Parameter;
-                if (parameter != null
-                    && string.Equals(parameter.GetName(), name, StringComparison.OrdinalIgnoreCase))
-                {
-                    return TronstolE1Text.Normalize(parameter.GetValue());
-                }
+                string folder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "EasyEDA-Loader");
+                Directory.CreateDirectory(folder);
+                File.AppendAllText(Path.Combine(folder, "TronstolE1Pnp.log"),
+                    DateTimeOffset.Now.ToString("O") + " [" + Environment.ProcessId + "] " + message + Environment.NewLine);
             }
-
-            return string.Empty;
-        }
-
-        private static string ReadComponentDescription(
-            IPCB_FullComponent component,
-            IPCB_ParameterList parameters)
-        {
-            string parameterDescription = ReadParameterValue(parameters, "Description");
-            if (!string.IsNullOrEmpty(parameterDescription))
-                return parameterDescription;
-
-            return TryGetStringMember(
-                component,
-                "GetDescription",
-                "GetState_ComponentDescription",
-                "GetState_Description",
-                "Description");
+            catch (IOException) { }
+            catch (UnauthorizedAccessException) { }
         }
 
         private static string ReadPcbComponentDescription(IPCB_Component component)

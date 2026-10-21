@@ -12,6 +12,7 @@ internal static class Program
         CultureInfo originalCulture = Thread.CurrentThread.CurrentCulture;
         try
         {
+            CompiledParameterTests.Run();
             Thread.CurrentThread.CurrentCulture = new CultureInfo("ru-RU");
             string csv = TronstolE1Csv.Render(new List<TronstolE1Placement>
             {

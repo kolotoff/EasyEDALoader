@@ -12,6 +12,15 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Reference Include="Altium.Dxp.Classes">
+      <Aliases>NativeDxpClasses</Aliases>
+      <HintPath>D:\Program files\ADAgile\System\Altium.Dxp.Classes.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Altium.Edp.Interfaces">
+      <HintPath>D:\Program files\ADAgile\System\Altium.Edp.Interfaces.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
     <Reference Include="Altium.SDK">
       <HintPath>..\EasyEDA-Loader\Assemblies\Altium.SDK.dll</HintPath>
       <Private>false</Private>

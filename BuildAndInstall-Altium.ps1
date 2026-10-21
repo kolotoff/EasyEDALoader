@@ -506,11 +506,13 @@ function Assert-AltiumClosed {
 $repoRoot = $PSScriptRoot
 $projectPath = Join-Path $repoRoot "EasyEDA-Loader\EasyEDA-Loader.csproj"
 $tronstolProjectPath = Join-Path $repoRoot "TronstolE1Pnp\TronstolE1Pnp.csproj"
+$scanGerberProjectPath = Join-Path $repoRoot "TronstolE1ScanGerber\TronstolE1ScanGerber.csproj"
 $shapeSvgProjectPath = Join-Path $repoRoot "EasyEDAShapeSvg\EasyEDAShapeSvg.csproj"
 $helperProjectPath = Join-Path $repoRoot "StepOcctHlr\StepOcctHlr.csproj"
 $f3dHelperProjectPath = Join-Path $repoRoot "StepF3DRender\StepF3DRender.csproj"
 $sourceDir = Split-Path -Parent $projectPath
 $tronstolSourceDir = Split-Path -Parent $tronstolProjectPath
+$scanGerberSourceDir = Split-Path -Parent $scanGerberProjectPath
 $shapeSvgSourceDir = Split-Path -Parent $shapeSvgProjectPath
 $helperSourceDir = Split-Path -Parent $helperProjectPath
 $f3dHelperSourceDir = Split-Path -Parent $f3dHelperProjectPath
@@ -530,6 +532,10 @@ if (-not (Test-Path -LiteralPath $tronstolProjectPath)) {
 
 if (-not (Test-Path -LiteralPath $shapeSvgProjectPath)) {
     throw "EasyEDA Shape SVG output project file was not found: $shapeSvgProjectPath"
+}
+
+if (-not (Test-Path -LiteralPath $scanGerberProjectPath)) {
+    throw "Tronstol E1 Scan Gerber output project file was not found: $scanGerberProjectPath"
 }
 
 if (-not (Test-Path -LiteralPath $helperProjectPath)) {
@@ -571,6 +577,12 @@ if ($LASTEXITCODE -ne 0) {
     throw "dotnet build failed for EasyEDA Shape SVG output generator with exit code $LASTEXITCODE."
 }
 
+Write-Step "Building Tronstol E1 Scan Gerber output generator ($Configuration)"
+dotnet build $scanGerberProjectPath -c $Configuration --nologo
+if ($LASTEXITCODE -ne 0) {
+    throw "dotnet build failed for Tronstol E1 Scan Gerber output generator with exit code $LASTEXITCODE."
+}
+
 Write-Step "Building OCCT HLR helper ($Configuration)"
 dotnet build $helperProjectPath -c $Configuration --nologo
 if ($LASTEXITCODE -ne 0) {
@@ -607,6 +619,14 @@ $tronstolBuildDir = Join-Path $tronstolSourceDir "bin\$Configuration\$tronstolTa
 $builtTronstolDll = Join-Path $tronstolBuildDir "TronstolE1Pnp.Outputer.dll"
 if (-not (Test-Path -LiteralPath $builtTronstolDll)) {
     throw "Built Tronstol E1 PNP output DLL was not found: $builtTronstolDll"
+}
+
+[xml]$scanGerberProjectXml = Get-Content -LiteralPath $scanGerberProjectPath
+$scanGerberTargetFramework = @($scanGerberProjectXml.Project.PropertyGroup.TargetFramework | Where-Object { $_ } | Select-Object -First 1)[0]
+$scanGerberBuildDir = Join-Path $scanGerberSourceDir "bin\$Configuration\$scanGerberTargetFramework"
+$builtScanGerberDll = Join-Path $scanGerberBuildDir "TronstolE1ScanGerber.Outputer.dll"
+if (-not (Test-Path -LiteralPath $builtScanGerberDll)) {
+    throw "Built Tronstol E1 Scan Gerber output DLL was not found: $builtScanGerberDll"
 }
 
 [xml]$shapeSvgProjectXml = Get-Content -LiteralPath $shapeSvgProjectPath
@@ -670,6 +690,8 @@ Copy-Item -LiteralPath (Join-Path $sourceDir "EasyEDA-Loader.ins") -Destination 
 Copy-Item -LiteralPath (Join-Path $sourceDir "EasyEDA-Loader.rcs") -Destination $installDir -Force
 Copy-Item -Path (Join-Path $tronstolBuildDir "TronstolE1Pnp.Outputer.*") -Destination $installDir -Force
 Copy-Item -LiteralPath (Join-Path $tronstolSourceDir "TronstolE1Pnp.OUT") -Destination $installDir -Force
+Copy-Item -Path (Join-Path $scanGerberBuildDir "TronstolE1ScanGerber.Outputer.*") -Destination $installDir -Force
+Copy-Item -LiteralPath (Join-Path $scanGerberSourceDir "TronstolE1ScanGerber.OUT") -Destination $installDir -Force
 Copy-Item -Path (Join-Path $shapeSvgBuildDir "EasyEDAShapeSvg.Outputer.*") -Destination $installDir -Force
 Copy-Item -LiteralPath (Join-Path $shapeSvgSourceDir "EasyEDAShapeSvg.OUT") -Destination $installDir -Force
 
@@ -697,6 +719,8 @@ if (-not [string]::IsNullOrWhiteSpace($f3dNativeRuntimeSourceDir)) {
 $installedDll = Join-Path $installDir "EasyEDA-Loader.dll"
 $installedTronstolDll = Join-Path $installDir "TronstolE1Pnp.Outputer.dll"
 $installedTronstolConfig = Join-Path $installDir "TronstolE1Pnp.OUT"
+$installedScanGerberDll = Join-Path $installDir "TronstolE1ScanGerber.Outputer.dll"
+$installedScanGerberConfig = Join-Path $installDir "TronstolE1ScanGerber.OUT"
 $installedShapeSvgDll = Join-Path $installDir "EasyEDAShapeSvg.Outputer.dll"
 $installedShapeSvgConfig = Join-Path $installDir "EasyEDAShapeSvg.OUT"
 if (-not (Test-Path -LiteralPath $installedTronstolDll)) {
@@ -704,6 +728,9 @@ if (-not (Test-Path -LiteralPath $installedTronstolDll)) {
 }
 if (-not (Test-Path -LiteralPath $installedTronstolConfig)) {
     throw "Installed Tronstol E1 PNP output registration was not found: $installedTronstolConfig"
+}
+if (-not (Test-Path -LiteralPath $installedScanGerberDll) -or -not (Test-Path -LiteralPath $installedScanGerberConfig)) {
+    throw "Installed Tronstol E1 Scan Gerber output DLL or registration was not found."
 }
 if (-not (Test-Path -LiteralPath $installedShapeSvgDll)) {
     throw "Installed EasyEDA Shape SVG output DLL was not found: $installedShapeSvgDll"
@@ -761,6 +788,7 @@ Write-Host "Assembly version: $version"
 Write-Host "SHA256: $hash"
 Write-Host "Installed Tronstol E1 PNP output DLL: $installedTronstolDll"
 Write-Host "Tronstol E1 PNP SHA256: $tronstolHash"
+Write-Host "Installed Tronstol E1 Scan Gerber output DLL: $installedScanGerberDll"
 Write-Host "Installed OCCT HLR helper: $installedHelperExe"
 Write-Host "OCCT HLR helper SHA256: $helperHash"
 Write-Host "Installed F3D render helper: $installedF3DHelperExe"

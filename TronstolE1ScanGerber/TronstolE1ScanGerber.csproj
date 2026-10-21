@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <OutputType>Library</OutputType>
+    <UseWPF>true</UseWPF>
+    <AssemblyName>TronstolE1ScanGerber.Outputer</AssemblyName>
+    <LangVersion>9.0</LangVersion>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <Nullable>disable</Nullable>
+    <Deterministic>true</Deterministic>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="Altium.Dxp.Classes">
+      <Aliases>NativeDxpClasses</Aliases>
+      <HintPath>D:\Program files\ADAgile\System\Altium.Dxp.Classes.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Altium.Edp.Interfaces">
+      <HintPath>D:\Program files\ADAgile\System\Altium.Edp.Interfaces.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Altium.SDK">
+      <HintPath>..\EasyEDA-Loader\Assemblies\Altium.SDK.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Altium.SDK.Interfaces">
+      <HintPath>..\EasyEDA-Loader\Assemblies\Altium.SDK.Interfaces.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+</Project>

@@ -1,0 +1,24 @@
+[OutputGenerator]
+Name                   = Tronstol E1 Scan Gerber
+Module                 = TronstolE1ScanGerber.Outputer.dll
+ServerName             = EasyEDA-Loader
+ClassName              = EasyEDA_Loader.TronstolE1ScanGerber.PluginFactory
+Description            = Generates a PCB Scan Gerber ZIP for both board sides
+DocumentKind           = PCB
+DefaultFolderName      = Tronstol E1 Scan Gerber
+CanGenerateNetlist     = False
+CanGenerateReport      = False
+CanGenerateOutputFiles = True
+CanGenerateMetaPages   = False
+CanPreferencesForm     = False
+CanPropertiesForm      = False
+CanGenerateFromProject = True
+CanGenerateFromDocument= True
+
+[Output1]
+Name            = Tronstol E1 Scan Gerber
+Caption         = Tronstol E1 Scan Gerber
+Description     = Generates a PCB Scan Gerber ZIP for both board sides
+Category        = Fabrication
+RequiresCompile = True
+SupportsVariants= False
