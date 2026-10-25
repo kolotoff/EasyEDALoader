@@ -78,9 +78,47 @@ pin layout.
 - A pre-existing multiline source assertion in the cache regression depended on
   LF-only line endings. Its comparison now normalizes Windows CRLF line endings.
   The cache regression passed after that correction.
-- Live Altium import was not exercised. The connected application had no active
-  PCB library; no installation, restart or document changes were performed.
+- The initial checks did not exercise live Altium import. Subsequent native
+  verification is recorded below.
 
 The user could not identify the previously affected part and authorized choosing
 reference cases. The reproduced coordinate-frame defect is fixed; this does not
 establish that every source model displacement should be removed.
+
+## Live Altium verification
+
+Verified on Altium Designer Agile Enterprise 26.10.1 using isolated, unsaved
+LiveVerification PCB and schematic libraries. The current Release build was
+installed before testing; the original loader session settings were backed up.
+
+- C1325540 imported through the actual loader dialog with four pads and one
+  Mechanical 1 model body, without import warnings. Native body bounds were
+  X -3.34001 to +3.66 mm and Y -2.49995 to +2.50005 mm: center
+  (+0.159995, +0.00005) mm, matching the source SVGNODE offset within 0.00001 mm.
+- The new layer checkbox was off by default. A synthetic OFF/ON pair produced
+  respectively 6/7 M3 tracks and 0/1 M2 tracks, confirming the alternate outline
+  and bottom-assembly geometry are independently opt-in.
+- The synthetic copper region retained its native hole contour. Altium's group
+  iterator returned the same object address twice; unique-object inspection
+  confirmed one region with one hole.
+- An explicit pad override had paste -0.127 mm and solder 0 mm, with native
+  manual cache modes. An unspecified pad retained native rule cache modes and
+  a 0.1016 mm rule-derived solder expansion.
+- A synthetic multipart symbol imported as two parts, with four pins owned by
+  each part, two body rectangles, and three-vertex polygon graphics on both
+  parts. Native inspection confirmed owner-part IDs 1 and 2.
+
+The visual check exposed graphic overlap with pin labels. A regression reproduced
+the overlap before the correction. Graphic fitting now reserves the left and
+right pin-label lanes, and all 28 Core checks pass.
+
+The corrected build was installed and the multipart import repeated in a fresh
+Altium session. Native inspection again confirmed two parts with four pins each,
+and visual inspection confirmed that the filled graphic clears the pin labels.
+The installed loader SHA256 matches the Release build:
+`633B779929DC540172AC27E81D5C6115408C37BD42FBBB6FA054AE2500C0825F`.
+The original loader session settings were restored. Scratch libraries remain
+unsaved for inspection; no original design files were saved or modified.
+
+These native imports used cached source data and synthetic fixtures; they do not
+establish live EasyEDA HTTP service availability.

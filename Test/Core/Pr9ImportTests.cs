@@ -83,6 +83,14 @@ internal static class Pr9ImportTests
         Check(horizontal[0].Points.All(point => Math.Abs(point.Y - 30) < 1e-9), "Degenerate graphic axis did not stay centered.");
     }
 
+    internal static void GraphicLabelClearance()
+    {
+        var target = new AltiumSymbolRectangle { X1 = 0, Y1 = 0, X2 = 900, Y2 = 400 };
+        var graphics = SymbolGraphics.Build(new[] { new EeSymbolPolygon { Points = "400 290 420 290 410 300", FillColor = "#000000" } }, target);
+        Check(graphics.SelectMany(graphic => graphic.Points).All(point => point.X >= 270 && point.X <= 630),
+            "Filled graphic overlaps the left/right pin-label areas of the generated GOST symbol.");
+    }
+
     internal static void RegionInterop()
     {
         var holeFlags = new List<bool>();

@@ -41,6 +41,7 @@ internal static class Program
             ("solid regions retain cutouts and curved paths", () => Run(Pr9ImportTests.SolidRegions)),
             ("multipart symbols keep every gate", () => Run(Pr9ImportTests.MultipartSymbols)),
             ("schematic graphics retain shape and fill", () => Run(Pr9ImportTests.Graphics)),
+            ("schematic graphics leave pin labels clear", () => Run(Pr9ImportTests.GraphicLabelClearance)),
             ("region interop retains hole contours", () => Run(Pr9ImportTests.RegionInterop)),
             ("schematic interop assigns multipart owners", () => Run(Pr9ImportTests.MultipartInterop)),
             ("cache directory keys stay below root", () => Run(CacheDirectoryKeys)),

@@ -46,9 +46,11 @@ namespace EasyEDA_Loader
             if (points.Count == 0) return graphics;
             double left = points.Min(point => point.X), right = points.Max(point => point.X);
             double top = points.Min(point => point.Y), bottom = points.Max(point => point.Y);
-            double margin = Math.Min(target.Width, target.Height) * 0.15;
+            // Keep graphics between the pin-label lanes at either side of the GOST body.
+            double horizontalMargin = target.Width * 0.30;
+            double verticalMargin = Math.Min(target.Width, target.Height) * 0.15;
             double width = Math.Max(right - left, 1e-9), height = Math.Max(bottom - top, 1e-9);
-            double scale = Math.Min((target.Width - 2 * margin) / width, (target.Height - 2 * margin) / height);
+            double scale = Math.Min((target.Width - 2 * horizontalMargin) / width, (target.Height - 2 * verticalMargin) / height);
             foreach (var point in points)
             {
                 point.X = target.X1 + target.Width / 2 + (point.X - (left + right) / 2) * scale;
