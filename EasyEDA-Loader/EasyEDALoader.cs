@@ -78,6 +78,8 @@ namespace EasyEDA_Loader
             RegisterCommand("EasyEDA-Loader:EasyEDAImportJlcCamFolder", new CommandProc(ImportJlcCamFolder));
             RegisterCommand("EasyEDAAddEdgeRails", new CommandProc(AddEdgeRails));
             RegisterCommand("EasyEDA-Loader:EasyEDAAddEdgeRails", new CommandProc(AddEdgeRails));
+            RegisterCommand("EasyEDAAddTentedContourVias", new CommandProc(AddTentedContourVias));
+            RegisterCommand("EasyEDA-Loader:EasyEDAAddTentedContourVias", new CommandProc(AddTentedContourVias));
         }
 
         private void RegisterCommand(string argCommandId, CommandProc commandProc)
@@ -563,6 +565,23 @@ namespace EasyEDA_Loader
                     MarkCurrentDocumentModified();
             }
             catch { session?.Dispose(); throw; }
+            finally { Interlocked.Exchange(ref loaderDialogOpen, 0); }
+        }
+
+        private void AddTentedContourVias(IServerDocumentView argContext, ref string argParameters)
+        {
+            if (IsLoaderDialogOpen()) return;
+            IPCB_Board board = EEPCB.GetCurrentPcbBoard(argContext);
+            if (board == null || !string.Equals(Path.GetExtension(board.GetState_FileName()), ".PcbDoc", StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException("Open a PCB document before adding contour vias.");
+            Interlocked.Exchange(ref loaderDialogOpen, 1);
+            try
+            {
+                var dialog = new ContourViaDialog(board);
+                IntPtr ownerHandle = Process.GetCurrentProcess().MainWindowHandle;
+                if (ownerHandle != IntPtr.Zero) new System.Windows.Interop.WindowInteropHelper(dialog).Owner = ownerHandle;
+                if (dialog.ShowDialog() == true) MarkCurrentDocumentModified();
+            }
             finally { Interlocked.Exchange(ref loaderDialogOpen, 0); }
         }
 

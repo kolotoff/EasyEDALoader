@@ -48,6 +48,25 @@ is added as 0.1 mm keepout tracks/arcs, edge holes are added as unplated
 no-copper `PanelHole*` pads, and fiducials are added as side-specific no-paste
 `PanelFiducial*` SMD pads.
 
+## Add tented vias around keepout
+
+With a PCB document active, choose `Tools` -> `EasyEDA` ->
+`Add tented vias around keepout...`. Set the via outer diameter, drill diameter,
+clearance from the keepout contour to the via edge, centre pitch (all in mm),
+and an existing target net or `(No net)`. Defaults match altium-mcp: 0.4 mm via,
+0.2 mm drill, 0.3 mm clearance, and 2 mm pitch.
+
+The dialog shows the planned count; `Add vias` creates through vias tented on
+both sides and leaves the PCB unsaved. `Cancel` makes no changes. Placement
+matches `add_tented_vias_around_keepout_contour`: it follows Keep-Out Layer
+tracks and arcs, offsets towards the keepout bounds centre by clearance plus
+the via radius, and deduplicates generated centres at 0.001 mm. Pitch is
+sampled independently along each source track or arc. This uses the same
+bounds-centre heuristic as MCP, so complex concave contours need inspection.
+
+Focused geometry checks:
+`dotnet run --project Test/ContourVias/ContourVias.Tests.csproj -c Release`.
+
 ## Add edge rails
 
 In the PCB editor:
