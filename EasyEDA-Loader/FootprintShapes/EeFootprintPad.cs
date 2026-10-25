@@ -159,7 +159,7 @@ namespace EasyEDA_Loader
 
                 try
                 {
-                    if (!EEPCB.TryEELayerToAltium(layer.Name, ctx.ImportLcscMechanicalLayers, out targetLayer))
+                    if (!EEPCB.TryEELayerToAltium(layer.Name, ctx.ImportLcscMechanicalLayers, out targetLayer, ctx.ImportAdditionalLayers))
                         return true;
 
                     string padName = Number;

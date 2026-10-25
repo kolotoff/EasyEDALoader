@@ -326,6 +326,7 @@
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto"/>
                 <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
             </Grid.RowDefinitions>
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="*"/>
@@ -364,6 +365,15 @@
                           Unchecked="ImportOptionsChanged"
                           VerticalAlignment="Center"/>
             </StackPanel>
+
+            <CheckBox Grid.Row="2" Grid.ColumnSpan="2"
+                      x:Name="importAdditionalLayersCheckBox"
+                      Content="Import BoardOutLine and BottomAssembly layers"
+                      ToolTip="Import board outlines to the courtyard layer and bottom assembly geometry to the assembly layer."
+                      IsChecked="False"
+                      Margin="92,4,0,0"
+                      Checked="ImportOptionsChanged"
+                      Unchecked="ImportOptionsChanged"/>
 
             <StackPanel Grid.Row="0" Grid.RowSpan="2" Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
                 <Button x:Name="saveModelButton"

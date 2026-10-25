@@ -19,10 +19,15 @@ namespace EasyEDA_Loader
             return NormalizeLayerName(layer, true);
         }
 
-        public static string NormalizeLayerName(string layer, bool importLcscMechanicalLayers)
+        public static string NormalizeLayerName(string layer, bool importLcscMechanicalLayers, bool importAdditionalLayers = false)
         {
             if (layer == null)
                 return null;
+
+            if (string.Equals(layer, "BoardOutLine", StringComparison.Ordinal))
+                return importAdditionalLayers ? "BoardOutline" : null;
+            if (string.Equals(layer, "BottomAssembly", StringComparison.OrdinalIgnoreCase))
+                return importAdditionalLayers ? "TopAssembly" : null;
 
             if (!OptionalLcscMechanicalLayerAliases.TryGetValue(layer, out string normalizedLayer))
                 return layer;

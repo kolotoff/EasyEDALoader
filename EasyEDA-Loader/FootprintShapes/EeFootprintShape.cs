@@ -1,4 +1,4 @@
-﻿using Newtonsoft.Json;
+using Newtonsoft.Json;
 using PCB;
 using System;
 using System.Collections.Generic;
@@ -20,6 +20,7 @@ namespace EasyEDA_Loader
         public bool RemoveWatermark { get; set; }
         public bool CleanText { get; set; }
         public bool ImportLcscMechanicalLayers { get; set; }
+        public bool ImportAdditionalLayers { get; set; }
         public string PartNumber { get; set; }
         public string CachePartNumber { get; set; }
         public string Description { get; set; }

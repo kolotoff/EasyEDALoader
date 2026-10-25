@@ -1,4 +1,4 @@
-﻿using DXP;
+using DXP;
 using PCB;
 using SCH;
 using System;
@@ -1201,6 +1201,7 @@ namespace EasyEDA_Loader
             var api = new EasyedaApi();
 
             IServerDocument tempPcbDocument = null;
+            var importLog = new ImportLog();
             IServerDocument tempSchDocument = null;
             IPCB_Library tempPcbLib = null;
             IPCB_Library activePcbLib = null;
@@ -1356,6 +1357,7 @@ namespace EasyEDA_Loader
                                     CancelToken = ctx.Token,
                                     Exception = (Exception ex) =>
                                     {
+                                        importLog.Error($"Footprint {footprintName} ({partNumber})", ex);
                                         ReportImportProgress(progress, "Footprint warning: " + ex.Message, null, true, true);
                                         return true;
                                     },
@@ -1364,6 +1366,7 @@ namespace EasyEDA_Loader
                                     RemoveWatermark = selection.RemoveWatermark,
                                     CleanText = selection.CleanText,
                                     ImportLcscMechanicalLayers = selection.ImportLcscMechanicalLayers,
+                                    ImportAdditionalLayers = selection.ImportAdditionalLayers,
                                     PartNumber = partNumber,
                                     CachePartNumber = selection.PartInfo?.Part,
                                     Description = footprintDescription,
@@ -1432,6 +1435,7 @@ namespace EasyEDA_Loader
                     catch (Exception ex)
                     {
                         hadErrors = true;
+                        importLog.Error($"Component {selection.PartInfo?.Name}", ex);
                         ReportImportProgress(progress, $"Failed to process component {selection.PartInfo.Name}: {ex.Message}", componentEndProgress, false, true);
                     }
                 }
@@ -1449,13 +1453,21 @@ namespace EasyEDA_Loader
 
             ctx.Dispose();
 
+            if (importLog.ErrorCount > 0)
+            {
+                string detail = importLog.WriteFailed
+                    ? "Some diagnostics could not be written. Review the log above."
+                    : "Details: " + importLog.LogPath;
+                ReportImportProgress(progress, $"{importLog.ErrorCount} import warning(s) or error(s). {detail}", 100, false, true);
+            }
+
             if (hadErrors)
             {
                 ReportImportProgress(progress, "Import finished with errors. Review the log above.", 100, false, true);
                 return false;
             }
 
-            ReportImportProgress(progress, "Import finished.", 100);
+            ReportImportProgress(progress, importLog.ErrorCount == 0 ? "Import finished." : "Import finished with warnings.", 100);
             return true;
         }
 

@@ -1,4 +1,4 @@
-﻿using Newtonsoft.Json;
+using Newtonsoft.Json;
 using System.Collections.Generic;
 
 namespace EasyEDA_Loader
@@ -37,7 +37,7 @@ namespace EasyEDA_Loader
         public bool HasIdFlag { get; set; }
 
         [JsonProperty("utime")]
-        public int Utime { get; set; }
+        public int? Utime { get; set; }
 
         [JsonProperty("newgId")]
         public bool NewgId { get; set; }

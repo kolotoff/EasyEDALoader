@@ -1,4 +1,4 @@
-﻿using PCB;
+using PCB;
 
 using System;
 using System.Collections.Generic;
@@ -534,9 +534,9 @@ namespace EasyEDA_Loader
             throw new LayerMapException($"Skipped layer {layer}");
         }
 
-        public static bool TryEELayerToAltium(string layer, bool importLcscMechanicalLayers, out TLayerConstant altiumLayer)
+        public static bool TryEELayerToAltium(string layer, bool importLcscMechanicalLayers, out TLayerConstant altiumLayer, bool importAdditionalLayers = false)
         {
-            layer = FootprintLayerMap.NormalizeLayerName(layer, importLcscMechanicalLayers);
+            layer = FootprintLayerMap.NormalizeLayerName(layer, importLcscMechanicalLayers, importAdditionalLayers);
             if (layer == null)
             {
                 altiumLayer = default(TLayerConstant);

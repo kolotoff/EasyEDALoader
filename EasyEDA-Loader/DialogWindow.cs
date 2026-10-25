@@ -60,6 +60,7 @@ namespace EasyEDA_Loader
         public bool RemoveWatermark => removeWatermarkCheckBox?.IsChecked == true;
         public bool CleanText => RemoveWatermark && cleanTextCheckBox?.IsChecked == true;
         public bool ImportLcscMechanicalLayers => importLcscMechanicalLayersCheckBox?.IsChecked == true;
+        public bool ImportAdditionalLayers => importAdditionalLayersCheckBox?.IsChecked == true;
         public Func<IReadOnlyList<ComponentSelection>, Action<ImportProgressEvent>, bool> ImportExecutor { get; set; }
 
         public DialogWindow()
@@ -1453,6 +1454,7 @@ namespace EasyEDA_Loader
                 removeWatermarkCheckBox.IsChecked = state.RemoveWatermark ?? true;
                 cleanTextCheckBox.IsChecked = state.CleanText ?? false;
                 importLcscMechanicalLayersCheckBox.IsChecked = state.ImportLcscMechanicalLayers ?? false;
+                importAdditionalLayersCheckBox.IsChecked = state.ImportAdditionalLayers ?? false;
                 UpdateCleanTextControlState();
 
                 searchResults.Clear();
@@ -1511,6 +1513,7 @@ namespace EasyEDA_Loader
                     RemoveWatermark = RemoveWatermark,
                     CleanText = CleanText,
                     ImportLcscMechanicalLayers = ImportLcscMechanicalLayers,
+                    ImportAdditionalLayers = ImportAdditionalLayers,
                     SelectedPart = (resultsGrid.SelectedItem as PartInfoViewModel)?.PartInfo?.Part,
                     Results = searchResults.Select(result => new DialogSessionResult
                     {
@@ -1701,6 +1704,7 @@ namespace EasyEDA_Loader
                         RemoveWatermark = RemoveWatermark,
                         CleanText = CleanText,
                         ImportLcscMechanicalLayers = ImportLcscMechanicalLayers,
+                        ImportAdditionalLayers = ImportAdditionalLayers,
                         ImportTarget = importTarget
                     });
                 }
@@ -2224,6 +2228,7 @@ namespace EasyEDA_Loader
         public bool? RemoveWatermark { get; set; }
         public bool? CleanText { get; set; }
         public bool? ImportLcscMechanicalLayers { get; set; }
+        public bool? ImportAdditionalLayers { get; set; }
         public string SelectedPart { get; set; }
         public List<DialogSessionResult> Results { get; set; }
     }

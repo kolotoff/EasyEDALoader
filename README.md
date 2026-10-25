@@ -16,6 +16,12 @@ Using the extension is pretty straight forward once it is installed, there will 
 
 `Import to temp` will automatically create `EasyEDA.pcblib` and `EasyEDA.schlib` if they don't already exist in `Documents/AltiumEE`, create the footprint, download the 3d model, create the symbol, add part info, map the footprint to the symbol, then place the component into the active schematic at the bottom left. `Add footprint` imports only the footprint into the active PCB library, and `Add symbol` imports only the schematic symbol into the active schematic library.
 
+The **Import BoardOutLine and BottomAssembly layers** checkbox is off by default.
+Enable it to import the alternate board-outline spelling to the courtyard layer
+(M3) and bottom assembly geometry to this fork's shared assembly layer (M2).
+This is independent of **Import LCSC Mechanical Layers**. Import warnings retain
+full exception details in `Documents/AltiumEE/import-errors.log`.
+
 ## JLCCAM production-panel import
 
 In the PCB editor, use either of these actions:

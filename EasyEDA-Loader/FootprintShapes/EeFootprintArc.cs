@@ -151,7 +151,7 @@ namespace EasyEDA_Loader
             {
                 try
                 {
-                    if (!EEPCB.TryEELayerToAltium(layer.Name, ctx.ImportLcscMechanicalLayers, out targetLayer))
+                    if (!EEPCB.TryEELayerToAltium(layer.Name, ctx.ImportLcscMechanicalLayers, out targetLayer, ctx.ImportAdditionalLayers))
                         return true;
 
                     var startAngle = Path.Sweep == SweepDirection.Counterclockwise ? ConvertAngle(Path.StartAngle, ctx) : ConvertAngle(Path.EndAngle, ctx);

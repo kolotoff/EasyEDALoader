@@ -65,6 +65,7 @@ namespace EasyEDA_Loader
         public bool RemoveWatermark { get; set; }
         public bool CleanText { get; set; }
         public bool ImportLcscMechanicalLayers { get; set; }
+        public bool ImportAdditionalLayers { get; set; }
         public ComponentImportTarget ImportTarget { get; set; }
     }
 

@@ -393,7 +393,7 @@ namespace EasyEDA_Loader
 
         public async Task<List<PartInfo>> SearchProductInfoAsync(string lcscId, CancellationToken cancellationToken = default)
         {
-            string url = $"https://pro.easyeda.com/api/v2/eda/product/search";
+            string url = $"https://pro.easyeda.com/api/v2/eda/product/search?keyword={Uri.EscapeDataString(lcscId ?? string.Empty)}";
             Debug.WriteLine($"[API] POST Request: {url}");
             Console.WriteLine($"[API] POST Request: {url}");
 

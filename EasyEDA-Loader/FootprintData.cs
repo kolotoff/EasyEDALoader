@@ -1,4 +1,4 @@
-﻿using Newtonsoft.Json;
+using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using PCB;
 using System;
@@ -124,7 +124,7 @@ namespace EasyEDA_Loader
         public bool HasIdFlag { get; set; }
 
         [JsonProperty("utime")]
-        public int Utime { get; set; }
+        public int? Utime { get; set; }
 
         [JsonProperty("newgId")]
         public bool NewgId { get; set; }
