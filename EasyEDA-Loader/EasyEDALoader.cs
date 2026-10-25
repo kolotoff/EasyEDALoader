@@ -1261,7 +1261,7 @@ namespace EasyEDA_Loader
                 {
                     var root = selection.Root;
                     var ee_footprint = root.Component.PackageDetail?.Footprint;
-                    var ee_symbol = root.Component.Symbol;
+                    var ee_symbol = root.Component.GetPrimarySymbol();
                     string package = FirstNonEmpty(ee_footprint?.Head?.Parameters?.Package, selection.PartInfo?.Name, selection.PartInfo?.Part);
                     EasyedaApi.ProductInfo productInfo = selection.PartInfo?.Info;
                     string partNumber = SelectPartNumber(selection, root.Component, ee_symbol, productInfo);
@@ -1402,7 +1402,7 @@ namespace EasyEDA_Loader
                                 mounting,
                                 productInfo?.Parameters,
                                 BuildFootprintDescriptionGeometry(ee_footprint));
-                            string designator = EESCH.SelectRuleDesignator(ee_symbol.Head.Parameters.Pre, partName, description, package);
+                            string designator = EESCH.SelectRuleDesignator(ee_symbol.Head?.Parameters?.Pre, partName, description, package);
 
                             var existingComponent = targetSchLib.GetState_SchComponentByLibRef(partName);
                             if (existingComponent == null)
@@ -1414,7 +1414,8 @@ namespace EasyEDA_Loader
                                     try
                                     {
                                         bool isConnector = SymbolImportRules.IsConnectorDesignator(designator);
-                                        SymbolDrawing.CreateComponent(targetSchLib, component, pcbLibraryPath, footprintName, ee_symbol, isConnector);
+                                        targetSchLib.SetState_Current_SchComponent(component);
+                                        SymbolDrawing.CreateMultiPartComponent(targetSchLib, component, pcbLibraryPath, footprintName, root.Component.GetSymbolParts(), isConnector);
 
                                         EESCH.ApplyGostPropertySet(component, BuildSchematicPropertySet(ee_symbol, ee_footprint, productInfo, designator, partName, description, footprintName, package, pcbLibraryPath, mounting));
                                     }

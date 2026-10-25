@@ -283,6 +283,17 @@ namespace EasyEDA_Loader
                 (var rect, var pins) = LayoutPins(Shapes);
 
                 DrawAltiumRectangle(c, rect);
+                foreach (var graphic in SymbolGraphics.Build(Shapes, rect))
+                {
+                    var points = new PointCollection(graphic.Points.Select(point => new Point(point.X, point.Y)));
+                    if (graphic.IsFilled)
+                        c.Children.Add(new Polygon { Points = points, Fill = Brushes.Black, Stroke = Brushes.Black, StrokeThickness = 1 });
+                    else
+                    {
+                        if (graphic.IsClosed && points.Count > 0) points.Add(points[0]);
+                        c.Children.Add(new Polyline { Points = points, Stroke = Brushes.Black, StrokeThickness = 1 });
+                    }
+                }
                 foreach (var pin in pins)
                 {
                     DrawAltiumPin(c, pin, pin.Length);
@@ -293,6 +304,34 @@ namespace EasyEDA_Loader
 
         static public void CreateComponent(ISch_Lib schLib, ISch_Component component, string pcbLibraryPath, string package, SymbolData ee_symbol, bool isConnector)
         {
+            CreateMultiPartComponent(schLib, component, pcbLibraryPath, package, new[] { ee_symbol }, isConnector);
+        }
+
+        static public void CreateMultiPartComponent(ISch_Lib schLib, ISch_Component component, string pcbLibraryPath, string package, IReadOnlyList<SymbolData> parts, bool isConnector)
+        {
+            if (parts.Count == 0)
+                throw new InvalidOperationException("The component does not contain usable schematic parts.");
+            schLib.SetState_Current_SchComponent(component);
+            component.SetState_PartCountNoPart0(parts.Count);
+            try
+            {
+                for (int index = 0; index < parts.Count; index++)
+                {
+                    schLib.SetState_CurrentSchComponentPartId(index + 1);
+                    DrawPart(schLib, component, parts[index], isConnector);
+                }
+            }
+            finally
+            {
+                schLib.SetState_CurrentSchComponentPartId(1);
+                component.SetState_CurrentPartID(1);
+            }
+            EESCH.AssignFootprint(component, pcbLibraryPath, package, "");
+            schLib.AddSchComponent(component);
+        }
+
+        private static void DrawPart(ISch_Lib schLib, ISch_Component component, SymbolData ee_symbol, bool isConnector)
+        {
             (var rect, var pins) = SymbolDrawing.LayoutPins(ee_symbol.Shapes, isConnector);
             var gostFont = EESCH.CreateGostFontInfo();
             EESCH.CreateRectangle(schLib, component, rect.X1, 0, rect.X2, -rect.Height);
@@ -301,8 +340,18 @@ namespace EasyEDA_Loader
             {
                 EESCH.CreatePin(schLib, component, pin.X, -pin.Y, pin.Designator, pin.Name, pin.Orientation, pin.Length, pin.PinType, pin.ShowName, gostFont);
             }
-            EESCH.AssignFootprint(component, pcbLibraryPath, package, "");
-            schLib.AddSchComponent(component);
+            foreach (var graphic in SymbolGraphics.Build(ee_symbol.Shapes, rect))
+            {
+                if (graphic.IsFilled)
+                    EESCH.CreatePolygon(schLib, component, graphic.Points.Select(point => new EePoint { X = point.X, Y = -point.Y }).ToList());
+                else
+                {
+                    for (int index = 1; index < graphic.Points.Count; index++)
+                        EESCH.CreateLine(schLib, component, graphic.Points[index - 1].X, -graphic.Points[index - 1].Y, graphic.Points[index].X, -graphic.Points[index].Y);
+                    if (graphic.IsClosed && graphic.Points.Count > 2)
+                        EESCH.CreateLine(schLib, component, graphic.Points[graphic.Points.Count - 1].X, -graphic.Points[graphic.Points.Count - 1].Y, graphic.Points[0].X, -graphic.Points[0].Y);
+                }
+            }
         }
     }
 }

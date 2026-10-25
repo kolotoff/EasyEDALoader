@@ -2123,6 +2123,28 @@ namespace EasyEDA_Loader
             public double CommentY { get; set; }
         }
 
+        internal static IPCB_Region CreateSolidRegion(IPCB_Group component, TLayerConstant layer, IReadOnlyList<ShapeContour> contours)
+        {
+            var polygon = AltiumApi.GlobalVars.PCBServer.Internal_PCBGeometricPolygonFactory() as IPCB_GeometricPolygon;
+            if (polygon == null)
+                throw new InvalidOperationException("Could not create a region polygon.");
+            foreach (var source in contours)
+            {
+                if (source.Points.Count < 3) continue;
+                var contour = AltiumApi.GlobalVars.PCBServer.PCBContourFactory();
+                foreach (var point in source.Points)
+                    contour.AddPoint(AltiumApi.MmToCoord(point.X) + component.GetState_XLocation(), AltiumApi.MmToCoord(point.Y) + component.GetState_YLocation());
+                polygon.Internal_AddContourIsHole(contour, source.IsHole);
+            }
+            var region = AltiumApi.GlobalVars.PCBServer.PCBObjectFactory(TObjectId.eRegionObject, TDimensionKind.eNoDimension, TObjectCreationMode.eCreate_Default) as IPCB_Region;
+            if (region == null)
+                throw new InvalidOperationException("Could not create a footprint region.");
+            region.SetState_Kind(TRegionKind.eRegionKind_Copper);
+            region.SetState_V7Layer(new V7_Layer(layer));
+            region.SetGeometricPolygon(polygon);
+            return region;
+        }
+
         public static IPCB_ComponentBody CreateComponentBody(IPCB_Group c, string fileName, double rx, double ry, double rz, double x, double y, double z, string identifier = null, double overallHeightMm = 0)
         {
             var stepModel = AltiumApi.GlobalVars.PCBServer.PCBObjectFactory(TObjectId.eComponentBodyObject, TDimensionKind.eNoDimension, TObjectCreationMode.eCreate_Default) as IPCB_ComponentBody;
@@ -2147,10 +2169,9 @@ namespace EasyEDA_Loader
             }
             else
             {
-                // Some Altium builds expose body bounds only after insertion; keep the legacy origin move as a fallback.
-                IPCB_Board board = GetComponentBoard(c);
-                int originX = board != null ? board.GetState_XOrigin() : 0;
-                int originY = board != null ? board.GetState_YOrigin() : 0;
+                // Some Altium builds expose body bounds only after insertion; use the component origin as a fallback.
+                int originX = c.GetState_XLocation();
+                int originY = c.GetState_YLocation();
                 stepModel.MoveByXY(AltiumApi.MmToCoord(x) + originX, AltiumApi.MmToCoord(y) + originY);
             }
             return stepModel;
@@ -2870,22 +2891,10 @@ namespace EasyEDA_Loader
                 || !TryGetRectCoord(rect, "GetTop", out int top))
                 return false;
 
-            int originX = 0;
-            int originY = 0;
-            try
-            {
-                IPCB_Board board = GetComponentBoard(component);
-                if (board != null)
-                {
-                    originX = board.GetState_XOrigin();
-                    originY = board.GetState_YOrigin();
-                }
-            }
-            catch
-            {
-                originX = 0;
-                originY = 0;
-            }
+            // Pads, artwork and model targets all use the component's local frame.
+            // A library component can be located away from the PCB board origin.
+            int originX = component.GetState_XLocation();
+            int originY = component.GetState_YLocation();
 
             bounds = new StepSilhouetteBounds
             {

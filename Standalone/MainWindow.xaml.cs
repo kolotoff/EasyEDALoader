@@ -165,9 +165,9 @@ namespace Standalone
 
             PopulateParameters(productInfo);
 
-            if (Component.Symbol?.Shapes != null && Component.Symbol.Shapes.Count > 0)
+            if (Component.GetPrimarySymbol()?.Shapes?.Count > 0)
             {
-                DrawSymbolPreviewSafely(Component.Symbol.Shapes);
+                DrawSymbolPreviewSafely(Component.GetPrimarySymbol().Shapes);
                 if (SymbolCanvas.Children.Count == 0)
                     ShowCanvasMessage(SymbolCanvas, "No symbol preview data was returned for this part.");
                 await SymbolCanvas.Dispatcher.InvokeAsync(() =>

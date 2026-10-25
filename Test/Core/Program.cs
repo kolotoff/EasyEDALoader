@@ -36,6 +36,13 @@ internal static class Program
             ("component timestamps accept missing values", () => Run(UpstreamImportTests.NullableTimestamps)),
             ("additional footprint layers are opt-in", () => Run(UpstreamImportTests.OptionalLayers)),
             ("import diagnostics retain exceptions", () => Run(UpstreamImportTests.Diagnostics)),
+            ("model bounds use footprint coordinate frame", () => Run(UpstreamImportTests.ModelCoordinateFrame)),
+            ("pad expansion overrides are optional", () => Run(Pr9ImportTests.MaskOverrides)),
+            ("solid regions retain cutouts and curved paths", () => Run(Pr9ImportTests.SolidRegions)),
+            ("multipart symbols keep every gate", () => Run(Pr9ImportTests.MultipartSymbols)),
+            ("schematic graphics retain shape and fill", () => Run(Pr9ImportTests.Graphics)),
+            ("region interop retains hole contours", () => Run(Pr9ImportTests.RegionInterop)),
+            ("schematic interop assigns multipart owners", () => Run(Pr9ImportTests.MultipartInterop)),
             ("cache directory keys stay below root", () => Run(CacheDirectoryKeys)),
             ("invalid component downloads are not cached", InvalidComponentCache),
             ("layout destinations cannot overlap groups", () => Run(LayoutOverlap)),
@@ -54,7 +61,7 @@ internal static class Program
         foreach (var test in tests)
         {
             try { await test.Run(); Console.WriteLine("PASS " + test.Name); }
-            catch (Exception ex) { failed++; Console.Error.WriteLine("FAIL " + test.Name + ": " + ex.Message); }
+            catch (Exception ex) { failed++; Console.Error.WriteLine("FAIL " + test.Name + ": " + ex.GetBaseException().Message); }
         }
         Console.WriteLine($"Core tests: {tests.Length - failed} passed, {failed} failed.");
         return failed == 0 ? 0 : 1;

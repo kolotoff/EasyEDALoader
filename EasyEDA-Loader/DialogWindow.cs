@@ -353,10 +353,10 @@ namespace EasyEDA_Loader
                     Task<byte[]> stepDataTask = null;
                     Task interactivePreviewTask = null;
 
-                    if (_currentComponent.Symbol?.Shapes != null)
+                    if (_currentComponent.GetPrimarySymbol()?.Shapes != null)
                     {
                         UpdatePreviewProgress("Drawing symbol...", 30);
-                        DrawSymbolPreviewSafely(_currentComponent.Symbol.Shapes);
+                        DrawSymbolPreviewSafely(_currentComponent.GetPrimarySymbol().Shapes);
                         if (symbolCanvas.Children.Count == 0)
                             ShowCanvasPreviewMessage(symbolCanvas, "No symbol preview data was returned for this part.");
                         _ = symbolCanvas.Dispatcher.InvokeAsync(() =>
@@ -1684,7 +1684,7 @@ namespace EasyEDA_Loader
                     var component = root.Component;
                     var has3dModel = component.PackageDetail?.Footprint?.GetModel() != null;
                     var hasFootprint = component.PackageDetail?.Footprint != null;
-                    var hasSymbol = component.Symbol != null;
+                    var hasSymbol = component.GetSymbolParts().Count > 0;
                     var includeThisFootprint = includeFootprint && hasFootprint;
                     var includeThisSymbol = includeSymbol && hasSymbol;
 

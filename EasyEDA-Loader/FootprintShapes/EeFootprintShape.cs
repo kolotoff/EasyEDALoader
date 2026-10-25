@@ -34,6 +34,7 @@ namespace EasyEDA_Loader
         public bool HasAssemblyCommentText { get; set; }
         public int MountingHoleCount { get; set; }
         public int MountingPadCount { get; set; }
+        internal IReadOnlyList<EeFootprintSolidRegion> SolidRegions { get; set; } = Array.Empty<EeFootprintSolidRegion>();
     }
     [JsonConverter(typeof(EeFootprintShapeConverter))]
     public class EeFootprintShape : EeShape

@@ -11401,7 +11401,7 @@ namespace StepCleaner.Tests
 
         private static void AssertContains(string text, string expectedSubstring, string message, List<string> failures)
         {
-            if (text == null || text.IndexOf(expectedSubstring, StringComparison.Ordinal) < 0)
+            if (text == null || text.Replace("\r\n", "\n").IndexOf(expectedSubstring.Replace("\r\n", "\n"), StringComparison.Ordinal) < 0)
                 failures.Add(message + ": missing '" + expectedSubstring + "'.");
         }
 

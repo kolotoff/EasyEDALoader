@@ -172,6 +172,7 @@ namespace EasyEDA_Loader
 
         public void DrawToCanvas(Canvas c, EeFootprintContext ctx)
         {
+            ctx.SolidRegions = Shapes.OfType<EeFootprintSolidRegion>().ToList();
             foreach (var shape in Shapes)
             {
                 if (shape != null)
@@ -187,6 +188,7 @@ namespace EasyEDA_Loader
 
         public void AddToComponent(IPCB_LibComponent c, EeFootprintContext ctx)
         {
+            ctx.SolidRegions = Shapes.OfType<EeFootprintSolidRegion>().ToList();
             foreach (var shape in Shapes)
             {
                 if (shape != null)
@@ -253,7 +255,7 @@ namespace EasyEDA_Loader
                     case "SVGNODE":
                         return EeFootprint3dModel.FromString(raw);
                     case "SOLIDREGION":
-                        return null;
+                        return EeFootprintSolidRegion.FromString(raw);
                 }
             }
 

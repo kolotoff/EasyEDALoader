@@ -1,5 +1,6 @@
 ﻿using Newtonsoft.Json;
 using System.Collections.Generic;
+using System.Linq;
 
 namespace EasyEDA_Loader
 {
@@ -149,6 +150,32 @@ namespace EasyEDA_Loader
 
         [JsonProperty("packageDetail")]
         public PackageDetail PackageDetail { get; set; }
+
+        [JsonProperty("subparts")]
+        public List<Subpart> Subparts { get; set; }
+
+        public IReadOnlyList<SymbolData> GetSymbolParts()
+        {
+            var parts = Subparts?.Where(part => part?.DataStr?.Shapes?.Count > 0)
+                .Select(part => part.DataStr).ToList();
+            if (parts?.Count > 0)
+                return parts;
+            return Symbol?.Shapes?.Count > 0 ? new[] { Symbol } : System.Array.Empty<SymbolData>();
+        }
+
+        public SymbolData GetPrimarySymbol() => GetSymbolParts().FirstOrDefault();
+    }
+
+    public class Subpart
+    {
+        [JsonProperty("uuid")]
+        public string Uuid { get; set; }
+        [JsonProperty("title")]
+        public string Title { get; set; }
+        [JsonProperty("dataStr")]
+        public SymbolData DataStr { get; set; }
+        [JsonProperty("description")]
+        public string Description { get; set; }
     }
 
     public class Root

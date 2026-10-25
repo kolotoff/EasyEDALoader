@@ -31,7 +31,17 @@ namespace EasyEDA_Loader
                 HolePoints = EePoint.ListFromString(parts[14]),
                 IsPlated = ParseBoolean(parts[15]),
                 IsLocked = ParseBoolean(parts[16]),
+                PasteMaskExpansion = ParseExpansion(parts, 17),
+                SolderMaskExpansion = ParseExpansion(parts, 18),
             };
+        }
+
+        private static double? ParseExpansion(string[] parts, int index)
+        {
+            double? value = index < parts.Length ? ParseNullableDouble(parts[index]) : null;
+            if (value.HasValue && !double.IsFinite(value.Value))
+                throw new FormatException("Non-finite pad mask expansion.");
+            return value.HasValue ? ConvertToMM(value.Value) : null;
         }
         public override List<UIElement> AddToCanvas(Canvas c, EeFootprintContext ctx)
         {
@@ -194,6 +204,23 @@ namespace EasyEDA_Loader
                         }
                         pad.SetState_HoleWidth(AltiumApi.MmToCoord(HoleLength));
                     }
+                    if (PasteMaskExpansion.HasValue || SolderMaskExpansion.HasValue)
+                    {
+                        var cache = pad.GetState_Cache();
+                        if (SolderMaskExpansion.HasValue)
+                        {
+                            cache.SolderMaskExpansionValid = TCacheState.eCacheManual;
+                            cache.UseSeparateExpansions = true;
+                            cache.SolderMaskExpansion = AltiumApi.MmToCoord(SolderMaskExpansion.Value);
+                            cache.SolderMaskBottomExpansion = AltiumApi.MmToCoord(SolderMaskExpansion.Value);
+                        }
+                        if (PasteMaskExpansion.HasValue)
+                        {
+                            cache.PasteMaskExpansionValid = TCacheState.eCacheManual;
+                            cache.PasteMaskExpansion = AltiumApi.MmToCoord(PasteMaskExpansion.Value);
+                        }
+                        pad.SetState_Cache(cache);
+                    }
                     EEPCB.AddToPCB(c, pad);
                 }
                 catch (Exception ex)
@@ -222,6 +249,8 @@ namespace EasyEDA_Loader
         public List<EePoint> HolePoints { get; set; }
         public bool IsPlated { get; set; }
         public bool IsLocked { get; set; }
+        public double? PasteMaskExpansion { get; set; }
+        public double? SolderMaskExpansion { get; set; }
     }
 
 }

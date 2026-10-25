@@ -1,6 +1,7 @@
 ﻿using EDP;
 using SCH;
 using System;
+using System.Collections.Generic;
 using System.Reflection;
 using System.Windows.Forms;
 
@@ -442,6 +443,24 @@ namespace EasyEDA_Loader
             line.SetState_OwnerPartId(schLib.GetState_CurrentSchComponentPartId());
             line.SetState_OwnerPartDisplayMode(schLib.GetState_CurrentSchComponentDisplayMode());
             c.AddSchObject(line);
+        }
+
+        public static void CreatePolygon(ISch_Lib schLib, ISch_Component component, IReadOnlyList<EePoint> points)
+        {
+            if (points.Count < 3) return;
+            var polygon = AltiumApi.GlobalVars.SCHServer.SchObjectFactory(SCH.TObjectId.ePolygon, SCH.TObjectCreationMode.eCreate_Default) as ISch_Polygon;
+            if (polygon == null)
+                throw new InvalidOperationException("Could not create schematic graphic polygon.");
+            polygon.SetState_VerticesCount(points.Count);
+            for (int i = 0; i < points.Count; i++)
+                polygon.SetState_Vertex(i + 1, new DXP.Point { X = AltiumApi.MilsToCoord(points[i].X), Y = AltiumApi.MilsToCoord(points[i].Y) });
+            polygon.SetState_LineWidth(TSize.eSmall);
+            polygon.SetState_Color(0);
+            polygon.SetState_AreaColor(0);
+            polygon.SetState_IsSolid(true);
+            polygon.SetState_OwnerPartId(schLib.GetState_CurrentSchComponentPartId());
+            polygon.SetState_OwnerPartDisplayMode(schLib.GetState_CurrentSchComponentDisplayMode());
+            component.AddSchObject(polygon);
         }
 
         public static void AssignFootprint(ISch_Component c, string libraryPath, string modelName, string modelMapping)

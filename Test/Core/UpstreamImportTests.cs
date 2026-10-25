@@ -2,6 +2,7 @@ using EasyEDA_Loader;
 using Newtonsoft.Json;
 using System;
 using System.IO;
+using System.Reflection;
 using System.Net;
 using System.Net.Http;
 using System.Threading;
@@ -71,6 +72,67 @@ internal static class UpstreamImportTests
         finally { if (Directory.Exists(directory)) Directory.Delete(directory, true); }
     }
 
+    internal static void ModelCoordinateFrame()
+    {
+        int Coord(double mm) => (int)Math.Round(mm * 10000000 / 25.4);
+        object board = PcbTestProxy.Create("PCB.IPCB_Board", (method, args) => method.Name switch
+        {
+            "GetState_XOrigin" => Coord(90),
+            "GetState_YOrigin" => Coord(40),
+            _ => PcbTestProxy.Default(method.ReturnType)
+        });
+        object component = PcbTestProxy.Create("PCB.IPCB_LibComponent", (method, args) => method.Name switch
+        {
+            "GetState_XLocation" => Coord(100),
+            "GetState_YLocation" => Coord(50),
+            "GetState_Board" or "Internal_GetState_Board" => board,
+            _ => PcbTestProxy.Default(method.ReturnType)
+        });
+        var primitive = new BoundsPrimitive(new BoundsRectangle(Coord(98), Coord(49), Coord(102), Coord(51)));
+        var arguments = new object[] { component, primitive, null };
+        bool measured = (bool)typeof(EEPCB).GetMethod("TryGetPrimitiveBoundsMm", BindingFlags.Static | BindingFlags.NonPublic).Invoke(null, arguments);
+        var bounds = arguments[2] as StepSilhouetteBounds;
+        if (!measured || Math.Abs(bounds.CenterX) > 1e-5 || Math.Abs(bounds.CenterY) > 1e-5)
+            throw new InvalidOperationException($"Expected component-local model center (0,0), got ({bounds?.CenterX},{bounds?.CenterY}).");
+
+        int movedX = 0, movedY = 0;
+        object model = PcbTestProxy.Create("PCB.IPCB_Model", (method, args) => PcbTestProxy.Default(method.ReturnType));
+        object body = PcbTestProxy.Create("PCB.IPCB_ComponentBody", (method, args) =>
+        {
+            if (method.Name.Contains("ModelFactory_FromFilename")) return model;
+            if (method.Name == "MoveByXY") { movedX = (int)args[0]; movedY = (int)args[1]; }
+            return PcbTestProxy.Default(method.ReturnType);
+        });
+        object server = PcbTestProxy.Create("PCB.IPCB_ServerInterface", (method, args) => method.Name.Contains("PCBObjectFactory") ? body : PcbTestProxy.Default(method.ReturnType));
+        var serverField = typeof(AltiumApi).GetNestedType("GlobalVars", BindingFlags.NonPublic).GetField("pcbServer", BindingFlags.Static | BindingFlags.NonPublic);
+        object previous = serverField.GetValue(null);
+        try
+        {
+            serverField.SetValue(null, server);
+            typeof(EEPCB).GetMethod("CreateComponentBody").Invoke(null, new object[] { component, "fixture.step", 0d, 0d, 0d, 0.75d, -0.25d, 0d, "fixture", 0d });
+            if (Math.Abs(movedX - Coord(100.75)) > 1 || Math.Abs(movedY - Coord(49.75)) > 1)
+                throw new InvalidOperationException("Model fallback placement used board origin instead of footprint location.");
+        }
+        finally { serverField.SetValue(null, previous); }
+    }
+
+    public sealed class BoundsPrimitive
+    {
+        private readonly BoundsRectangle rectangle;
+        public BoundsPrimitive(BoundsRectangle value) { rectangle = value; }
+        public object Internal_BoundingRectangle() => rectangle;
+    }
+
+    public sealed class BoundsRectangle
+    {
+        private readonly int left, bottom, right, top;
+        public BoundsRectangle(int l, int b, int r, int t) { left = l; bottom = b; right = r; top = t; }
+        public int GetLeft() => left;
+        public int GetBottom() => bottom;
+        public int GetRight() => right;
+        public int GetTop() => top;
+    }
+
     private sealed class SearchHandler : HttpMessageHandler
     {
         internal string Query;
@@ -82,5 +144,18 @@ internal static class UpstreamImportTests
                 Content = new StringContent("{\"result\":{\"productList\":[]}}")
             });
         }
+    }
+}
+
+public class PcbTestProxy : DispatchProxy
+{
+    public Func<MethodInfo, object[], object> Call { get; set; }
+    protected override object Invoke(MethodInfo method, object[] args) => Call(method, args);
+    public static object Default(Type type) => type == typeof(void) ? null : type.IsValueType ? Activator.CreateInstance(type) : null;
+    public static object Create(string typeName, Func<MethodInfo, object[], object> call)
+    {
+        object proxy = DispatchProxy.Create(Type.GetType(typeName + ", Altium.SDK.Interfaces", true), typeof(PcbTestProxy));
+        ((PcbTestProxy)proxy).Call = call;
+        return proxy;
     }
 }
