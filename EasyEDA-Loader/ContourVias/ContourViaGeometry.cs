@@ -62,7 +62,7 @@ namespace EasyEDA_Loader
                     < Distance2(mx + nx * offset, my + ny * offset, centerX, centerY))
                 { nx = -nx; ny = -ny; }
                 double steps = Math.Floor(length / options.PitchMm);
-                if (steps > 100000 || result.Count + steps > 100000)
+                if (steps > 100000)
                     throw new ArgumentException("The contour would create more than 100,000 vias. Increase the pitch.");
                 for (int i = 0; i <= (int)steps; i++)
                 {
@@ -83,7 +83,11 @@ namespace EasyEDA_Loader
                         y = s.Y1 + dy / length * i * options.PitchMm + ny * offset;
                     }
                     if (keys.Add(((long)Math.Round(x * 1000), (long)Math.Round(y * 1000))))
+                    {
+                        if (result.Count == 100000)
+                            throw new ArgumentException("The contour would create more than 100,000 vias. Increase the pitch.");
                         result.Add(new ContourViaPoint(x, y));
+                    }
                 }
             }
             return result;

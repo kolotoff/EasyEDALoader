@@ -48,6 +48,20 @@ is added as 0.1 mm keepout tracks/arcs, edge holes are added as unplated
 no-copper `PanelHole*` pads, and fiducials are added as side-specific no-paste
 `PanelFiducial*` SMD pads.
 
+## Convert selected region to polygon
+
+In a PCB document, select standalone copper regions and choose `Tools` ->
+`EasyEDA` -> `Convert selected region to polygon`. Each selected region is
+replaced by a solid polygon pour with the same outline, curved segments, layer,
+and net. Regions with holes are rejected before any PCB changes: using a
+layer-wide pour cutout for a region's hole would also remove copper from other
+overlapping polygons. If any selected region has a hole, the entire conversion
+is rejected. Unselected regions and other selected objects are preserved. The
+command also rejects keepouts, cutouts, component-owned regions, and existing
+polygon copper. The PCB remains unsaved.
+
+Live Altium regression: [Test/RegionPolygon](Test/RegionPolygon/README.md).
+
 ## Add tented vias around keepout
 
 With a PCB document active, choose `Tools` -> `EasyEDA` ->

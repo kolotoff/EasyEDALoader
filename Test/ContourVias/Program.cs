@@ -29,6 +29,7 @@ internal static class Program
         Check(Generate(arc, 0, 0, options).Count == 16, "equal angles mean full circle");
         var duplicate = ContourViaGeometry.Generate(new[] { bottom, bottom }, 5, 5, options);
         Check(duplicate.Count == 6, "deduplicate coincident contour samples");
+        ViaCountLimitIncludesEverySample();
         Check(Generate(new ContourViaSegment(), 0, 0, options).Count == 0, "ignore zero length track");
         ExpectInvalid(new ContourViaOptions { HoleMm = 0.4 });
         ExpectInvalid(new ContourViaOptions { DiameterMm = double.NaN });
@@ -44,6 +45,20 @@ internal static class Program
 
     private static List<ContourViaPoint> Generate(ContourViaSegment segment, double cx, double cy, ContourViaOptions options)
         => ContourViaGeometry.Generate(new[] { segment }, cx, cy, options);
+    private static void ViaCountLimitIncludesEverySample()
+    {
+        var options = new ContourViaOptions();
+        var atLimit = new ContourViaSegment { X2 = 199998 };
+        Check(Generate(atLimit, 0, 1, options).Count == 100000, "allow exactly 100,000 vias");
+        ExpectThrows(() => Generate(new ContourViaSegment { X2 = 200000 }, 0, 1, options));
+        ExpectThrows(() => ContourViaGeometry.Generate(new[]
+        {
+            new ContourViaSegment { X2 = 199996 },
+            new ContourViaSegment { X1 = 200000, X2 = 200002 }
+        }, 0, 1, options));
+        Check(ContourViaGeometry.Generate(new[] { atLimit, atLimit }, 0, 1, options).Count == 100000,
+            "count unique vias when applying the limit");
+    }
     private static double Distance(ContourViaPoint a, ContourViaPoint b) => Math.Sqrt((a.X-b.X)*(a.X-b.X) + (a.Y-b.Y)*(a.Y-b.Y));
     private static bool Near(double a, double b) => Math.Abs(a - b) < 1e-6;
     private static void Check(bool valid, string message) { if (!valid) throw new Exception(message); }

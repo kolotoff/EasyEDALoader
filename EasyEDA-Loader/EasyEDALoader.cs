@@ -80,6 +80,8 @@ namespace EasyEDA_Loader
             RegisterCommand("EasyEDA-Loader:EasyEDAAddEdgeRails", new CommandProc(AddEdgeRails));
             RegisterCommand("EasyEDAAddTentedContourVias", new CommandProc(AddTentedContourVias));
             RegisterCommand("EasyEDA-Loader:EasyEDAAddTentedContourVias", new CommandProc(AddTentedContourVias));
+            RegisterCommand("EasyEDAConvertSelectedRegionToPolygon", new CommandProc(ConvertSelectedRegionToPolygon));
+            RegisterCommand("EasyEDA-Loader:EasyEDAConvertSelectedRegionToPolygon", new CommandProc(ConvertSelectedRegionToPolygon));
         }
 
         private void RegisterCommand(string argCommandId, CommandProc commandProc)
@@ -566,6 +568,16 @@ namespace EasyEDA_Loader
             }
             catch { session?.Dispose(); throw; }
             finally { Interlocked.Exchange(ref loaderDialogOpen, 0); }
+        }
+
+        private void ConvertSelectedRegionToPolygon(IServerDocumentView argContext, ref string argParameters)
+        {
+            if (IsLoaderDialogOpen()) return;
+            IPCB_Board board = EEPCB.GetCurrentPcbBoard(argContext);
+            if (board == null || !string.Equals(Path.GetExtension(board.GetState_FileName()), ".PcbDoc", StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException("Open a PCB document before converting regions to polygons.");
+            RegionPolygonConverter.ConvertSelected(board);
+            MarkCurrentDocumentModified();
         }
 
         private void AddTentedContourVias(IServerDocumentView argContext, ref string argParameters)
