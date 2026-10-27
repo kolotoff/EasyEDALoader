@@ -7,6 +7,7 @@ internal static class Program
     private static void Main()
     {
         var options = new ContourViaOptions();
+        Check(!options.IgnoreObstacles, "obstacle checking is enabled by default");
         var bottom = new ContourViaSegment { X1 = 0, Y1 = 0, X2 = 10, Y2 = 0 };
         var points = Generate(bottom, 5, 5, options);
         Check(points.Count == 6 && Near(points[0].X, 0) && Near(points[0].Y, 0.5)
@@ -40,7 +41,8 @@ internal static class Program
         ExpectInvalid(new ContourViaOptions { PitchMm = double.PositiveInfinity });
         ExpectThrows(() => Generate(new ContourViaSegment { X2 = 1e7 }, 5, 5, options));
         ExpectThrows(() => Generate(new ContourViaSegment { IsArc = true, Radius = 0.1 }, 0, 0, options));
-        Console.WriteLine("Contour via geometry checks passed (lines, arcs, deduplication, invalid settings and placement limit).");
+        ObstacleChecks.Run();
+        Console.WriteLine("Contour via checks passed (geometry, limits, obstacle filtering, rules, bypass and preview cleanup).");
     }
 
     private static List<ContourViaPoint> Generate(ContourViaSegment segment, double cx, double cy, ContourViaOptions options)

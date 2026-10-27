@@ -10,6 +10,7 @@ namespace EasyEDA_Loader
         public double ClearanceMm = 0.3;
         public double PitchMm = 2.0;
         public string NetName = "";
+        public bool IgnoreObstacles = false;
 
         public void Validate()
         {

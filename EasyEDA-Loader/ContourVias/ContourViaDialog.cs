@@ -16,6 +16,7 @@ namespace EasyEDA_Loader
         private readonly TextBox clearance = Input("KeepoutClearance", "0.3");
         private readonly TextBox pitch = Input("ViaPitch", "2.0");
         private readonly ComboBox net = new ComboBox { MinWidth = 180, Margin = new Thickness(0, 4, 0, 4) };
+        private readonly CheckBox ignoreObstacles = new CheckBox { Content = "Ignore obstacles", IsChecked = false, Foreground = Brushes.WhiteSmoke, Margin = new Thickness(0, 12, 0, 0) };
         private readonly TextBlock status = new TextBlock { TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 12, 0, 8) };
         private readonly Button add = new Button { Content = "Add vias", IsDefault = true, MinWidth = 95, Padding = new Thickness(12, 5, 12, 5) };
 
@@ -46,6 +47,9 @@ namespace EasyEDA_Loader
             net.SelectedIndex = 0;
             AddRow(grid, "Target net", net);
             panel.Children.Add(grid);
+            AutomationProperties.SetAutomationId(ignoreObstacles, "IgnoreObstacles");
+            ignoreObstacles.ToolTip = "Place all generated vias, even if they touch or violate clearance to other nets.";
+            panel.Children.Add(ignoreObstacles);
             panel.Children.Add(new TextBlock { Text = "Vias are fully tented on both sides. Centre offset = clearance + half the via diameter.", TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 12, 0, 0) });
             panel.Children.Add(status);
             var buttons = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
@@ -57,6 +61,8 @@ namespace EasyEDA_Loader
             Content = panel;
             foreach (var input in new[] { diameter, hole, clearance, pitch }) input.TextChanged += (_, __) => ValidateInputs();
             net.SelectionChanged += (_, __) => ValidateInputs();
+            ignoreObstacles.Checked += (_, __) => ValidateInputs();
+            ignoreObstacles.Unchecked += (_, __) => ValidateInputs();
             add.Click += Add_Click;
             ValidateInputs();
         }
@@ -83,7 +89,8 @@ namespace EasyEDA_Loader
             {
                 DiameterMm = ReadMm(diameter, "Via diameter"), HoleMm = ReadMm(hole, "Drill diameter"),
                 ClearanceMm = ReadMm(clearance, "Keepout clearance"), PitchMm = ReadMm(pitch, "Pitch"),
-                NetName = net.SelectedIndex <= 0 ? "" : (string)net.SelectedItem
+                NetName = net.SelectedIndex <= 0 ? "" : (string)net.SelectedItem,
+                IgnoreObstacles = ignoreObstacles.IsChecked == true
             };
             options.Validate();
             return options;
@@ -103,9 +110,11 @@ namespace EasyEDA_Loader
             {
                 var options = ReadOptions();
                 int count = ContourViaPcbWriter.Plan(board, options).Count;
-                status.Text = "Ready to add " + count + " vias. The PCB will remain unsaved.";
+                status.Text = "Ready to add " + count + " vias. "
+                    + (options.IgnoreObstacles ? "Obstacles are ignored. " : "Positions blocked by other nets are skipped. ")
+                    + "The PCB will remain unsaved.";
                 status.Foreground = Brushes.WhiteSmoke;
-                add.IsEnabled = true;
+                add.IsEnabled = count > 0;
             }
             catch (Exception ex)
             {

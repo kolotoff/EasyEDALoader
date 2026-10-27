@@ -30,6 +30,7 @@ namespace EasyEDA_Loader
             try
             {
                 iterator.SetState_FilterAll();
+                iterator.AddFilter_Method((int)TIterationMethod.eProcessAll);
                 for (object item = iterator.Internal_FirstPCBObject(); item != null; item = iterator.Internal_NextPCBObject())
                     action(item);
             }
@@ -69,7 +70,106 @@ namespace EasyEDA_Loader
             if (segments.Count == 0) throw new InvalidOperationException("No Keep-Out Layer tracks or arcs found for the PCB contour.");
             var points = ContourViaGeometry.Generate(segments, (minX + maxX) / 2, (minY + maxY) / 2, options);
             if (points.Count == 0) throw new InvalidOperationException("The keepout contour has no usable tracks or arcs.");
-            return points;
+            return options.IgnoreObstacles ? points : FilterObstacles(board, options, points);
+        }
+
+        private static IPCB_Net FindNet(IPCB_Board board, ContourViaOptions options)
+            => string.IsNullOrEmpty(options.NetName) ? null :
+                ReadNets(board).FirstOrDefault(n => string.Equals(n.GetState_Name(), options.NetName, StringComparison.OrdinalIgnoreCase))
+                    ?? throw new InvalidOperationException("Net not found: " + options.NetName);
+
+        private static IPCB_Via CreateVia(ContourViaOptions options, IPCB_Net net)
+        {
+            var via = AltiumApi.GlobalVars.PCBServer.PCBObjectFactory(TObjectId.eViaObject,
+                TDimensionKind.eNoDimension, TObjectCreationMode.eCreate_Default) as IPCB_Via;
+            if (via == null) throw new InvalidOperationException("Could not create PCB via.");
+            try
+            {
+                via.SetState_Size(AltiumApi.MmToCoord(options.DiameterMm));
+                via.SetState_HoleSize(AltiumApi.MmToCoord(options.HoleMm));
+                via.SetState_LowLayer(new V7_Layer(TLayerConstant.eTopLayer));
+                via.SetState_HighLayer(new V7_Layer(TLayerConstant.eBottomLayer));
+                ((IPCB_Primitive)via).SetState_Net(net);
+                return via;
+            }
+            catch
+            {
+                object failedVia = via;
+                AltiumApi.GlobalVars.PCBServer.DestroyPCBObject(ref failedVia);
+                throw;
+            }
+        }
+
+        private static List<ContourViaPoint> FilterObstacles(IPCB_Board board, ContourViaOptions options, List<ContourViaPoint> points)
+        {
+            var net = FindNet(board, options);
+            var obstacles = new List<(IPCB_Primitive Primitive, int Left, int Bottom, int Right, int Top)>();
+            int maxClearance = 0;
+            Visit(board, item =>
+            {
+                if (!(item is IPCB_Primitive primitive)) return;
+                int id = primitive.Internal_GetState_ObjectID();
+                if (id == (int)TObjectId.eRuleObject)
+                {
+                    if (((IPCB_Rule)item).Internal_GetState_RuleKind() != (int)TRuleKind.eRule_Clearance) return;
+                    // Include the advanced clearance matrix, including hole clearances,
+                    // so the bounding-box rejection cannot miss a higher scoped rule.
+                    var rule = (IPCB_ClearanceConstraint)item;
+                    maxClearance = Math.Max(maxClearance, rule.GetState_Gap());
+                    foreach (TObjectClearanceId type in Enum.GetValues(typeof(TObjectClearanceId)))
+                        foreach (var viaType in new[] { TObjectClearanceId.eObjectClearanceID_Via, TObjectClearanceId.eObjectClearanceID_Hole })
+                        {
+                            maxClearance = Math.Max(maxClearance, rule.GetClearance_1((int)viaType, (int)type));
+                            maxClearance = Math.Max(maxClearance, rule.GetClearance_1((int)type, (int)viaType));
+                        }
+                    return;
+                }
+                // Polygon containers are not copper: their poured tracks/arcs/regions
+                // are included by eProcessAll, as are component pads and copper text.
+                if (id != (int)TObjectId.eTrackObject && id != (int)TObjectId.eArcObject
+                    && id != (int)TObjectId.ePadObject && id != (int)TObjectId.eViaObject
+                    && id != (int)TObjectId.eFillObject && id != (int)TObjectId.eRegionObject
+                    && id != (int)TObjectId.eTextObject && id != (int)TObjectId.eSplitPlaneObject) return;
+                if (!primitive.GetState_IsElectricalPrim() || primitive.GetState_IsKeepout()) return;
+                var otherNet = primitive.Internal_GetState_Net() as IPCB_Net;
+                // No-net copper is an obstacle even for no-net vias: it does not
+                // establish an intentional same-net electrical connection.
+                if (net != null && otherNet != null && string.Equals(net.GetState_Name(), otherNet.GetState_Name(), StringComparison.OrdinalIgnoreCase)) return;
+                var bounds = primitive.Internal_BoundingRectangle();
+                obstacles.Add((primitive, bounds.GetLeft(), bounds.GetBottom(), bounds.GetRight(), bounds.GetTop()));
+            });
+            if (obstacles.Count == 0) return points;
+            var via = CreateVia(options, net);
+            object probe = via;
+            try
+            {
+                // Supply board context for scoped rules without adding a preview
+                // primitive to the board or changing its selection/undo history.
+                ((IPCB_Primitive)via).SetState_Board(board);
+                long reach = (long)AltiumApi.MmToCoord(options.DiameterMm) / 2 + maxClearance + 1;
+                var result = new List<ContourViaPoint>();
+                foreach (var point in points)
+                {
+                    int x = AltiumApi.MmToCoord(point.X), y = AltiumApi.MmToCoord(point.Y);
+                    via.SetState_XLocation(x);
+                    via.SetState_YLocation(y);
+                    bool blocked = false;
+                    foreach (var obstacle in obstacles)
+                    {
+                        if (obstacle.Left > x + reach || obstacle.Right < x - reach
+                            || obstacle.Bottom > y + reach || obstacle.Top < y - reach) continue;
+                        var rule = board.Internal_FindDominantRuleForObjectPair(via, obstacle.Primitive, (int)TRuleKind.eRule_Clearance) as IPCB_ClearanceConstraint;
+                        // Native geometry handles pad shapes, arcs, region holes and
+                        // poured copper. Touching is forbidden even with zero/no rule.
+                        if (board.PrimPrimDistance(via, obstacle.Primitive) <= 0
+                            || (rule != null && rule.PrimitivesViolate(via, obstacle.Primitive)))
+                        { blocked = true; break; }
+                    }
+                    if (!blocked) result.Add(point);
+                }
+                return result;
+            }
+            finally { AltiumApi.GlobalVars.PCBServer.DestroyPCBObject(ref probe); }
         }
 
         public static int Add(IPCB_Board capturedBoard, ContourViaOptions options)
@@ -79,10 +179,8 @@ namespace EasyEDA_Loader
             if (board == null || !ReferenceEquals(board, capturedBoard))
                 throw new InvalidOperationException("The active PCB changed while the contour vias dialog was open.");
             var points = Plan(board, options);
-            IPCB_Net net = null;
-            if (!string.IsNullOrEmpty(options.NetName))
-                net = ReadNets(board).FirstOrDefault(n => string.Equals(n.GetState_Name(), options.NetName, StringComparison.OrdinalIgnoreCase))
-                    ?? throw new InvalidOperationException("Net not found: " + options.NetName);
+            if (points.Count == 0) throw new InvalidOperationException("No via positions are clear of other nets. Change the settings or enable Ignore obstacles.");
+            IPCB_Net net = FindNet(board, options);
             var added = new List<object>();
             var server = AltiumApi.GlobalVars.PCBServer;
             server.PreProcess();
@@ -90,16 +188,10 @@ namespace EasyEDA_Loader
             {
                 foreach (var point in points)
                 {
-                    var via = server.PCBObjectFactory(TObjectId.eViaObject, TDimensionKind.eNoDimension, TObjectCreationMode.eCreate_Default) as IPCB_Via;
-                    if (via == null) throw new InvalidOperationException("Could not create PCB via.");
+                    var via = CreateVia(options, net);
                     via.SetState_XLocation(AltiumApi.MmToCoord(point.X));
                     via.SetState_YLocation(AltiumApi.MmToCoord(point.Y));
-                    via.SetState_Size(AltiumApi.MmToCoord(options.DiameterMm));
-                    via.SetState_HoleSize(AltiumApi.MmToCoord(options.HoleMm));
-                    via.SetState_LowLayer(new V7_Layer(TLayerConstant.eTopLayer));
-                    via.SetState_HighLayer(new V7_Layer(TLayerConstant.eBottomLayer));
                     var primitive = (IPCB_Primitive)via;
-                    primitive.SetState_Net(net);
                     primitive.SetState_Selected(true);
                     board.AddPCBObject(via);
                     added.Add(via);
@@ -124,7 +216,8 @@ namespace EasyEDA_Loader
             board.ConnectivelyValidateNets();
             board.ViewManager_FullUpdate();
             EasyEDALoaderModule.Trace("Contour vias added: " + added.Count + "; net=" + options.NetName
-                + "; diameter=" + options.DiameterMm + "; hole=" + options.HoleMm + "; clearance=" + options.ClearanceMm + "; pitch=" + options.PitchMm);
+                + "; diameter=" + options.DiameterMm + "; hole=" + options.HoleMm + "; clearance=" + options.ClearanceMm + "; pitch=" + options.PitchMm
+                + "; ignoreObstacles=" + options.IgnoreObstacles);
             return added.Count;
         }
 

@@ -71,14 +71,18 @@ and an existing target net or `(No net)`. Defaults match altium-mcp: 0.4 mm via,
 0.2 mm drill, 0.3 mm clearance, and 2 mm pitch.
 
 The dialog shows the planned count; `Add vias` creates through vias tented on
-both sides and leaves the PCB unsaved. `Cancel` makes no changes. Placement
-matches `add_tented_vias_around_keepout_contour`: it follows Keep-Out Layer
+both sides and leaves the PCB unsaved. `Cancel` makes no changes. `Ignore obstacles`
+is unchecked by default: positions touching other-net or unassigned copper, or
+violating the applicable Altium electrical clearance rule, are skipped. Copper
+on the selected net is allowed. Check `Ignore obstacles` to restore unrestricted
+placement, matching `add_tented_vias_around_keepout_contour`. The command follows Keep-Out Layer
 tracks and arcs, offsets towards the keepout bounds centre by clearance plus
 the via radius, and deduplicates generated centres at 0.001 mm. Pitch is
 sampled independently along each source track or arc. This uses the same
 bounds-centre heuristic as MCP, so complex concave contours need inspection.
 
-Focused geometry checks:
+Focused geometry and placement checks (SDK interface doubles; exact copper
+geometry and native rule evaluation require live Altium verification):
 `dotnet run --project Test/ContourVias/ContourVias.Tests.csproj -c Release`.
 
 ## Add edge rails
