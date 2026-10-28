@@ -55,6 +55,19 @@ internal static class ObstacleChecks
         Check(ContourViaPcbWriter.Plan(fixture.Board, options).Count == 6, "keepout geometry is not another net's copper");
         fixture = new Fixture { ObstacleId = TObjectId.ePolyObject, Distance = 0 };
         Check(ContourViaPcbWriter.Plan(fixture.Board, options).Count == 6, "polygon container is not treated as solid poured copper");
+        foreach (var kind in new[] { TRegionKind.eRegionKind_BoardCutout, TRegionKind.eRegionKind_Cutout,
+            TRegionKind.eRegionKind_NamedRegion, TRegionKind.eRegionKind_Cavity })
+        {
+            fixture = new Fixture { ObstacleId = TObjectId.eRegionObject, RegionKind = kind, Distance = 0 };
+            Check(ContourViaPcbWriter.Plan(fixture.Board, options).Count == 6, "non-copper region must not block vias: " + kind);
+        }
+        fixture = new Fixture { ObstacleId = TObjectId.eRegionObject, ObstacleLayer = TLayerConstant.eTopOverlay, Distance = 0 };
+        Check(ContourViaPcbWriter.Plan(fixture.Board, options).Count == 6, "non-signal region must not block vias");
+        fixture = new Fixture { ObstacleId = TObjectId.eRegionObject, ObstacleNet = null, Distance = 0 };
+        fixture.ParentPolygon = Polygon(fixture.Ground);
+        Check(ContourViaPcbWriter.Plan(fixture.Board, options).Count == 6, "same-net poured regions inherit their polygon net when the child net is unset");
+        fixture.ParentPolygon = Polygon(Net("OTHER"));
+        Check(ContourViaPcbWriter.Plan(fixture.Board, options).Count == 0, "other-net poured regions remain obstacles when the child net is unset");
 
         fixture = new Fixture { ObstacleBottom = 1.4, BaseGap = 0.1, MatrixGap = 1.0, Distance = 1, Violates = true };
         Check(ContourViaPcbWriter.Plan(fixture.Board, options).Count == 0, "advanced matrix clearance exceeds base gap and survives bounding-box rejection");
@@ -97,6 +110,7 @@ internal static class ObstacleChecks
         public readonly IPCB_Net Ground = Net("GND");
         private readonly IPCB_Net other = Net("OTHER");
         public IPCB_Net ObstacleNet;
+        public IPCB_Primitive ParentPolygon;
         public object ProbeBoard, ProbeNet;
         public int Destroyed, Added, ProbeSize, ProbeHole, PreProcesses;
         public readonly List<Dictionary<string, object>> Created = new List<Dictionary<string, object>>();
@@ -106,6 +120,8 @@ internal static class ObstacleChecks
         public bool FailChecks, HasRule = true, Electrical = true, Keepout;
         public double ObstacleBottom = 0.5, BaseGap = 0.2, MatrixGap = 0.2;
         public TObjectId ObstacleId = TObjectId.eTrackObject;
+        public TRegionKind RegionKind = TRegionKind.eRegionKind_Copper;
+        public TLayerConstant ObstacleLayer = TLayerConstant.eTopLayer;
 
         public Fixture()
         {
@@ -120,14 +136,17 @@ internal static class ObstacleChecks
                 "GetState_IsElectricalPrim" => false,
                 _ => null
             });
-            var obstacle = Proxy<IPCB_Primitive>((name, args) => name switch
+            var obstacle = Proxy<IPCB_Region>((name, args) => name switch
             {
                 "Internal_GetState_ObjectID" => (int)ObstacleId,
-                "Internal_GetState_V7Layer" => new V7_Layer(TLayerConstant.eTopLayer),
+                "Internal_GetState_V7Layer" => new V7_Layer(ObstacleLayer),
+                "Internal_GetState_Kind" => (int)RegionKind,
                 "Internal_BoundingRectangle" => Bounds(-1, ObstacleBottom, 11, ObstacleBottom + 0.1),
                 "GetState_IsElectricalPrim" => Electrical,
                 "GetState_IsKeepout" => Keepout,
                 "Internal_GetState_Net" => ObstacleNet,
+                "GetState_InPolygon" => ParentPolygon != null,
+                "Internal_GetState_Polygon" => ParentPolygon,
                 _ => null
             });
             var rule = Proxy<IPCB_ClearanceConstraint>((name, args) => name switch
@@ -201,6 +220,11 @@ internal static class ObstacleChecks
     private static IPCB_Net Net(string netName) => Proxy<IPCB_Net>((name, args) => name switch
     {
         "Internal_GetState_ObjectID" => (int)TObjectId.eNetObject, "GetState_Name" => netName, _ => null
+    });
+
+    private static IPCB_Primitive Polygon(IPCB_Net net) => Proxy<IPCB_Primitive>((name, args) => name switch
+    {
+        "Internal_GetState_ObjectID" => (int)TObjectId.ePolyObject, "Internal_GetState_Net" => net, _ => null
     });
 
     private static T Proxy<T>(Func<string, object[], object> handler) where T : class

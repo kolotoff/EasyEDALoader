@@ -131,7 +131,18 @@ namespace EasyEDA_Loader
                     && id != (int)TObjectId.eFillObject && id != (int)TObjectId.eRegionObject
                     && id != (int)TObjectId.eTextObject && id != (int)TObjectId.eSplitPlaneObject) return;
                 if (!primitive.GetState_IsElectricalPrim() || primitive.GetState_IsKeepout()) return;
+                // Altium also marks structural board regions and polygon cutouts
+                // as electrical primitives. Only signal-layer copper is an obstacle.
+                if (id == (int)TObjectId.eRegionObject
+                    && (((IPCB_Region)item).Internal_GetState_Kind() != (int)TRegionKind.eRegionKind_Copper
+                        || !new V7_Layer(primitive.Internal_GetState_V7Layer()).IsSignalLayer())) return;
                 var otherNet = primitive.Internal_GetState_Net() as IPCB_Net;
+                // Rebuilt pour children can leave Net unset even though their
+                // parent polygon is assigned. Preserve intentional same-net contact.
+                if (otherNet == null && primitive.GetState_InPolygon()
+                    && primitive.Internal_GetState_Polygon() is IPCB_Primitive polygon
+                    && polygon.Internal_GetState_ObjectID() == (int)TObjectId.ePolyObject)
+                    otherNet = polygon.Internal_GetState_Net() as IPCB_Net;
                 // No-net copper is an obstacle even for no-net vias: it does not
                 // establish an intentional same-net electrical connection.
                 if (net != null && otherNet != null && string.Equals(net.GetState_Name(), otherNet.GetState_Name(), StringComparison.OrdinalIgnoreCase)) return;
